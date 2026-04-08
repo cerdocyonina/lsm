@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && mkdir -p dist && bun build --production --target=bun --minify --outfile dist/index.js src/index.ts && bun build --production --target=bun --minify --outfile dist/cli.js src/cli.ts",
     "dev": "NODE_ENV=development bun --watch src/index.ts",
     "start": "NODE_ENV=production bun run src/index.ts"
   },
