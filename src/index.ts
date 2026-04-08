@@ -5,7 +5,6 @@ import { FAKE_NGINX_404 } from "./utils";
 
 dotenv.config({
   path: process.env.ENV_PATH || ".env",
-  debug: process.env.NODE_ENV !== "production",
   quiet: process.env.NODE_ENV === "production",
 });
 

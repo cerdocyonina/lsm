@@ -7,14 +7,9 @@ import { logError, logger } from "./logger";
 import { SqliteStorage } from "./storage";
 import { loadAppContext } from "./sub-links";
 
-const [, , initialCommand, ...initialArgs] = Bun.argv;
-const suppressJsonPreamble =
-  initialCommand === "list" && initialArgs.includes("--json");
-
 dotenv.config({
   path: process.env.ENV_PATH || ".env",
-  debug: process.env.NODE_ENV !== "production" && !suppressJsonPreamble,
-  quiet: suppressJsonPreamble,
+  quiet: true,
 });
 
 const addArgsSchema = z.tuple([z.string().min(1), z.uuid()]);
