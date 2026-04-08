@@ -3,7 +3,10 @@ import { z } from "zod";
 export const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   ADMIN_PORT: z.coerce.number().int().min(1).max(65535),
-  BASE_URL: z.url().optional(),
+  BASE_URL: z.preprocess(
+    (value) => (typeof value === "string" ? value.trim() : value),
+    z.url().transform((value) => value.replace(/\/+$/, "")),
+  ),
   DATABASE_PATH: z.string().min(1).default("./data.sqlite"),
   SUB_LINK_SECRET: z.string().min(16),
   ADMIN_PATH: z.preprocess(

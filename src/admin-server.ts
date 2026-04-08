@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { handleAdminApiRequest } from "./admin-api";
+import { LoginRateLimiter } from "./admin-rate-limit";
 import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
 import { SqliteStorage } from "./storage";
@@ -18,6 +19,15 @@ const adminDistDir = resolve(appRootDir, "web", "dist");
 let storage: SqliteStorage | null = null;
 let server: Bun.Server<unknown> | null = null;
 let isShuttingDown = false;
+const loginRateLimiter = new LoginRateLimiter();
+
+function getClientIp(req: Request, currentServer: Bun.Server<unknown> | null): string {
+  if (!currentServer || typeof currentServer.requestIP !== "function") {
+    return "unknown";
+  }
+
+  return currentServer.requestIP(req)?.address ?? "unknown";
+}
 
 function isAdminPathMatch(pathname: string, adminBasePath: string): boolean {
   return (
@@ -92,6 +102,9 @@ async function handleRequest(req: Request): Promise<Response> {
     storage,
     (name) => createSubscriptionToken(name, config.get("SUB_LINK_SECRET")),
     adminBasePath,
+    config.get("BASE_URL"),
+    loginRateLimiter,
+    getClientIp(req, server),
   );
   if (adminApiResponse) {
     logger.info(`admin request: ${req.method} [admin-api]`);
@@ -118,7 +131,10 @@ function main(): boolean {
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: adminPort,
-    fetch: handleRequest,
+    fetch: (req, currentServer) => {
+      server = currentServer;
+      return handleRequest(req);
+    },
   });
 
   logger.info(

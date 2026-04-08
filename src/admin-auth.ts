@@ -9,6 +9,11 @@ type SessionPayload = {
   expiresAt: number;
 };
 
+type SessionCookieOptions = {
+  path: string;
+  secure: boolean;
+};
+
 function createSignature(username: string, expiresAt: number): string {
   return createHmac("sha256", config.get("ADMIN_SESSION_SECRET"))
     .update(`${username}:${expiresAt}`)
@@ -64,18 +69,55 @@ export function verifyAdminCredentials(
   );
 }
 
+function getSessionCookieOptions(): SessionCookieOptions {
+  if (process.env.NODE_ENV === "development") {
+    return {
+      path: "/",
+      secure: false,
+    };
+  }
+
+  return {
+    path: config.get("ADMIN_PATH"),
+    secure: true,
+  };
+}
+
+function serializeCookieAttributes({
+  path,
+  secure,
+  maxAge,
+}: SessionCookieOptions & { maxAge: number }): string {
+  return [
+    `Path=${path}`,
+    secure ? "Secure" : null,
+    "HttpOnly",
+    "SameSite=Strict",
+    `Max-Age=${maxAge}`,
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
 export function createSessionCookie(): string {
   const username = config.get("ADMIN_USERNAME");
   const expiresAt = Date.now() + SESSION_TTL_MS;
   const token = encodeURIComponent(serializeSession(username, expiresAt));
+  const cookieAttributes = serializeCookieAttributes({
+    ...getSessionCookieOptions(),
+    maxAge: Math.floor(SESSION_TTL_MS / 1000),
+  });
 
-  return `${SESSION_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(
-    SESSION_TTL_MS / 1000,
-  )}`;
+  return `${SESSION_COOKIE_NAME}=${token}; ${cookieAttributes}`;
 }
 
 export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`;
+  const cookieAttributes = serializeCookieAttributes({
+    ...getSessionCookieOptions(),
+    maxAge: 0,
+  });
+
+  return `${SESSION_COOKIE_NAME}=; ${cookieAttributes}`;
 }
 
 export function readSession(req: Request): SessionPayload | null {
