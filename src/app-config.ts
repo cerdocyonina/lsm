@@ -1,14 +1,26 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 
-const appConfigSchema = z.object({
+export const appConfigSchema = z.object({
   USERS: z.record(z.string(), z.uuid()),
   SERVERS: z.array(z.string().min(1)).min(1),
 });
 
 export type AppConfig = z.infer<typeof appConfigSchema>;
 
-export function loadAppConfigOrThrow(path: string): AppConfig {
+export function parseAppConfigOrThrow(input: unknown): AppConfig {
+  try {
+    return appConfigSchema.parse(input);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new Error(z.prettifyError(error));
+    }
+
+    throw error;
+  }
+}
+
+export function loadLegacyAppConfigOrThrow(path: string): AppConfig {
   let fileContent: string;
 
   try {
@@ -29,13 +41,5 @@ export function loadAppConfigOrThrow(path: string): AppConfig {
     throw new Error(`Failed to parse app config at ${path}: ${message}`);
   }
 
-  try {
-    return appConfigSchema.parse(parsedJson);
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      throw new Error(z.prettifyError(error));
-    }
-
-    throw error;
-  }
+  return parseAppConfigOrThrow(parsedJson);
 }

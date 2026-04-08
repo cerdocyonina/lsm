@@ -1,10 +1,11 @@
 import { createHmac } from "node:crypto";
-import { loadAppConfigOrThrow } from "./app-config";
 import { config, validateEnvOrThrow } from "./env-validation";
+import { loadStorageSnapshot, SqliteStorage } from "./storage";
 
 export type AppContext = {
   port: number;
   baseUrl?: string;
+  databasePath: string;
   servers: string[];
   users: Record<string, string>;
   getClientToken: (clientName: string) => string;
@@ -20,9 +21,11 @@ export function loadAppContext(): AppContext {
 
   const port = config.get("PORT");
   const baseUrl = config.get("BASE_URL");
-  const configPath = config.get("CONFIG_PATH");
+  const databasePath = config.get("DATABASE_PATH");
   const subLinkSecret = config.get("SUB_LINK_SECRET");
-  const { SERVERS, USERS } = loadAppConfigOrThrow(configPath);
+  const storage = new SqliteStorage(databasePath);
+  const { SERVERS, USERS } = loadStorageSnapshot(storage);
+  storage.close();
 
   function getClientToken(clientName: string): string {
     return createHmac("sha256", subLinkSecret)
@@ -37,6 +40,7 @@ export function loadAppContext(): AppContext {
   return {
     port,
     baseUrl,
+    databasePath,
     servers: SERVERS,
     users: USERS,
     getClientToken,

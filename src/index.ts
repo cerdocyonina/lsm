@@ -12,6 +12,10 @@ function main(): boolean {
 
   const { port, servers, users, getClientToken } = loadAppContext();
 
+  if (servers.length === 0) {
+    throw new Error("No server templates configured in the SQLite database");
+  }
+
   const userUuidByToken = new Map(
     Object.entries(users).map(([clientName, userUUID]) => [
       getClientToken(clientName),
