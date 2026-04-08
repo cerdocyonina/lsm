@@ -10,6 +10,17 @@ dotenv.config({
 });
 
 let storage: SqliteStorage | null = null;
+let server: Bun.Server<unknown> | null = null;
+let isShuttingDown = false;
+
+function redactRequestPath(pathname: string): string {
+  const pathParts = pathname.split("/").filter(Boolean);
+  if (pathParts.length === 0) {
+    return pathname;
+  }
+
+  return `/${["[token]", ...pathParts.slice(1)].join("/")}`;
+}
 
 function main(): boolean {
   logger.debug(`starting app, NODE_ENV=${process.env.NODE_ENV}...`);
@@ -21,21 +32,27 @@ function main(): boolean {
     throw new Error("No server templates configured in the SQLite database");
   }
 
-  Bun.serve({
+  server = Bun.serve({
     port,
     fetch(req) {
+      if (isShuttingDown) {
+        return new Response("Service unavailable", { status: 503 });
+      }
+
       const url = new URL(req.url);
+      const redactedPath = redactRequestPath(url.pathname);
       const pathParts = url.pathname.split("/").filter(Boolean);
       const [clientToken, ...extraParts] = pathParts;
 
       if (!storage) {
         logger.error("storage is not initialized");
+        return new Response("Service unavailable", { status: 503 });
       }
-      if (storage && clientToken && extraParts.length === 0) {
+      if (clientToken && extraParts.length === 0) {
         const servers = storage.listServers();
         const userRecord = storage.getUserBySubscriptionToken(clientToken);
         if (!userRecord) {
-          logger.warn(`invalid token attempt: ${url.pathname}`);
+          logger.warn(`invalid token attempt: ${req.method} ${url.pathname}`);
           return new Response(null, {
             status: 302,
             headers: { Location: "https://en.wikipedia.org/wiki/Maned_Wolf" },
@@ -47,7 +64,7 @@ function main(): boolean {
           const subContent = btoa(configs.join("\n"));
 
           logger.info(
-            `served sub for user "${userRecord.clientName}": ${req.method} ${url.pathname}`,
+            `served sub for user "${userRecord.clientName}": ${req.method} ${redactedPath}`,
           );
 
           return new Response(subContent, {
@@ -58,7 +75,7 @@ function main(): boolean {
         }
       }
 
-      logger.warn(`forbidden request for ${url.pathname}`);
+      logger.warn(`forbidden request for ${req.method} ${redactedPath}`);
       return new Response(FAKE_NGINX_404, {
         status: 404,
         headers: {
@@ -73,32 +90,62 @@ function main(): boolean {
   return true;
 }
 
+function shutdown(code: number, reason: string, error?: unknown): void {
+  if (isShuttingDown) {
+    return;
+  }
+
+  isShuttingDown = true;
+
+  if (error !== undefined) {
+    logError(error);
+  }
+
+  logger.error(`shutting down: ${reason}`);
+
+  try {
+    server?.stop(true);
+  } catch (stopError) {
+    logError(stopError);
+  }
+
+  try {
+    storage?.close();
+    storage = null;
+  } catch (closeError) {
+    logError(closeError);
+  }
+
+  process.exit(code);
+}
+
 try {
   const shouldRegisterProcessHandlers = main();
 
   if (shouldRegisterProcessHandlers) {
-    process.on("uncaughtException", (error) => logError(error));
-    process.on("unhandledRejection", (error) => logError(error));
+    process.on("uncaughtException", (error) => {
+      shutdown(1, "uncaught exception", error);
+    });
+    process.on("unhandledRejection", (error) => {
+      shutdown(1, "unhandled rejection", error);
+    });
     process.on("beforeExit", (code) => {
       logger.warn(`process beforeExit with code ${code}`);
     });
     process.on("SIGINT", () => {
-      storage?.close();
       logger.info("received SIGINT, shutting down gracefully...");
-      process.exit(0);
+      shutdown(0, "received SIGINT");
     });
     process.on("SIGTERM", () => {
-      storage?.close();
       logger.info("received SIGTERM, shutting down gracefully...");
-      process.exit(0);
+      shutdown(0, "received SIGTERM");
     });
     process.on("exit", (code) => {
       storage?.close();
+      storage = null;
       (code ? logger.warn : logger.info)(`process exit with code ${code}`);
     });
   }
 } catch (error) {
-  logError(error);
-  logger.error("app stopped unexpectedly");
-  process.exit(1);
+  shutdown(1, "app stopped unexpectedly", error);
 }
