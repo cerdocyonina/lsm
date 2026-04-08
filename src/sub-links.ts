@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { config, validateEnvOrThrow } from "./env-validation";
-import { loadStorageSnapshot, SqliteStorage } from "./storage";
+import { SqliteStorage } from "./storage";
 
 export type AppContext = {
   port: number;
@@ -8,12 +8,16 @@ export type AppContext = {
   databasePath: string;
   servers: string[];
   users: Record<string, string>;
-  getClientToken: (clientName: string) => string;
-  getSubLink: (clientName: string, url: string) => string;
+  getSubscriptionToken: (name: string) => string;
+  getSubLink: (name: string, url: string) => string;
 };
 
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
+}
+
+export function createSubscriptionToken(token: string, secret: string): string {
+  return createHmac("sha256", secret).update(token).digest("base64url");
 }
 
 export function loadAppContext(): AppContext {
@@ -24,26 +28,40 @@ export function loadAppContext(): AppContext {
   const databasePath = config.get("DATABASE_PATH");
   const subLinkSecret = config.get("SUB_LINK_SECRET");
   const storage = new SqliteStorage(databasePath);
-  const { SERVERS, USERS } = loadStorageSnapshot(storage);
+  const userRecords = storage.listUsers();
+  const servers = storage.listServers();
   storage.close();
 
-  function getClientToken(clientName: string): string {
-    return createHmac("sha256", subLinkSecret)
-      .update(clientName)
-      .digest("base64url");
+  const users = Object.fromEntries(
+    userRecords.map(({ clientName, userUuid }) => [clientName, userUuid]),
+  );
+  const subscriptionTokenByClientName = new Map(
+    userRecords.map(({ clientName, subscriptionToken }) => [
+      clientName,
+      subscriptionToken,
+    ]),
+  );
+
+  function getSubscriptionToken(name: string): string {
+    const subscriptionToken = subscriptionTokenByClientName.get(name);
+    if (!subscriptionToken) {
+      throw new Error(`Unknown client: ${name}`);
+    }
+
+    return subscriptionToken;
   }
 
-  function getSubLink(clientName: string, url: string): string {
-    return `${normalizeBaseUrl(url)}/${getClientToken(clientName)}`;
+  function getSubLink(name: string, url: string): string {
+    return `${normalizeBaseUrl(url)}/${getSubscriptionToken(name)}`;
   }
 
   return {
     port,
     baseUrl,
     databasePath,
-    servers: SERVERS,
-    users: USERS,
-    getClientToken,
+    servers,
+    users,
+    getSubscriptionToken,
     getSubLink,
   };
 }
