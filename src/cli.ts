@@ -1,3 +1,5 @@
+#!/usr/bin/env bun
+
 import dotenv from "dotenv";
 import { table } from "table";
 import { z } from "zod";
