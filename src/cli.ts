@@ -1,20 +1,31 @@
 import dotenv from "dotenv";
+import { table } from "table";
 import { z } from "zod";
 import { loadLegacyAppConfigOrThrow } from "./app-config";
 import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
-import { loadAppContext } from "./sub-links";
 import { SqliteStorage } from "./storage";
+import { loadAppContext } from "./sub-links";
+
+const [, , initialCommand, ...initialArgs] = Bun.argv;
+const suppressJsonPreamble =
+  initialCommand === "list" && initialArgs.includes("--json");
 
 dotenv.config({
   path: process.env.ENV_PATH || ".env",
+  debug: process.env.NODE_ENV !== "production" && !suppressJsonPreamble,
+  quiet: suppressJsonPreamble,
 });
 
 const addArgsSchema = z.tuple([z.string().min(1), z.uuid()]);
 
+function printTable(headers: string[], rows: string[][]): void {
+  console.log(table([headers, ...rows]));
+}
+
 function printUsage(): void {
   console.log("Usage:");
-  console.log("  bun run src/cli.ts list [base_url]");
+  console.log("  bun run src/cli.ts list [base_url] [--json]");
   console.log("  bun run src/cli.ts link <client_name> [base_url]");
   console.log("  bun run src/cli.ts add <client_name> <user_uuid>");
   console.log("  bun run src/cli.ts remove <client_name>");
@@ -93,18 +104,39 @@ function main(): void {
     return;
   }
 
-  const { port, baseUrl, users, getSubLink } = loadAppContext();
+  const { port, baseUrl, servers, users, getSubLink } = loadAppContext();
 
   if (command === "list") {
-    const resolvedBaseUrl = args[0] ?? baseUrl ?? `http://127.0.0.1:${port}`;
+    const jsonOutput = args.includes("--json");
+    const positionalArgs = args.filter((arg) => arg !== "--json");
+    const resolvedBaseUrl =
+      positionalArgs[0] ?? baseUrl ?? `http://127.0.0.1:${port}`;
+
+    if (jsonOutput) {
+      console.log(
+        JSON.stringify(
+          {
+            USERS: users,
+            SERVERS: servers,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
     logger.info(
       `printing all subscription links for ${Object.keys(users).length} users`,
     );
-
-    for (const clientName of Object.keys(users)) {
-      console.log(`${clientName} ${getSubLink(clientName, resolvedBaseUrl)}`);
-    }
-
+    printTable(
+      ["Client", "UUID", "Subscription URL"],
+      Object.entries(users).map(([clientName, userUuid]) => [
+        clientName,
+        userUuid,
+        getSubLink(clientName, resolvedBaseUrl),
+      ]),
+    );
     return;
   }
 
