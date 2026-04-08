@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { Buffer } from "node:buffer";
 import { logError, logger } from "./logger";
 import { SqliteStorage } from "./storage";
 import { loadAppContext } from "./sub-links";
@@ -20,6 +21,10 @@ function redactRequestPath(pathname: string): string {
   }
 
   return `/${["[token]", ...pathParts.slice(1)].join("/")}`;
+}
+
+function encodeBase64Utf8(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64");
 }
 
 function main(): boolean {
@@ -61,7 +66,7 @@ function main(): boolean {
           const configs = servers.map((server) =>
             server.replace("DUMMY", userRecord.userUuid),
           );
-          const subContent = btoa(configs.join("\n"));
+          const subContent = encodeBase64Utf8(configs.join("\n"));
 
           logger.info(
             `served sub for user "${userRecord.clientName}": ${req.method} ${redactedPath}`,
