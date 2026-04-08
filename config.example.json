@@ -1,0 +1,9 @@
+{
+  "USERS": {
+    "ya": "cd4f374b-c5bc-4d50-b854-b08b2168bcfd",
+    "client1": "28bf1714-cc49-43b5-b79c-a3dbe758693c"
+  },
+  "SERVERS": [
+    "vless://DUMMY@localhost:443?type=tcp&encryption=none&security=reality&pbk=abcdef&fp=chrome&sni=max.ru&sid=e0&spx=%2F&flow=xtls-rprx-vision#main"
+  ]
+}
