@@ -1,8 +1,6 @@
 import dotenv from "dotenv";
-import { createHmac } from "node:crypto";
-import { loadAppConfigOrThrow } from "./app-config";
-import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
+import { loadAppContext } from "./sub-links";
 import { FAKE_NGINX_404 } from "./utils";
 
 dotenv.config({
@@ -12,65 +10,14 @@ dotenv.config({
 function main(): boolean {
   logger.debug(`starting app, NODE_ENV=${process.env.NODE_ENV}...`);
 
-  config.init(validateEnvOrThrow());
-
-  const port = config.get("PORT");
-  const baseUrl = config.get("BASE_URL");
-  const configPath = config.get("CONFIG_PATH");
-  const subLinkSecret = config.get("SUB_LINK_SECRET");
-  const { SERVERS, USERS } = loadAppConfigOrThrow(configPath);
-
-  function getClientToken(clientName: string): string {
-    return createHmac("sha256", subLinkSecret)
-      .update(clientName)
-      .digest("base64url");
-  }
-
-  function normalizeBaseUrl(url: string): string {
-    return url.replace(/\/+$/, "");
-  }
-
-  function getSubLink(clientName: string, url: string): string {
-    return `${normalizeBaseUrl(url)}/${getClientToken(clientName)}`;
-  }
+  const { port, servers, users, getClientToken } = loadAppContext();
 
   const userUuidByToken = new Map(
-    Object.entries(USERS).map(([clientName, userUUID]) => [
+    Object.entries(users).map(([clientName, userUUID]) => [
       getClientToken(clientName),
       userUUID,
     ]),
   );
-
-  const [, , command, ...args] = Bun.argv;
-
-  if (command === "--print-links") {
-    const resolvedBaseUrl = args[0] ?? baseUrl ?? `http://127.0.0.1:${port}`;
-    logger.info(
-      `printing all subscription links for ${Object.keys(USERS).length} users`,
-    );
-
-    for (const clientName of Object.keys(USERS)) {
-      console.log(`${clientName} ${getSubLink(clientName, resolvedBaseUrl)}`);
-    }
-
-    return false;
-  }
-
-  if (command === "--print-link") {
-    const [clientName, baseUrlArg] = args;
-    if (!clientName) {
-      throw new Error("Usage: --print-link <client_name> [base_url]");
-    }
-
-    if (!(clientName in USERS)) {
-      throw new Error(`Unknown client: ${clientName}`);
-    }
-
-    const resolvedBaseUrl = baseUrlArg ?? baseUrl ?? `http://127.0.0.1:${port}`;
-    logger.info(`printing subscription link for ${clientName}`);
-    console.log(getSubLink(clientName, resolvedBaseUrl));
-    return false;
-  }
 
   Bun.serve({
     port,
@@ -88,12 +35,12 @@ function main(): boolean {
             headers: { Location: "https://en.wikipedia.org/wiki/Maned_Wolf" },
           });
         } else {
-          const configs = SERVERS.map((server) =>
+          const configs = servers.map((server) =>
             server.replace("DUMMY", userUUID),
           );
           const subContent = btoa(configs.join("\n"));
 
-          const clientName = Object.keys(USERS).find(
+          const clientName = Object.keys(users).find(
             (name) => getClientToken(name) === clientToken,
           );
           logger.info(
