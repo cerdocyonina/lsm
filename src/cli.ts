@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import dotenv from "dotenv";
+import { resolve } from "node:path";
 import { table } from "table";
 import { z } from "zod";
 import { loadLegacyAppConfigOrThrow } from "./app-config";
@@ -10,7 +11,7 @@ import { SqliteStorage } from "./storage";
 import { createSubscriptionToken, loadAppContext } from "./sub-links";
 
 dotenv.config({
-  path: process.env.ENV_PATH || ".env",
+  path: resolve(__dirname, "..", process.env.ENV_PATH || ".env"),
   quiet: true,
 });
 
@@ -120,7 +121,12 @@ function main(): void {
     ]);
     const userSubcommand =
       restArgs[0] && knownUserActions.has(restArgs[0]) ? restArgs[0] : "list";
-    const args = userSubcommand === "list" ? restArgs.filter((_, i) => i !== 0 || !knownUserActions.has(restArgs[0] ?? "")) : restArgs.slice(1);
+    const args =
+      userSubcommand === "list"
+        ? restArgs.filter(
+            (_, i) => i !== 0 || !knownUserActions.has(restArgs[0] ?? ""),
+          )
+        : restArgs.slice(1);
 
     if (userSubcommand === "add") {
       const [clientName, userUuid] = addArgsSchema.parse(args);
@@ -158,7 +164,9 @@ function main(): void {
         throw new Error(`Unknown client: ${oldName}`);
       }
 
-      logger.info(`renamed user "${oldName}" to "${newName}" in ${databasePath}`);
+      logger.info(
+        `renamed user "${oldName}" to "${newName}" in ${databasePath}`,
+      );
       return;
     }
 
@@ -243,7 +251,8 @@ function main(): void {
         throw new Error(`Unknown client: ${clientName}`);
       }
 
-      const resolvedBaseUrl = baseUrlArg ?? baseUrl ?? `http://127.0.0.1:${port}`;
+      const resolvedBaseUrl =
+        baseUrlArg ?? baseUrl ?? `http://127.0.0.1:${port}`;
       logger.info(`printing subscription link for ${clientName}`);
       console.log(getSubLink(clientName, resolvedBaseUrl));
       return;
@@ -265,7 +274,9 @@ function main(): void {
       restArgs[0] && knownServerActions.has(restArgs[0]) ? restArgs[0] : "list";
     const args =
       serverSubcommand === "list"
-        ? restArgs.filter((_, i) => i !== 0 || !knownServerActions.has(restArgs[0] ?? ""))
+        ? restArgs.filter(
+            (_, i) => i !== 0 || !knownServerActions.has(restArgs[0] ?? ""),
+          )
         : restArgs.slice(1);
     const databasePath = config.get("DATABASE_PATH");
 
@@ -287,7 +298,9 @@ function main(): void {
           return;
         }
 
-        logger.info(`printing ${serverRecords.length} servers from ${databasePath}`);
+        logger.info(
+          `printing ${serverRecords.length} servers from ${databasePath}`,
+        );
         printTable(
           ["Name", "Order", "Template"],
           serverRecords.map(({ name, sortOrder, template }) => [
