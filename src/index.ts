@@ -1,8 +1,8 @@
 import dotenv from "dotenv";
 import { Buffer } from "node:buffer";
+import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
 import { SqliteStorage } from "./storage";
-import { loadAppContext } from "./sub-links";
 import { FAKE_NGINX_404 } from "./utils";
 
 dotenv.config({
@@ -27,67 +27,99 @@ function encodeBase64Utf8(value: string): string {
   return Buffer.from(value, "utf8").toString("base64");
 }
 
+function isAdminProbe(pathname: string, adminBasePath: string): boolean {
+  return (
+    pathname === adminBasePath ||
+    pathname === `${adminBasePath}/` ||
+    pathname.startsWith(`${adminBasePath}/`) ||
+    pathname === "/admin" ||
+    pathname === "/admin/" ||
+    pathname.startsWith("/admin/") ||
+    pathname === "/api/admin" ||
+    pathname === "/api/admin/" ||
+    pathname.startsWith("/api/admin/")
+  );
+}
+
+function emptyNotFound(): Response {
+  return new Response(null, { status: 404 });
+}
+
+async function handleRequest(req: Request): Promise<Response> {
+  if (isShuttingDown) {
+    return new Response("Service unavailable", { status: 503 });
+  }
+
+  const url = new URL(req.url);
+  const pathname = url.pathname;
+  const redactedPath = redactRequestPath(pathname);
+  const adminBasePath = config.get("ADMIN_PATH");
+
+  if (!storage) {
+    logger.error("storage is not initialized");
+    return new Response("Service unavailable", { status: 503 });
+  }
+
+  if (isAdminProbe(pathname, adminBasePath)) {
+    return emptyNotFound();
+  }
+
+  const pathParts = pathname.split("/").filter(Boolean);
+  const [clientToken, ...extraParts] = pathParts;
+
+  if (clientToken && extraParts.length === 0) {
+    const servers = storage.listServers();
+    const userRecord = storage.getUserBySubscriptionToken(clientToken);
+    if (!userRecord) {
+      logger.warn(`invalid token attempt: ${req.method} ${pathname}`);
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "https://en.wikipedia.org/wiki/Maned_Wolf" },
+      });
+    }
+
+    const configs = servers.map((serverTemplate) =>
+      serverTemplate.replace("DUMMY", userRecord.userUuid),
+    );
+    const subContent = encodeBase64Utf8(configs.join("\n"));
+
+    logger.info(
+      `served sub for user "${userRecord.clientName}": ${req.method} ${redactedPath}`,
+    );
+
+    return new Response(subContent, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+    });
+  }
+
+  logger.warn(`forbidden request for ${req.method} ${redactedPath}`);
+  return new Response(FAKE_NGINX_404, {
+    status: 404,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      Server: "nginx",
+    },
+  });
+}
+
 function main(): boolean {
   logger.debug(`starting app, NODE_ENV=${process.env.NODE_ENV}...`);
 
-  const { port, databasePath, servers } = loadAppContext();
+  config.init(validateEnvOrThrow());
+
+  const port = config.get("PORT");
+  const databasePath = config.get("DATABASE_PATH");
   storage = new SqliteStorage(databasePath);
 
-  if (servers.length === 0) {
+  if (storage.listServers().length === 0) {
     throw new Error("No server templates configured in the SQLite database");
   }
 
   server = Bun.serve({
     port,
-    fetch(req) {
-      if (isShuttingDown) {
-        return new Response("Service unavailable", { status: 503 });
-      }
-
-      const url = new URL(req.url);
-      const redactedPath = redactRequestPath(url.pathname);
-      const pathParts = url.pathname.split("/").filter(Boolean);
-      const [clientToken, ...extraParts] = pathParts;
-
-      if (!storage) {
-        logger.error("storage is not initialized");
-      }
-      if (storage && clientToken && extraParts.length === 0) {
-        const servers = storage.listServers();
-        const userRecord = storage.getUserBySubscriptionToken(clientToken);
-        if (!userRecord) {
-          logger.warn(`invalid token attempt: ${req.method} ${url.pathname}`);
-          return new Response(null, {
-            status: 302,
-            headers: { Location: "https://en.wikipedia.org/wiki/Maned_Wolf" },
-          });
-        } else {
-          const configs = servers.map((server) =>
-            server.replace("DUMMY", userRecord.userUuid),
-          );
-          const subContent = encodeBase64Utf8(configs.join("\n"));
-
-          logger.info(
-            `served sub for user "${userRecord.clientName}": ${req.method} ${redactedPath}`,
-          );
-
-          return new Response(subContent, {
-            headers: {
-              "Content-Type": "text/plain; charset=utf-8",
-            },
-          });
-        }
-      }
-
-      logger.warn(`forbidden request for ${req.method} ${redactedPath}`);
-      return new Response(FAKE_NGINX_404, {
-        status: 404,
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          Server: "nginx",
-        },
-      });
-    },
+    fetch: handleRequest,
   });
 
   logger.info(`sub server is running on http://127.0.0.1:${port}`);

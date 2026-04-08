@@ -4,14 +4,28 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "rm -rf dist && mkdir -p dist && bun build --production --target=bun --minify --outfile dist/index.js src/index.ts && bun build --production --target=bun --minify --outfile dist/cli.js src/cli.ts",
+    "build": "rm -rf dist web/dist && mkdir -p dist && bun run build:server && bun run build:web",
+    "build:server": "bun build --production --target=bun --minify --outfile dist/index.js src/index.ts && bun build --production --target=bun --minify --outfile dist/admin-server.js src/admin-server.ts && bun build --production --target=bun --minify --outfile dist/cli.js src/cli.ts",
+    "build:web": "vite build --config web/vite.config.ts",
     "dev": "NODE_ENV=development bun --watch src/index.ts",
-    "start": "NODE_ENV=production bun run src/index.ts"
+    "dev:admin": "NODE_ENV=development bun --watch src/admin-server.ts",
+    "dev:web": "vite --config web/vite.config.ts",
+    "start": "NODE_ENV=production bun run src/index.ts",
+    "start:admin": "NODE_ENV=production bun run src/admin-server.ts"
   },
   "dependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.0",
+    "bootstrap": "^5.3.8",
     "chalk": "^5.6.2",
     "dotenv": "^17.3.1",
+    "react": "^19.2.0",
+    "react-bootstrap": "^2.10.10",
+    "react-dom": "^19.2.0",
+    "react-hot-toast": "^2.5.2",
     "table": "^6.9.0",
+    "vite": "^7.1.12",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^5.0.0",
     "zod": "^4.3.6"

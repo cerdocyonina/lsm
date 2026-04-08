@@ -2,9 +2,27 @@ import { z } from "zod";
 
 export const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  ADMIN_PORT: z.coerce.number().int().min(1).max(65535),
   BASE_URL: z.url().optional(),
   DATABASE_PATH: z.string().min(1).default("./data.sqlite"),
   SUB_LINK_SECRET: z.string().min(16),
+  ADMIN_PATH: z.preprocess(
+    (value) =>
+      typeof value === "string"
+        ? value.trim().replace(/^\/+|\/+$/g, "")
+        : value,
+    z
+      .string()
+      .min(12)
+      .regex(
+        /^[A-Za-z0-9_-]+$/,
+        "ADMIN_PATH must use only letters, numbers, underscores, or hyphens.",
+      )
+      .transform((value) => `/${value}`),
+  ),
+  ADMIN_USERNAME: z.string().min(1),
+  ADMIN_PASSWORD: z.string().min(8),
+  ADMIN_SESSION_SECRET: z.string().min(16),
 });
 
 export type Env = z.infer<typeof envSchema>;
