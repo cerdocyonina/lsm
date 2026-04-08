@@ -51,9 +51,8 @@ function main(): boolean {
 
       if (!storage) {
         logger.error("storage is not initialized");
-        return new Response("Service unavailable", { status: 503 });
       }
-      if (clientToken && extraParts.length === 0) {
+      if (storage && clientToken && extraParts.length === 0) {
         const servers = storage.listServers();
         const userRecord = storage.getUserBySubscriptionToken(clientToken);
         if (!userRecord) {
