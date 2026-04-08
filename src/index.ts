@@ -1,8 +1,9 @@
-import { createHmac } from "node:crypto";
 import dotenv from "dotenv";
+import { createHmac } from "node:crypto";
 import { loadAppConfigOrThrow } from "./app-config";
 import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
+import { FAKE_NGINX_404 } from "./utils";
 
 dotenv.config({
   path: process.env.ENV_PATH || ".env",
@@ -30,7 +31,7 @@ function main(): boolean {
   }
 
   function getSubLink(clientName: string, url: string): string {
-    return `${normalizeBaseUrl(url)}/sub/${getClientToken(clientName)}`;
+    return `${normalizeBaseUrl(url)}/${getClientToken(clientName)}`;
   }
 
   const userUuidByToken = new Map(
@@ -76,31 +77,45 @@ function main(): boolean {
     fetch(req) {
       const url = new URL(req.url);
       const pathParts = url.pathname.split("/").filter(Boolean);
-      const [route, clientToken] = pathParts;
+      const [clientToken, ...extraParts] = pathParts;
 
-      logger.info(`served ${req.method} ${url.pathname}`);
-
-      if (route === "sub" && clientToken) {
+      if (clientToken && extraParts.length === 0) {
         const userUUID = userUuidByToken.get(clientToken);
         if (!userUUID) {
-          logger.warn(
-            `subscription requested with unknown token for ${url.pathname}`,
+          logger.warn(`invalid token attempt: ${url.pathname}`);
+          return new Response(null, {
+            status: 302,
+            headers: { Location: "https://en.wikipedia.org/wiki/Maned_Wolf" },
+          });
+        } else {
+          const configs = SERVERS.map((server) =>
+            server.replace("DUMMY", userUUID),
           );
-          return new Response("Not found", { status: 404 });
+          const subContent = btoa(configs.join("\n"));
+
+          const clientName = Object.keys(USERS).find(
+            (name) => getClientToken(name) === clientToken,
+          );
+          logger.info(
+            `served sub for user "${clientName}": ${req.method} ${url.pathname}`,
+          );
+
+          return new Response(subContent, {
+            headers: {
+              "Content-Type": "text/plain; charset=utf-8",
+            },
+          });
         }
-
-        const configs = SERVERS.map((server) =>
-          server.replace("DUMMY", userUUID),
-        );
-        const subContent = btoa(configs.join("\n"));
-
-        return new Response(subContent, {
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        });
       }
 
       logger.warn(`forbidden request for ${url.pathname}`);
-      return new Response("Forbidden", { status: 403 });
+      return new Response(FAKE_NGINX_404, {
+        status: 404,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          Server: "nginx",
+        },
+      });
     },
   });
 
@@ -117,8 +132,16 @@ try {
     process.on("beforeExit", (code) => {
       logger.warn(`process beforeExit with code ${code}`);
     });
+    process.on("SIGINT", () => {
+      logger.info("received SIGINT, shutting down gracefully...");
+      process.exit(0);
+    });
+    process.on("SIGTERM", () => {
+      logger.info("received SIGTERM, shutting down gracefully...");
+      process.exit(0);
+    });
     process.on("exit", (code) => {
-      logger.warn(`process exit with code ${code}`);
+      (code ? logger.warn : logger.info)(`process exit with code ${code}`);
     });
   }
 } catch (error) {
