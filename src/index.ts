@@ -2,91 +2,127 @@ import { createHmac } from "node:crypto";
 import dotenv from "dotenv";
 import { loadAppConfigOrThrow } from "./app-config";
 import { config, validateEnvOrThrow } from "./env-validation";
+import { logError, logger } from "./logger";
 
 dotenv.config({
   path: process.env.ENV_PATH || ".env",
 });
 
-config.init(validateEnvOrThrow());
+function main(): boolean {
+  logger.debug(`starting app, NODE_ENV=${process.env.NODE_ENV}...`);
 
-const PORT = config.get("PORT");
-const BASE_URL = config.get("BASE_URL");
-const CONFIG_PATH = config.get("CONFIG_PATH");
-const SUB_LINK_SECRET = config.get("SUB_LINK_SECRET");
-const { SERVERS, USERS } = loadAppConfigOrThrow(CONFIG_PATH);
+  config.init(validateEnvOrThrow());
 
-function getClientToken(clientName: string): string {
-  return createHmac("sha256", SUB_LINK_SECRET)
-    .update(clientName)
-    .digest("base64url");
-}
+  const port = config.get("PORT");
+  const baseUrl = config.get("BASE_URL");
+  const configPath = config.get("CONFIG_PATH");
+  const subLinkSecret = config.get("SUB_LINK_SECRET");
+  const { SERVERS, USERS } = loadAppConfigOrThrow(configPath);
 
-function normalizeBaseUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, "");
-}
-
-function getSubLink(clientName: string, baseUrl: string): string {
-  return `${normalizeBaseUrl(baseUrl)}/sub/${getClientToken(clientName)}`;
-}
-
-const USER_UUID_BY_TOKEN = new Map(
-  Object.entries(USERS).map(([clientName, userUUID]) => [
-    getClientToken(clientName),
-    userUUID,
-  ]),
-);
-
-const [, , command, ...args] = Bun.argv;
-
-if (command === "--print-links") {
-  const baseUrl = args[0] ?? BASE_URL ?? `http://127.0.0.1:${PORT}`;
-
-  for (const clientName of Object.keys(USERS)) {
-    console.log(`${clientName} ${getSubLink(clientName, baseUrl)}`);
+  function getClientToken(clientName: string): string {
+    return createHmac("sha256", subLinkSecret)
+      .update(clientName)
+      .digest("base64url");
   }
 
-  process.exit(0);
-}
-
-if (command === "--print-link") {
-  const [clientName, baseUrlArg] = args;
-  if (!clientName) {
-    throw new Error("Usage: --print-link <client_name> [base_url]");
+  function normalizeBaseUrl(url: string): string {
+    return url.replace(/\/+$/, "");
   }
 
-  if (!(clientName in USERS)) {
-    throw new Error(`Unknown client: ${clientName}`);
+  function getSubLink(clientName: string, url: string): string {
+    return `${normalizeBaseUrl(url)}/sub/${getClientToken(clientName)}`;
   }
 
-  const baseUrl = baseUrlArg ?? BASE_URL ?? `http://127.0.0.1:${PORT}`;
-  console.log(getSubLink(clientName, baseUrl));
-  process.exit(0);
-}
+  const userUuidByToken = new Map(
+    Object.entries(USERS).map(([clientName, userUUID]) => [
+      getClientToken(clientName),
+      userUUID,
+    ]),
+  );
 
-Bun.serve({
-  port: PORT,
-  fetch(req) {
-    const url = new URL(req.url);
+  const [, , command, ...args] = Bun.argv;
 
-    const pathParts = url.pathname.split("/").filter(Boolean);
-    const [route, clientToken] = pathParts;
+  if (command === "--print-links") {
+    const resolvedBaseUrl = args[0] ?? baseUrl ?? `http://127.0.0.1:${port}`;
+    logger.info(
+      `printing all subscription links for ${Object.keys(USERS).length} users`,
+    );
 
-    if (route === "sub" && clientToken) {
-      const userUUID = USER_UUID_BY_TOKEN.get(clientToken);
-      if (!userUUID) {
-        return new Response("Not found", { status: 404 });
-      }
-
-      const configs = SERVERS.map((s) => s.replace("DUMMY", userUUID));
-      const subContent = btoa(configs.join("\n"));
-
-      return new Response(subContent, {
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      });
+    for (const clientName of Object.keys(USERS)) {
+      console.log(`${clientName} ${getSubLink(clientName, resolvedBaseUrl)}`);
     }
 
-    return new Response("Forbidden", { status: 403 });
-  },
-});
+    return false;
+  }
 
-console.log(`Sub server is running on http://127.0.0.1:${PORT}`);
+  if (command === "--print-link") {
+    const [clientName, baseUrlArg] = args;
+    if (!clientName) {
+      throw new Error("Usage: --print-link <client_name> [base_url]");
+    }
+
+    if (!(clientName in USERS)) {
+      throw new Error(`Unknown client: ${clientName}`);
+    }
+
+    const resolvedBaseUrl = baseUrlArg ?? baseUrl ?? `http://127.0.0.1:${port}`;
+    logger.info(`printing subscription link for ${clientName}`);
+    console.log(getSubLink(clientName, resolvedBaseUrl));
+    return false;
+  }
+
+  Bun.serve({
+    port,
+    fetch(req) {
+      const url = new URL(req.url);
+      const pathParts = url.pathname.split("/").filter(Boolean);
+      const [route, clientToken] = pathParts;
+
+      logger.info(`served ${req.method} ${url.pathname}`);
+
+      if (route === "sub" && clientToken) {
+        const userUUID = userUuidByToken.get(clientToken);
+        if (!userUUID) {
+          logger.warn(
+            `subscription requested with unknown token for ${url.pathname}`,
+          );
+          return new Response("Not found", { status: 404 });
+        }
+
+        const configs = SERVERS.map((server) =>
+          server.replace("DUMMY", userUUID),
+        );
+        const subContent = btoa(configs.join("\n"));
+
+        return new Response(subContent, {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      logger.warn(`forbidden request for ${url.pathname}`);
+      return new Response("Forbidden", { status: 403 });
+    },
+  });
+
+  logger.info(`sub server is running on http://127.0.0.1:${port}`);
+  return true;
+}
+
+try {
+  const shouldRegisterProcessHandlers = main();
+
+  if (shouldRegisterProcessHandlers) {
+    process.on("uncaughtException", (error) => logError(error));
+    process.on("unhandledRejection", (error) => logError(error));
+    process.on("beforeExit", (code) => {
+      logger.warn(`process beforeExit with code ${code}`);
+    });
+    process.on("exit", (code) => {
+      logger.warn(`process exit with code ${code}`);
+    });
+  }
+} catch (error) {
+  logError(error);
+  logger.error("app stopped unexpectedly");
+  process.exit(1);
+}
