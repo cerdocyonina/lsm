@@ -18,7 +18,7 @@ function printUsage(): void {
   console.log("  bun run src/cli.ts link <client_name> [base_url]");
   console.log("  bun run src/cli.ts add <client_name> <user_uuid>");
   console.log("  bun run src/cli.ts remove <client_name>");
-  console.log("  bun run src/cli.ts import-json [path]");
+  console.log("  bun run src/cli.ts import-json <path>");
 }
 
 function main(): void {
@@ -33,7 +33,11 @@ function main(): void {
   }
 
   if (command === "import-json") {
-    const legacyConfigPath = args[0] ?? config.get("LEGACY_CONFIG_PATH");
+    const legacyConfigPath = args[0];
+    if (!legacyConfigPath) {
+      throw new Error("Usage: import-json <path>");
+    }
+
     const databasePath = config.get("DATABASE_PATH");
     const legacyConfig = loadLegacyAppConfigOrThrow(legacyConfigPath);
     const storage = new SqliteStorage(databasePath);

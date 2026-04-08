@@ -4,7 +4,6 @@ export const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   BASE_URL: z.url().optional(),
   DATABASE_PATH: z.string().min(1).default("./data.sqlite"),
-  LEGACY_CONFIG_PATH: z.string().min(1).default("./config.json"),
   SUB_LINK_SECRET: z.string().min(16),
 });
 
