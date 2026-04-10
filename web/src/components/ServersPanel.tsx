@@ -1,11 +1,8 @@
 import { FormEvent } from "react";
 import { Button, Card, Form, ListGroup, Stack } from "react-bootstrap";
-import {
-  ActionIconButton,
-  DeleteIcon,
-  EditIcon,
-} from "./ActionIconButton";
+import { TbTrash as DeleteIcon, TbEdit as EditIcon } from "react-icons/tb";
 import type { ServerFormState, ServerRecord } from "../types";
+import { ActionIconButton } from "./ActionIconButton";
 
 type ServersPanelProps = {
   editingServer: ServerRecord | null;
@@ -43,7 +40,11 @@ export function ServersPanel({
             </h2>
           </div>
           {editingServer ? (
-            <Button variant="outline-secondary" type="button" onClick={onCancelEdit}>
+            <Button
+              variant="outline-secondary"
+              type="button"
+              onClick={onCancelEdit}
+            >
               Cancel edit
             </Button>
           ) : null}
@@ -97,7 +98,9 @@ export function ServersPanel({
               <div className="admin-list-item">
                 <div className="admin-list-copy">
                   <div className="fw-semibold">{server.name}</div>
-                  <div className="text-body-secondary">Order: {server.sortOrder}</div>
+                  <div className="text-body-secondary">
+                    Order: {server.sortOrder}
+                  </div>
                   <div className="admin-code-wrap">
                     <code>{server.template}</code>
                   </div>
