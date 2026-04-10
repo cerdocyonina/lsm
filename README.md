@@ -140,6 +140,14 @@ ssh -L 3001:127.0.0.1:<ADMIN_PORT> your-server
   WantedBy=multi-user.target
   ```
 
+## использование
+
+сервер добавляется как темплейт-ссылка, uuid пользователя подставляется вместо строки `"DUMMY"`. пример темплейта сервера:
+
+`vless://DUMMY@localhost:443?type=tcp&encryption=none&security=reality&pbk=abcdef&fp=chrome&sni=max.ru&sid=e0&spx=%2F&flow=xtls-rprx-vision#main`
+
+можно импортировать конфиг из json в sqlite (сам json используется только для этого импорта, в рантайме не используется) через `bun run src/cli.ts import-json config.json> - см пример [config.json](./config.json)
+
 ## CLI
 
 идентичный админке функционал, см help:
