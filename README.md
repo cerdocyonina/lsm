@@ -1,78 +1,148 @@
 # lsm
 
-CLI-managed subscription server with a Bun admin panel.
+менеджер подписок VLESS с CLI и веб-интерфейсом
 
-## Install dependencies
+ну навайбкодил и что
 
-```bash
-bun install
-```
+## Описание
 
-## Configure env
+позволяет добавлять серверы (ключи с плейсхолдером для uuid пользователя) и пользователей
 
-```bash
-cp .env.example .env
-```
+по ссылке для данного пользователя раздает подписку - берет все ключи серверов и подставляет вместо плейсхолдера uuid пользователя
 
-Set these values in `.env`:
+> N.B.: на всех серверах uuid пользователя должен быть одинаковым
 
-- `PORT`
-- `ADMIN_PORT`
-- `BASE_URL`
-- `DATABASE_PATH`
-- `SUB_LINK_SECRET`
-- `ADMIN_PATH`
-- `ADMIN_USERNAME`
-- `ADMIN_PASSWORD`
-- `ADMIN_SESSION_SECRET`
+## Установка
 
-## Run the public subscription server
+сделано при помощи bun, react и sqlite3
 
-```bash
-bun run dev
-```
+порядок:
 
-## Run the private admin server
+1. ```bash
+    bun install
+    ```
 
-```bash
-bun run dev:admin
-```
+2. настройка `.env`
+    ```bash
+    cp .env.example .env
+    ```
 
-The admin server binds to `127.0.0.1:<ADMIN_PORT>` only.
+содержимое `.env`:
 
-## Run the frontend in Vite dev mode
+- `PORT` - порт основного сервера
+- `ADMIN_PORT` - порт админки. наружу лучше не показывать - для прода пробрасываем порт
+- `BASE_URL` - базовый url/ip основного сервера
+- `DATABASE_PATH` - путь к базе данных
+- `SUB_LINK_SECRET` - секрет для генерации ссылок (рандом)
+- `ADMIN_PATH` - путь к админке (рандом)
+- `ADMIN_USERNAME` - логин админки
+- `ADMIN_PASSWORD` - пароль админки
+- `ADMIN_SESSION_SECRET` - секрет сессии админки (рандом)
+- `FALLBACK_URL` - url, на который сбрасываются невалидные ссылки подписок
 
-```bash
-bun run dev:web
-```
+## Запуск
 
-The admin panel is available at `http://127.0.0.1:5173/<ADMIN_PATH>/` in Vite dev mode.
+### dev:
+1. основной сервер:
 
-## Build production assets
+    ```bash
+    bun run dev
+    ```
 
-```bash
-bun run build
-```
+2. админка:
 
-## Run production servers
+    ```bash
+    bun run dev:admin
+    ```
 
-```bash
-bun run start
-bun run start:admin
-```
+админка слушает только `127.0.0.1:<ADMIN_PORT>`
 
-- Public subscription server: `http://127.0.0.1:<PORT>`
-- Private admin server: `http://127.0.0.1:<ADMIN_PORT>/<ADMIN_PATH>`
+3. веб-интерфейс админки
 
-For remote access to the private admin panel, use SSH port forwarding:
+    ```bash
+    bun run dev:web
+    ```
 
+админка доступна на `http://127.0.0.1:5173/<ADMIN_PATH>/`
+
+### prod
+
+1. основной сервер:
+
+    ```bash
+    bun run start
+    ```
+
+2. админка:
+
+    ```bash
+    bun run start:admin
+    ```
+
+всё
+- основной сервер - на `http://127.0.0.1:<PORT>`
+- админка - на `http://127.0.0.1:<ADMIN_PORT>/<ADMIN_PATH>`
+
+доступ к админке - лучше через проброс порта
 ```bash
 ssh -L 3001:127.0.0.1:<ADMIN_PORT> your-server
 ```
 
-Then open `http://127.0.0.1:3001/<ADMIN_PATH>` locally.
+и админка будет локально на `http://127.0.0.1:3001/<ADMIN_PATH>`
 
-## Existing CLI
+### systemd
+
+на прод сервере можно настроить сервис через systemd. примеры конфигов:
+
+- `/etc/systemd/system/lsm.service`:
+
+  ```ini
+  [Unit]
+  Description=lsm
+  After=network.target
+
+  [Service]
+  Type=simple
+  User=username
+  WorkingDirectory=/home/username/lsm
+  Environment=NODE_ENV=production
+  EnvironmentFile=/home/username/lsm/.env
+  ExecStart=/home/username/.bun/bin/bun run /home/username/lsm/src/index.ts
+  Restart=always
+  RestartSec=5
+  StandardOutput=journal
+  StandardError=journal
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+- `/etc/systemd/system/lsm-admin.service`:
+
+  ```ini
+  [Unit]
+  Description=lsm admin
+  After=network.target
+
+  [Service]
+  Type=simple
+  User=username
+  WorkingDirectory=/home/username/lsm
+  Environment=NODE_ENV=production
+  EnvironmentFile=/home/username/lsm/.env
+  ExecStart=/home/username/.bun/bin/bun run /home/username/lsm/src/admin-server.ts
+  Restart=always
+  RestartSec=5
+  StandardOutput=journal
+  StandardError=journal
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+## CLI
+
+идентичный админке функционал, см help:
 
 ```bash
 bun run src/cli.ts help
