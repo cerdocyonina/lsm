@@ -21,7 +21,10 @@ let server: Bun.Server<unknown> | null = null;
 let isShuttingDown = false;
 const loginRateLimiter = new LoginRateLimiter();
 
-function getClientIp(req: Request, currentServer: Bun.Server<unknown> | null): string {
+function getClientIp(
+  req: Request,
+  currentServer: Bun.Server<unknown> | null,
+): string {
   if (!currentServer || typeof currentServer.requestIP !== "function") {
     return "unknown";
   }
@@ -74,10 +77,7 @@ async function serveAdminAsset(
   }
 
   if (!existsSync(resolvedPath)) {
-    return new Response(
-      'Admin frontend is not built yet. Run "bun install" and "bun run build:web".',
-      { status: 503 },
-    );
+    return new Response(null, { status: 404 });
   }
 
   return new Response(Bun.file(resolvedPath));
@@ -85,7 +85,7 @@ async function serveAdminAsset(
 
 async function handleRequest(req: Request): Promise<Response> {
   if (isShuttingDown) {
-    return new Response("Service unavailable", { status: 503 });
+    return new Response(null, { status: 404 });
   }
 
   const pathname = new URL(req.url).pathname;
@@ -93,7 +93,7 @@ async function handleRequest(req: Request): Promise<Response> {
 
   if (!storage) {
     logger.error("admin storage is not initialized");
-    return new Response("Service unavailable", { status: 503 });
+    return new Response(null, { status: 404 });
   }
 
   const adminApiResponse = await handleAdminApiRequest(
