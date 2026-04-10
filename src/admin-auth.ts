@@ -70,16 +70,9 @@ export function verifyAdminCredentials(
 }
 
 function getSessionCookieOptions(): SessionCookieOptions {
-  if (process.env.NODE_ENV === "development") {
-    return {
-      path: "/",
-      secure: false,
-    };
-  }
-
   return {
-    path: config.get("ADMIN_PATH"),
-    secure: true,
+    path: "/",
+    secure: false,
   };
 }
 
