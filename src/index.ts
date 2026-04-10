@@ -113,10 +113,6 @@ function main(): boolean {
   const databasePath = config.get("DATABASE_PATH");
   storage = new SqliteStorage(databasePath);
 
-  if (storage.listServers().length === 0) {
-    throw new Error("No server templates configured in the SQLite database");
-  }
-
   server = Bun.serve({
     port,
     fetch: handleRequest,
