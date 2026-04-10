@@ -28,6 +28,12 @@ code {
   align-items: stretch;
 }
 
+.admin-actions-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
 .admin-icon-button {
   width: 2.5rem;
   height: 2.5rem;
@@ -45,5 +51,11 @@ code {
   .admin-actions-column {
     flex-direction: row !important;
     justify-content: flex-start;
+  }
+
+  .admin-actions-grid {
+    display: flex;
+    flex-direction: row;
+    gap: 0.25rem;
   }
 }

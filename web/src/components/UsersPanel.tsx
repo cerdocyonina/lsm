@@ -120,13 +120,7 @@ export function UsersPanel({
                     </div>
                   </div>
 
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr 1fr",
-                      gap: "0.5rem",
-                    }}
-                  >
+                  <div className="admin-actions-grid">
                     <ActionIconButton
                       size="sm"
                       icon={<TbClipboard />}
