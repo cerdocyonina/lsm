@@ -11,7 +11,8 @@
     "dev:admin": "NODE_ENV=development bun --watch src/admin-server.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "start": "NODE_ENV=production bun run src/index.ts",
-    "start:admin": "NODE_ENV=production bun run src/admin-server.ts"
+    "start:admin": "NODE_ENV=production bun run src/admin-server.ts",
+    "cli": "bun run src/cli.ts"
   },
   "dependencies": {
     "@types/react": "^19.2.2",
@@ -19,6 +20,7 @@
     "@vitejs/plugin-react": "^5.1.0",
     "bootstrap": "^5.3.8",
     "chalk": "^5.6.2",
+    "commander": "^14.0.3",
     "dotenv": "^17.3.1",
     "react": "^19.2.0",
     "react-bootstrap": "^2.10.10",
@@ -35,5 +37,6 @@
     "prettier-plugin-organize-imports": "^4.3.0",
     "typescript": "^5"
   },
-  "main": "dist/index.js"
+  "main": "dist/index.js",
+  "version": "1.0.0"
 }

@@ -2,6 +2,8 @@ import chalk from "chalk";
 import winston from "winston";
 import "winston-daily-rotate-file";
 
+const isVerbose = process.argv.includes("-v") || process.argv.includes("--verbose");
+
 const consoleFormat = winston.format.printf(
   ({
     level,
@@ -55,7 +57,7 @@ export const logger = winston.createLogger({
     }),
     new winston.transports.Console({
       format: consoleFormat,
-      level: process.env.NODE_ENV === "development" ? "debug" : "info",
+      level: process.env.NODE_ENV === "development" || isVerbose ? "debug" : "info",
     }),
   ],
   rejectionHandlers: [
