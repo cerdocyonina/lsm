@@ -76,6 +76,10 @@
 2. админка:
 
     ```bash
+    bun run build:web
+    ```
+
+    ```bash
     bun run start:admin
     ```
 
