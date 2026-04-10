@@ -74,7 +74,7 @@ async function handleRequest(req: Request): Promise<Response> {
       logger.warn(`invalid token attempt: ${req.method} ${pathname}`);
       return new Response(null, {
         status: 302,
-        headers: { Location: "https://en.wikipedia.org/wiki/Maned_Wolf" },
+        headers: { Location: config.get("FALLBACK_URL") },
       });
     }
 
