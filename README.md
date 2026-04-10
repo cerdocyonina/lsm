@@ -42,7 +42,7 @@
 
 ## Запуск
 
-### dev:
+### DEV
 1. основной сервер:
 
     ```bash
@@ -65,7 +65,7 @@
 
 админка доступна на `http://127.0.0.1:5173/<ADMIN_PATH>/`
 
-### prod
+### PROD
 
 1. основной сервер:
 
@@ -140,13 +140,15 @@ ssh -L 3001:127.0.0.1:<ADMIN_PORT> your-server
   WantedBy=multi-user.target
   ```
 
-## использование
+## Использование
 
 сервер добавляется как темплейт-ссылка, uuid пользователя подставляется вместо строки `"DUMMY"`. пример темплейта сервера:
 
 `vless://DUMMY@localhost:443?type=tcp&encryption=none&security=reality&pbk=abcdef&fp=chrome&sni=max.ru&sid=e0&spx=%2F&flow=xtls-rprx-vision#main`
 
 можно импортировать конфиг из json в sqlite (сам json используется только для этого импорта, в рантайме не используется) через `bun run src/cli.ts import-json config.json> - см пример [config.json](./config.json)
+
+ссылки на подписки будут иметь вид `<BASE_URL>/<KEY>`, где `BASE_URL` берется из `.env` и `KEY` генерируется автоматически при создании пользователя
 
 ## CLI
 
