@@ -34,6 +34,10 @@ const createServerSchema = z.object({
   template: z.string().min(1),
 });
 
+const reorderServersSchema = z.object({
+  order: z.array(z.string().min(1)).min(1),
+});
+
 const updateServerSchema = z
   .object({
     name: z.string().min(1).optional(),
@@ -313,6 +317,16 @@ export async function handleAdminApiRequest(
     return noStoreResponse(
       jsonResponse({ servers: mapServers(storage) }, { status: 201 }),
     );
+  }
+
+  if (adminPathname === "/servers/order" && req.method === "PUT") {
+    const parsed = await parseJson(req, reorderServersSchema);
+    if (parsed instanceof Response) {
+      return noStoreResponse(parsed);
+    }
+
+    storage.reorderServers(parsed.order);
+    return noStoreResponse(jsonResponse({ servers: mapServers(storage) }));
   }
 
   const serverPathName = getServerPathName(adminPathname);

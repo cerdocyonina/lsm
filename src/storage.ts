@@ -31,6 +31,7 @@ export interface Storage {
   renameServer(oldName: string, newName: string): boolean;
   setServerUrl(name: string, template: string): boolean;
   removeServer(name: string): boolean;
+  reorderServers(names: string[]): void;
   replaceFromConfig(config: LegacyConfig, subLinkSecret: string): void;
   replaceFromFullDump(dump: FullDump): void;
   mergeFromFullDump(dump: FullDump): void;
@@ -162,6 +163,16 @@ export class SqliteStorage implements Storage {
       .run(name);
 
     return result.changes > 0;
+  }
+
+  public reorderServers(names: string[]): void {
+    const tx = this.db.transaction((nameList: string[]) => {
+      const update = this.db.query("UPDATE servers SET sort_order = ?1 WHERE name = ?2");
+      nameList.forEach((name, index) => {
+        update.run(index, name);
+      });
+    });
+    tx(names);
   }
 
   public replaceFromConfig(config: LegacyConfig, subLinkSecret: string): void {

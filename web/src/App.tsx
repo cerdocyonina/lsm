@@ -203,6 +203,25 @@ export default function App() {
     }
   }
 
+  async function reorderServers(names: string[]) {
+    // Optimistic update: reorder local state immediately
+    const nameToRecord = new Map(servers.map((s) => [s.name, s]));
+    setServers(names.map((name, i) => ({ ...nameToRecord.get(name)!, sortOrder: i })));
+
+    try {
+      await api("/servers/order", {
+        method: "PUT",
+        body: JSON.stringify({ order: names }),
+      });
+      await refreshAfterMutation();
+    } catch (error) {
+      await refreshAfterMutation();
+      setDashboardError(
+        error instanceof Error ? error.message : "Failed to reorder servers.",
+      );
+    }
+  }
+
   async function deleteServer(name: string) {
     if (!window.confirm(`Remove server "${name}"?`)) {
       return;
@@ -322,6 +341,7 @@ export default function App() {
                   template: server.template,
                 });
               }}
+              onReorder={reorderServers}
               onSubmit={submitServerForm}
               savingServer={savingServer}
               serverForm={serverForm}

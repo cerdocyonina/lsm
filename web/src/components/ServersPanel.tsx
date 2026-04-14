@@ -1,6 +1,6 @@
-import { FormEvent } from "react";
-import { Button, Card, Form, ListGroup, Stack } from "react-bootstrap";
-import { TbTrash as DeleteIcon, TbEdit as EditIcon } from "react-icons/tb";
+import { FormEvent, useRef, useState } from "react";
+import { Button, Card, Form, ListGroup } from "react-bootstrap";
+import { TbGripVertical, TbTrash as DeleteIcon, TbEdit as EditIcon } from "react-icons/tb";
 import type { ServerFormState, ServerRecord } from "../types";
 import { ActionIconButton } from "./ActionIconButton";
 
@@ -9,6 +9,7 @@ type ServersPanelProps = {
   onCancelEdit: () => void;
   onDeleteServer: (name: string) => void;
   onEditServer: (server: ServerRecord) => void;
+  onReorder: (names: string[]) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   savingServer: boolean;
   serverForm: ServerFormState;
@@ -21,12 +22,53 @@ export function ServersPanel({
   onCancelEdit,
   onDeleteServer,
   onEditServer,
+  onReorder,
   onSubmit,
   savingServer,
   serverForm,
   servers,
   setServerForm,
 }: ServersPanelProps) {
+  const [search, setSearch] = useState("");
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+  const dragSrcIdx = useRef<number | null>(null);
+
+  const filteredServers = search.trim()
+    ? servers.filter(
+        (s) =>
+          s.name.toLowerCase().includes(search.toLowerCase()) ||
+          s.template.toLowerCase().includes(search.toLowerCase()),
+      )
+    : servers;
+
+  const isDraggable = !search.trim();
+
+  function handleDragStart(index: number) {
+    dragSrcIdx.current = index;
+  }
+
+  function handleDragOver(e: React.DragEvent, index: number) {
+    e.preventDefault();
+    setDragOverIdx(index);
+  }
+
+  function handleDrop(e: React.DragEvent, dstIdx: number) {
+    e.preventDefault();
+    setDragOverIdx(null);
+    const srcIdx = dragSrcIdx.current;
+    dragSrcIdx.current = null;
+    if (srcIdx === null || srcIdx === dstIdx) return;
+    const reordered = [...servers];
+    const [moved] = reordered.splice(srcIdx, 1);
+    reordered.splice(dstIdx, 0, moved);
+    onReorder(reordered.map((s) => s.name));
+  }
+
+  function handleDragEnd() {
+    dragSrcIdx.current = null;
+    setDragOverIdx(null);
+  }
+
   return (
     <Card className="shadow-sm h-100">
       <Card.Body>
@@ -92,15 +134,41 @@ export function ServersPanel({
 
         <hr className="my-4" />
 
+        <Form.Group className="mb-3" controlId="server-search">
+          <Form.Control
+            type="search"
+            placeholder="Search by name or template…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </Form.Group>
+
         <ListGroup variant="flush">
-          {servers.map((server) => (
-            <ListGroup.Item className="px-0 py-3" key={server.name}>
-              <div className="admin-list-item">
+          {filteredServers.map((server, index) => (
+            <ListGroup.Item
+              className={`px-0 py-3${dragOverIdx === index ? " bg-body-secondary" : ""}`}
+              key={server.name}
+              draggable={isDraggable}
+              onDragStart={() => handleDragStart(index)}
+              onDragOver={(e) => handleDragOver(e, index)}
+              onDragLeave={() => setDragOverIdx(null)}
+              onDrop={(e) => handleDrop(e, index)}
+              onDragEnd={handleDragEnd}
+            >
+              <div
+                className="admin-list-item"
+                style={isDraggable ? { gridTemplateColumns: "auto minmax(0,1fr) auto" } : undefined}
+              >
+                {isDraggable && (
+                  <div
+                    className="text-body-tertiary d-flex align-items-center"
+                    style={{ cursor: "grab", touchAction: "none" }}
+                  >
+                    <TbGripVertical size={18} />
+                  </div>
+                )}
                 <div className="admin-list-copy">
                   <div className="fw-semibold">{server.name}</div>
-                  <div className="text-body-secondary">
-                    Order: {server.sortOrder}
-                  </div>
                   <div className="admin-code-wrap">
                     <code>{server.template}</code>
                   </div>
@@ -118,20 +186,22 @@ export function ServersPanel({
                     </small>
                   </div>
                 </div>
-                <Stack className="admin-actions-column" gap={2}>
+                <div className="admin-actions-grid">
                   <ActionIconButton
+                    size="sm"
                     icon={<EditIcon />}
                     label="Edit server"
                     onClick={() => onEditServer(server)}
                     variant="outline-primary"
                   />
                   <ActionIconButton
+                    size="sm"
                     icon={<DeleteIcon />}
                     label="Delete server"
                     onClick={() => onDeleteServer(server.name)}
                     variant="outline-danger"
                   />
-                </Stack>
+                </div>
               </div>
             </ListGroup.Item>
           ))}
