@@ -104,6 +104,19 @@ export function ServersPanel({
                   <div className="admin-code-wrap">
                     <code>{server.template}</code>
                   </div>
+                  <div className="admin-meta">
+                    <small className="text-muted">
+                      {new Date(server.createdAt).toLocaleString("ru-RU", {
+                        day: "2-digit",
+                        month: "2-digit",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                        hour12: false,
+                      })}
+                    </small>
+                  </div>
                 </div>
                 <Stack className="admin-actions-column" gap={2}>
                   <ActionIconButton

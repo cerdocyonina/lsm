@@ -172,7 +172,6 @@ export function UsersPanel({
                     </div>
                     <div className="admin-meta">
                       <small className="text-muted">
-                        {/* format as DD-MM-YYYY hh:mm:ss */}
                         {new Date(user.createdAt).toLocaleString("ru-RU", {
                           day: "2-digit",
                           month: "2-digit",

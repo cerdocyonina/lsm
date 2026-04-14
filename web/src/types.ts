@@ -14,6 +14,7 @@ export type ServerRecord = {
   name: string;
   sortOrder: number;
   template: string;
+  createdAt: number;
 };
 
 export type UserFormState = {

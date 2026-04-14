@@ -21,6 +21,7 @@ export const fullDumpServerSchema = z.object({
   name: z.string().min(1),
   sortOrder: z.number().int().nonnegative(),
   template: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
 });
 
 export const fullDumpSchema = z.object({

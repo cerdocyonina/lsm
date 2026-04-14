@@ -102,13 +102,13 @@ async function bootstrap() {
         withStorage((storage) => {
           if (Array.isArray(dump.USERS)) {
             // Full dump format
-            storage.replaceFromFullDump(dump as FullDump);
+            storage.mergeFromFullDump(dump as FullDump);
             userCount = (dump as FullDump).USERS.length;
             serverCount = dump.SERVERS.length;
           } else {
             // Legacy plain format
             const subLinkSecret = config.get("SUB_LINK_SECRET");
-            storage.replaceFromConfig(dump as LegacyConfig, subLinkSecret);
+            storage.mergeFromLegacyConfig(dump as LegacyConfig, subLinkSecret);
             userCount = Object.keys((dump as LegacyConfig).USERS).length;
             serverCount = dump.SERVERS.length;
           }
@@ -276,7 +276,7 @@ async function bootstrap() {
     .description("Add a new server template")
     .action(
       withErrorHandling((name, template) => {
-        withStorage((storage) => storage.addServer(name, template));
+        withStorage((storage) => storage.addServer(name, template, Date.now()));
         logger.info(`stored server "${name}"`);
       }),
     );

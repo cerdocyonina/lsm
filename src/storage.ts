@@ -13,6 +13,7 @@ export type ServerRecord = {
   name: string;
   sortOrder: number;
   template: string;
+  createdAt: number;
 };
 
 export interface Storage {
@@ -26,12 +27,14 @@ export interface Storage {
   listServers(): string[];
   listServerRecords(): ServerRecord[];
   getServerUrl(name: string): string | null;
-  addServer(name: string, template: string): void;
+  addServer(name: string, template: string, createdAt: number): void;
   renameServer(oldName: string, newName: string): boolean;
   setServerUrl(name: string, template: string): boolean;
   removeServer(name: string): boolean;
   replaceFromConfig(config: LegacyConfig, subLinkSecret: string): void;
   replaceFromFullDump(dump: FullDump): void;
+  mergeFromFullDump(dump: FullDump): void;
+  mergeFromLegacyConfig(config: LegacyConfig, subLinkSecret: string): void;
   close(): void;
 }
 
@@ -115,7 +118,7 @@ export class SqliteStorage implements Storage {
   public listServerRecords(): ServerRecord[] {
     return this.db
       .query(
-        "SELECT name, sort_order AS sortOrder, template FROM servers ORDER BY sort_order, rowid",
+        "SELECT name, sort_order AS sortOrder, template, created_at AS createdAt FROM servers ORDER BY sort_order, rowid",
       )
       .all() as ServerRecord[];
   }
@@ -128,13 +131,13 @@ export class SqliteStorage implements Storage {
     return row?.template ?? null;
   }
 
-  public addServer(name: string, template: string): void {
+  public addServer(name: string, template: string, createdAt: number): void {
     const row = this.db
       .query("SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder FROM servers")
       .get() as { nextSortOrder: number };
     this.db
-      .query("INSERT INTO servers (name, sort_order, template) VALUES (?1, ?2, ?3)")
-      .run(name, row.nextSortOrder, template);
+      .query("INSERT INTO servers (name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4)")
+      .run(name, row.nextSortOrder, template, createdAt);
   }
 
   public renameServer(oldName: string, newName: string): boolean {
@@ -181,10 +184,10 @@ export class SqliteStorage implements Storage {
         }
 
         const insertServer = this.db.query(
-          "INSERT INTO servers (name, sort_order, template) VALUES (?1, ?2, ?3)",
+          "INSERT INTO servers (name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4)",
         );
         appConfig.SERVERS.forEach((template: string, index: number) => {
-          insertServer.run(`server-${index + 1}`, index, template);
+          insertServer.run(`server-${index + 1}`, index, template, now);
         });
       },
     );
@@ -205,14 +208,97 @@ export class SqliteStorage implements Storage {
       }
 
       const insertServer = this.db.query(
-        "INSERT INTO servers (name, sort_order, template) VALUES (?1, ?2, ?3)",
+        "INSERT INTO servers (name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4)",
       );
       for (const server of d.SERVERS) {
-        insertServer.run(server.name, server.sortOrder, server.template);
+        insertServer.run(server.name, server.sortOrder, server.template, server.createdAt);
       }
     });
 
     tx(dump);
+  }
+
+  // Merge incoming full dump into the DB. For each record:
+  //   - not in DB → insert
+  //   - in DB with older createdAt → update to incoming
+  //   - in DB with equal or newer createdAt → keep DB version (no-op)
+  public mergeFromFullDump(dump: FullDump): void {
+    const tx = this.db.transaction((d: FullDump) => {
+      const upsertUser = this.db.query(`
+        INSERT INTO users (client_name, subscription_token, user_uuid, created_at)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(client_name) DO UPDATE SET
+          subscription_token = excluded.subscription_token,
+          user_uuid = excluded.user_uuid,
+          created_at = excluded.created_at
+        WHERE excluded.created_at > users.created_at
+      `);
+      for (const user of d.USERS) {
+        upsertUser.run(user.clientName, user.subscriptionToken, user.userUuid, user.createdAt);
+      }
+
+      const upsertServer = this.db.query(`
+        INSERT INTO servers (name, sort_order, template, created_at)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(name) DO UPDATE SET
+          sort_order = excluded.sort_order,
+          template = excluded.template,
+          created_at = excluded.created_at
+        WHERE excluded.created_at > servers.created_at
+      `);
+      for (const server of d.SERVERS) {
+        upsertServer.run(server.name, server.sortOrder, server.template, server.createdAt);
+      }
+    });
+
+    tx(dump);
+  }
+
+  // Merge legacy config into the DB.
+  //   Users: insert if clientName not present (keep existing, no createdAt to compare).
+  //   Servers: insert if template not already present (matched by template value).
+  public mergeFromLegacyConfig(config: LegacyConfig, subLinkSecret: string): void {
+    const tx = this.db.transaction((appConfig: LegacyConfig, secret: string) => {
+      const now = Date.now();
+
+      const insertUser = this.db.query(`
+        INSERT INTO users (client_name, subscription_token, user_uuid, created_at)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(client_name) DO NOTHING
+      `);
+      for (const [clientName, userUuid] of Object.entries(appConfig.USERS) as [string, string][]) {
+        insertUser.run(
+          clientName,
+          createHmac("sha256", secret).update(clientName).digest("base64url"),
+          userUuid,
+          now,
+        );
+      }
+
+      const existingTemplates = new Set(
+        (this.db.query("SELECT template FROM servers").all() as { template: string }[])
+          .map((r) => r.template),
+      );
+      const existingNames = new Set(
+        (this.db.query("SELECT name FROM servers").all() as { name: string }[])
+          .map((r) => r.name),
+      );
+      let counter = existingNames.size;
+      for (const template of appConfig.SERVERS) {
+        if (existingTemplates.has(template)) continue;
+        counter++;
+        let name = `server-${counter}`;
+        while (existingNames.has(name)) {
+          counter++;
+          name = `server-${counter}`;
+        }
+        this.addServer(name, template, now);
+        existingNames.add(name);
+        existingTemplates.add(template);
+      }
+    });
+
+    tx(config, subLinkSecret);
   }
 
   public close(): void {
@@ -231,7 +317,8 @@ export class SqliteStorage implements Storage {
       CREATE TABLE IF NOT EXISTS servers (
         name TEXT PRIMARY KEY,
         sort_order INTEGER NOT NULL,
-        template TEXT NOT NULL
+        template TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT 0
       );
     `);
   }
@@ -245,10 +332,11 @@ export function buildFullDump(storage: Storage): FullDump {
       subscriptionToken,
       createdAt,
     })),
-    SERVERS: storage.listServerRecords().map(({ name, sortOrder, template }) => ({
+    SERVERS: storage.listServerRecords().map(({ name, sortOrder, template, createdAt }) => ({
       name,
       sortOrder,
       template,
+      createdAt,
     })),
   };
 }

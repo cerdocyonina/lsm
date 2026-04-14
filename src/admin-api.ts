@@ -123,6 +123,7 @@ function mapServers(storage: Storage) {
     name: server.name,
     sortOrder: server.sortOrder,
     template: server.template,
+    createdAt: server.createdAt,
   }));
 }
 
@@ -302,7 +303,7 @@ export async function handleAdminApiRequest(
     }
 
     try {
-      storage.addServer(parsed.name, parsed.template);
+      storage.addServer(parsed.name, parsed.template, Date.now());
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to add server.";
