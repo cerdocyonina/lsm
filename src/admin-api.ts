@@ -114,6 +114,7 @@ function mapUsers(storage: Storage, baseUrl: string) {
     userUuid: user.userUuid,
     subscriptionToken: user.subscriptionToken,
     subscriptionUrl: createSubscriptionUrl(baseUrl, user.subscriptionToken),
+    createdAt: user.createdAt,
   }));
 }
 
@@ -238,6 +239,7 @@ export async function handleAdminApiRequest(
         parsed.clientName,
         createSubscriptionToken(parsed.clientName),
         parsed.userUuid,
+        Date.now(),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to add user.";

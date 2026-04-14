@@ -6,6 +6,7 @@ export type UserRecord = {
   clientName: string;
   subscriptionToken: string;
   userUuid: string;
+  createdAt: number;
 };
 
 export type ServerRecord = {
@@ -18,7 +19,7 @@ export interface Storage {
   listUsers(): UserRecord[];
   getUserBySubscriptionToken(subscriptionToken: string): UserRecord | null;
   getUserUuid(clientName: string): string | null;
-  addUser(clientName: string, subscriptionToken: string, userUuid: string): void;
+  addUser(clientName: string, subscriptionToken: string, userUuid: string, createdAt: number): void;
   renameUser(oldName: string, newName: string): boolean;
   setUserUuid(clientName: string, userUuid: string): boolean;
   removeUser(clientName: string): boolean;
@@ -44,7 +45,7 @@ export class SqliteStorage implements Storage {
   public listUsers(): UserRecord[] {
     return this.db
       .query(
-        "SELECT client_name AS clientName, subscription_token AS subscriptionToken, user_uuid AS userUuid FROM users ORDER BY client_name",
+        "SELECT client_name AS clientName, subscription_token AS subscriptionToken, user_uuid AS userUuid, created_at AS createdAt FROM users ORDER BY created_at DESC, client_name",
       )
       .all() as UserRecord[];
   }
@@ -53,7 +54,7 @@ export class SqliteStorage implements Storage {
     return (
       (this.db
         .query(
-          "SELECT client_name AS clientName, subscription_token AS subscriptionToken, user_uuid AS userUuid FROM users WHERE subscription_token = ?1",
+          "SELECT client_name AS clientName, subscription_token AS subscriptionToken, user_uuid AS userUuid, created_at AS createdAt FROM users WHERE subscription_token = ?1",
         )
         .get(subscriptionToken) as UserRecord | null) ?? null
     );
@@ -71,12 +72,13 @@ export class SqliteStorage implements Storage {
     clientName: string,
     subscriptionToken: string,
     userUuid: string,
+    createdAt: number,
   ): void {
     this.db
       .query(
-        "INSERT INTO users (client_name, subscription_token, user_uuid) VALUES (?1, ?2, ?3) ON CONFLICT(client_name) DO UPDATE SET user_uuid = excluded.user_uuid",
+        "INSERT INTO users (client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(client_name) DO UPDATE SET user_uuid = excluded.user_uuid",
       )
-      .run(clientName, subscriptionToken, userUuid);
+      .run(clientName, subscriptionToken, userUuid, createdAt);
   }
 
   public renameUser(oldName: string, newName: string): boolean {
@@ -164,14 +166,16 @@ export class SqliteStorage implements Storage {
       this.db.query("DELETE FROM users").run();
       this.db.query("DELETE FROM servers").run();
 
+      const now = Date.now();
       const insertUser = this.db.query(
-        "INSERT INTO users (client_name, subscription_token, user_uuid) VALUES (?1, ?2, ?3)",
+        "INSERT INTO users (client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4)",
       );
       for (const [clientName, userUuid] of Object.entries(appConfig.USERS)) {
         insertUser.run(
           clientName,
           createHmac("sha256", secret).update(clientName).digest("base64url"),
           userUuid,
+          now,
         );
       }
 
@@ -196,7 +200,8 @@ export class SqliteStorage implements Storage {
       CREATE TABLE IF NOT EXISTS users (
         client_name TEXT PRIMARY KEY,
         subscription_token TEXT NOT NULL UNIQUE,
-        user_uuid TEXT NOT NULL
+        user_uuid TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS servers (

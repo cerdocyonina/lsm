@@ -43,13 +43,14 @@ export function UsersPanel({
   const UUID_PATTERN =
     "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
+  const sortedUsers = [...users].sort((a, b) => b.createdAt - a.createdAt);
   const filteredUsers = search.trim()
-    ? users.filter(
+    ? sortedUsers.filter(
         (u) =>
           u.clientName.toLowerCase().includes(search.toLowerCase()) ||
           u.userUuid.toLowerCase().includes(search.toLowerCase()),
       )
-    : users;
+    : sortedUsers;
 
   const regenerateUserUuid = () => {
     setUserForm({
@@ -168,6 +169,20 @@ export function UsersPanel({
                       >
                         {user.subscriptionUrl}
                       </a>
+                    </div>
+                    <div className="admin-meta">
+                      <small className="text-muted">
+                        {/* format as DD-MM-YYYY hh:mm:ss */}
+                        {new Date().toLocaleString("ru-RU", {
+                          day: "2-digit",
+                          month: "2-digit",
+                          year: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
+                          hour12: false,
+                        })}
+                      </small>
                     </div>
                   </div>
 

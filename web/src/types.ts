@@ -7,6 +7,7 @@ export type UserRecord = {
   userUuid: string;
   subscriptionToken: string;
   subscriptionUrl: string;
+  createdAt: number;
 };
 
 export type ServerRecord = {
