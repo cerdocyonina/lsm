@@ -1,6 +1,12 @@
-import { FormEvent, useState } from "react";
-import { Button, Card, Form, ListGroup } from "react-bootstrap";
-import { TbClipboard, TbQrcode, TbTrash, TbUserEdit } from "react-icons/tb";
+import { FormEvent, useEffect, useState } from "react";
+import { Button, Card, Form, InputGroup, ListGroup } from "react-bootstrap";
+import {
+  TbClipboard,
+  TbQrcode,
+  TbRefresh,
+  TbTrash,
+  TbUserEdit,
+} from "react-icons/tb";
 import type { UserFormState, UserRecord } from "../types";
 import { ActionIconButton } from "./ActionIconButton";
 import QRModal from "./QRModal";
@@ -32,6 +38,31 @@ export function UsersPanel({
 }: UsersPanelProps) {
   const [qrModalShown, setQrModalShown] = useState(false);
   const [qrSelectedUser, setQrSelectedUser] = useState<UserRecord | null>(null);
+  const [search, setSearch] = useState("");
+
+  const UUID_PATTERN =
+    "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+
+  const filteredUsers = search.trim()
+    ? users.filter(
+        (u) =>
+          u.clientName.toLowerCase().includes(search.toLowerCase()) ||
+          u.userUuid.toLowerCase().includes(search.toLowerCase()),
+      )
+    : users;
+
+  const regenerateUserUuid = () => {
+    setUserForm({
+      ...userForm,
+      userUuid: crypto.randomUUID(),
+    });
+  };
+
+  useEffect(() => {
+    if (!editingUser) {
+      regenerateUserUuid();
+    }
+  }, [editingUser]);
 
   return (
     <>
@@ -74,16 +105,27 @@ export function UsersPanel({
 
             <Form.Group className="mb-3" controlId="user-uuid">
               <Form.Label>User UUID</Form.Label>
-              <Form.Control
-                required
-                value={userForm.userUuid}
-                onChange={(event) =>
-                  setUserForm({
-                    ...userForm,
-                    userUuid: event.target.value,
-                  })
-                }
-              />
+              <InputGroup>
+                <Form.Control
+                  required
+                  pattern={UUID_PATTERN}
+                  title="Must be a valid UUID (e.g. 550e8400-e29b-41d4-a716-446655440000)"
+                  value={userForm.userUuid}
+                  onChange={(event) =>
+                    setUserForm({
+                      ...userForm,
+                      userUuid: event.target.value,
+                    })
+                  }
+                />
+                <Button
+                  size="sm"
+                  variant="outline-secondary"
+                  onClick={() => regenerateUserUuid()}
+                >
+                  <TbRefresh />
+                </Button>
+              </InputGroup>
             </Form.Group>
 
             <Button type="submit" disabled={savingUser}>
@@ -97,8 +139,17 @@ export function UsersPanel({
 
           <hr className="my-4" />
 
+          <Form.Group className="mb-3" controlId="user-search">
+            <Form.Control
+              type="search"
+              placeholder="Search by name or UUID…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </Form.Group>
+
           <ListGroup variant="flush">
-            {users.map((user) => (
+            {filteredUsers.map((user) => (
               <ListGroup.Item
                 className="px-0 py-3"
                 key={user.subscriptionToken}
