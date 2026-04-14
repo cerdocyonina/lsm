@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { Database } from "bun:sqlite";
-import type { AppConfig } from "./app-config";
+import type { FullDump, LegacyConfig } from "./app-config";
 
 export type UserRecord = {
   clientName: string;
@@ -30,7 +30,8 @@ export interface Storage {
   renameServer(oldName: string, newName: string): boolean;
   setServerUrl(name: string, template: string): boolean;
   removeServer(name: string): boolean;
-  replaceFromConfig(config: AppConfig, subLinkSecret: string): void;
+  replaceFromConfig(config: LegacyConfig, subLinkSecret: string): void;
+  replaceFromFullDump(dump: FullDump): void;
   close(): void;
 }
 
@@ -160,35 +161,58 @@ export class SqliteStorage implements Storage {
     return result.changes > 0;
   }
 
-  public replaceFromConfig(config: AppConfig, subLinkSecret: string): void {
+  public replaceFromConfig(config: LegacyConfig, subLinkSecret: string): void {
     const tx = this.db.transaction(
-      (appConfig: AppConfig, secret: string) => {
+      (appConfig: LegacyConfig, secret: string) => {
+        this.db.query("DELETE FROM users").run();
+        this.db.query("DELETE FROM servers").run();
+
+        const now = Date.now();
+        const insertUser = this.db.query(
+          "INSERT INTO users (client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4)",
+        );
+        for (const [clientName, userUuid] of Object.entries(appConfig.USERS) as [string, string][]) {
+          insertUser.run(
+            clientName,
+            createHmac("sha256", secret).update(clientName).digest("base64url"),
+            userUuid,
+            now,
+          );
+        }
+
+        const insertServer = this.db.query(
+          "INSERT INTO servers (name, sort_order, template) VALUES (?1, ?2, ?3)",
+        );
+        appConfig.SERVERS.forEach((template: string, index: number) => {
+          insertServer.run(`server-${index + 1}`, index, template);
+        });
+      },
+    );
+
+    tx(config, subLinkSecret);
+  }
+
+  public replaceFromFullDump(dump: FullDump): void {
+    const tx = this.db.transaction((d: FullDump) => {
       this.db.query("DELETE FROM users").run();
       this.db.query("DELETE FROM servers").run();
 
-      const now = Date.now();
       const insertUser = this.db.query(
         "INSERT INTO users (client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4)",
       );
-      for (const [clientName, userUuid] of Object.entries(appConfig.USERS)) {
-        insertUser.run(
-          clientName,
-          createHmac("sha256", secret).update(clientName).digest("base64url"),
-          userUuid,
-          now,
-        );
+      for (const user of d.USERS) {
+        insertUser.run(user.clientName, user.subscriptionToken, user.userUuid, user.createdAt);
       }
 
       const insertServer = this.db.query(
         "INSERT INTO servers (name, sort_order, template) VALUES (?1, ?2, ?3)",
       );
-      appConfig.SERVERS.forEach((template, index) => {
-        insertServer.run(`server-${index + 1}`, index, template);
-      });
-      },
-    );
+      for (const server of d.SERVERS) {
+        insertServer.run(server.name, server.sortOrder, server.template);
+      }
+    });
 
-    tx(config, subLinkSecret);
+    tx(dump);
   }
 
   public close(): void {
@@ -213,17 +237,18 @@ export class SqliteStorage implements Storage {
   }
 }
 
-export function loadStorageSnapshot(storage: Storage): {
-  USERS: Record<string, string>;
-  SERVERS: string[];
-} {
-  const users = Object.fromEntries(
-    storage.listUsers().map(({ clientName, userUuid }) => [clientName, userUuid]),
-  );
-  const servers = storage.listServers();
-
+export function buildFullDump(storage: Storage): FullDump {
   return {
-    USERS: users,
-    SERVERS: servers,
+    USERS: storage.listUsers().map(({ clientName, userUuid, subscriptionToken, createdAt }) => ({
+      clientName,
+      userUuid,
+      subscriptionToken,
+      createdAt,
+    })),
+    SERVERS: storage.listServerRecords().map(({ name, sortOrder, template }) => ({
+      name,
+      sortOrder,
+      template,
+    })),
   };
 }

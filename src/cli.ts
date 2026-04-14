@@ -8,11 +8,13 @@ import { table } from "table";
 import { z } from "zod";
 import { version as VERSION } from "../package.json";
 import { XUIService } from "./3x-ui";
-import { loadLegacyAppConfigOrThrow } from "./app-config";
+import type { FullDump, LegacyConfig } from "./app-config";
+import { loadDumpOrThrow } from "./app-config";
 import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
 import { SqliteStorage } from "./storage";
 import { createSubscriptionToken, loadAppContext } from "./sub-links";
+import { buildFullDump } from "./storage";
 
 dotenv.config({
   path: resolve(__dirname, "..", process.env.ENV_PATH || ".env"),
@@ -88,32 +90,43 @@ async function bootstrap() {
   // global commands
   program
     .command("import-json <path>")
-    .description("Import legacy JSON config")
+    .description("Import JSON config (plain legacy format) or full dump")
     .action(
       withErrorHandling((path) => {
-        const subLinkSecret = config.get("SUB_LINK_SECRET");
-        const legacyConfig = loadLegacyAppConfigOrThrow(path);
         const databasePath = config.get("DATABASE_PATH");
+        const dump = loadDumpOrThrow(path);
+
+        let userCount: number;
+        let serverCount: number;
 
         withStorage((storage) => {
-          storage.replaceFromConfig(legacyConfig, subLinkSecret);
+          if (Array.isArray(dump.USERS)) {
+            // Full dump format
+            storage.replaceFromFullDump(dump as FullDump);
+            userCount = (dump as FullDump).USERS.length;
+            serverCount = dump.SERVERS.length;
+          } else {
+            // Legacy plain format
+            const subLinkSecret = config.get("SUB_LINK_SECRET");
+            storage.replaceFromConfig(dump as LegacyConfig, subLinkSecret);
+            userCount = Object.keys((dump as LegacyConfig).USERS).length;
+            serverCount = dump.SERVERS.length;
+          }
         });
 
         logger.info(
-          `imported ${Object.keys(legacyConfig.USERS).length} users and ${legacyConfig.SERVERS.length} servers from ${path} into ${databasePath}`,
+          `imported ${userCount!} users and ${serverCount!} servers from ${path} into ${databasePath}`,
         );
       }),
     );
 
   program
     .command("json")
-    .description("Export current database state as JSON")
+    .description("Export full database dump as JSON (round-trippable via import-json)")
     .action(
       withErrorHandling(() => {
-        const { servers, users } = loadAppContext();
-        console.log(
-          JSON.stringify({ USERS: users, SERVERS: servers }, null, 2),
-        );
+        const dump = withStorage((storage) => buildFullDump(storage));
+        console.log(JSON.stringify(dump, null, 2));
       }),
     );
 
@@ -174,6 +187,7 @@ async function bootstrap() {
             clientName,
             createSubscriptionToken(clientName, subLinkSecret),
             userUuid,
+            Date.now(),
           );
         });
         logger.info(`stored user "${clientName}" in database`);
