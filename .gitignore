@@ -36,3 +36,4 @@ config.json
 
 *.sqlite
 .claude
+dumps
