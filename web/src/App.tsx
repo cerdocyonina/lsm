@@ -6,7 +6,10 @@ import { LoginPage } from "./components/LoginPage";
 import { ServersPanel } from "./components/ServersPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import type {
+  ClientHttpPingResult,
+  PingResponse,
   ServerFormState,
+  ServerIcmpResult,
   ServerRecord,
   Session,
   UserFormState,
@@ -36,6 +39,9 @@ export default function App() {
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
   const [editingServer, setEditingServer] = useState<ServerRecord | null>(null);
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
+  const [icmpResults, setIcmpResults] = useState<ServerIcmpResult[]>([]);
+  const [httpResults, setHttpResults] = useState<ClientHttpPingResult[]>([]);
+  const [pinging, setPinging] = useState(false);
 
   async function loadDashboard() {
     const [userPayload, serverPayload] = await Promise.all([
@@ -240,6 +246,22 @@ export default function App() {
     }
   }
 
+  async function pingAllServers() {
+    setPinging(true);
+    try {
+      const payload = await api<PingResponse>("/servers/ping", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      if (payload.icmp) setIcmpResults(payload.icmp);
+      if (payload.http) setHttpResults(payload.http);
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : "Ping failed.");
+    } finally {
+      setPinging(false);
+    }
+  }
+
   async function copyText(value: string) {
     try {
       await navigator.clipboard.writeText(value);
@@ -341,8 +363,12 @@ export default function App() {
                   template: server.template,
                 });
               }}
+              httpResults={httpResults}
+              icmpResults={icmpResults}
+              onPingAll={pingAllServers}
               onReorder={reorderServers}
               onSubmit={submitServerForm}
+              pinging={pinging}
               savingServer={savingServer}
               serverForm={serverForm}
               servers={servers}

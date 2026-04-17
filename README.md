@@ -154,6 +154,42 @@ ssh -L 3001:127.0.0.1:<ADMIN_PORT> your-server
 
 ссылки на подписки будут иметь вид `<BASE_URL>/<KEY>`, где `BASE_URL` берется из `.env` и `KEY` генерируется автоматически при создании пользователя
 
+## Пинг серверов
+
+можно проверить доступность серверов двумя способами:
+
+- **ICMP** — обычный `ping` по хосту из темплейта
+- **HTTP** — реальный запрос через VLESS-прокси к `http://www.google.com/generate_204` (требует `xray` и `curl` в PATH). проверяется каждая пара клиент × сервер (NxM запросов)
+
+### CLI
+
+```bash
+# оба метода (по умолчанию)
+bun run src/cli.ts servers ping
+
+# только ICMP
+bun run src/cli.ts servers ping --strategy icmp
+
+# только HTTP
+bun run src/cli.ts servers ping --strategy http
+
+# конкретный сервер
+bun run src/cli.ts servers ping myserver
+
+# json-вывод, кастомный таймаут
+bun run src/cli.ts servers ping --json --timeout 15000
+```
+
+при `--strategy icmp` выводит таблицу `Name | Host:Port | ICMP`.
+при `--strategy http` выводит таблицу `Client | UUID | server1 | server2 | …` (результат для каждой пары клиент/сервер).
+при `--strategy all` — сначала ICMP-таблица, затем HTTP-таблица.
+
+### Веб-панель
+
+кнопка **Ping all** в разделе Servers. после завершения:
+- рядом с каждым сервером появляется ICMP-бейдж с задержкой или ошибкой
+- ниже списка серверов появляется таблица HTTP-результатов (строки — клиенты, столбцы — серверы)
+
 ## CLI
 
 идентичный админке функционал, см help:

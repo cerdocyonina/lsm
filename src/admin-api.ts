@@ -7,6 +7,7 @@ import {
   verifyAdminCredentials,
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
+import { pingAllHttp, pingAllIcmp } from "./ping";
 import type { Storage } from "./storage";
 
 const loginSchema = z.object({
@@ -36,6 +37,11 @@ const createServerSchema = z.object({
 
 const reorderServersSchema = z.object({
   order: z.array(z.string().min(1)).min(1),
+});
+
+const pingServersSchema = z.object({
+  names: z.array(z.string().min(1)).optional(),
+  strategy: z.enum(["icmp", "http", "all"]).optional(),
 });
 
 const updateServerSchema = z
@@ -367,6 +373,30 @@ export async function handleAdminApiRequest(
     }
 
     return noStoreResponse(new Response(null, { status: 204 }));
+  }
+
+  if (adminPathname === "/servers/ping" && req.method === "POST") {
+    const parsed = await parseJson(req, pingServersSchema);
+    if (parsed instanceof Response) {
+      return noStoreResponse(parsed);
+    }
+
+    const strategy = parsed.strategy ?? "all";
+    let records = storage.listServerRecords();
+    if (parsed.names && parsed.names.length > 0) {
+      const nameSet = new Set(parsed.names);
+      records = records.filter((s) => nameSet.has(s.name));
+    }
+
+    const servers = records.map((s) => ({ name: s.name, template: s.template }));
+    const users = storage.listUsers().map((u) => ({ clientName: u.clientName, userUuid: u.userUuid }));
+
+    const [icmp, http] = await Promise.all([
+      strategy !== "http" ? pingAllIcmp(servers) : Promise.resolve(null),
+      strategy !== "icmp" ? pingAllHttp(servers, users) : Promise.resolve(null),
+    ]);
+
+    return noStoreResponse(jsonResponse({ icmp, http }));
   }
 
   return adminErrorResponse(404, "Not found.");

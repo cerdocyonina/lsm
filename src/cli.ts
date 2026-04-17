@@ -12,6 +12,8 @@ import type { FullDump, LegacyConfig } from "./app-config";
 import { loadDumpOrThrow } from "./app-config";
 import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
+import { pingAllHttp, pingAllIcmp } from "./ping";
+import type { ClientHttpPingResult, PingResult, ServerIcmpResult } from "./ping";
 import { SqliteStorage } from "./storage";
 import { createSubscriptionToken, loadAppContext } from "./sub-links";
 import { buildFullDump } from "./storage";
@@ -326,6 +328,103 @@ async function bootstrap() {
         const removed = withStorage((storage) => storage.removeServer(name));
         if (!removed) throw new Error(`Unknown server name: ${name}`);
         logger.info(`removed server "${name}"`);
+      }),
+    );
+
+  serversCmd
+    .command("ping [name]")
+    .description("Ping servers (ICMP + HTTP via VLESS proxy)")
+    .option("--strategy <strategy>", "icmp | http | all", "all")
+    .option("--timeout <ms>", "Timeout in milliseconds", "10000")
+    .option("--json", "Output as JSON")
+    .action(
+      withErrorHandling(async (nameArg, options) => {
+        const strategy = options.strategy as "icmp" | "http" | "all";
+        if (!["icmp", "http", "all"].includes(strategy)) {
+          throw new Error(`Invalid strategy: ${strategy}. Use icmp, http, or all.`);
+        }
+
+        const timeoutMs = parseInt(options.timeout, 10);
+        if (isNaN(timeoutMs) || timeoutMs <= 0) {
+          throw new Error("Timeout must be a positive number");
+        }
+
+        const { serverRecords, users } = withStorage((storage) => {
+          let records = storage.listServerRecords();
+          if (nameArg) {
+            records = records.filter((s) => s.name === nameArg);
+            if (records.length === 0) throw new Error(`Unknown server name: ${nameArg}`);
+          }
+          return { serverRecords: records, users: storage.listUsers() };
+        });
+
+        const servers = serverRecords.map((s) => ({ name: s.name, template: s.template }));
+        const clients = users.map((u) => ({ clientName: u.clientName, userUuid: u.userUuid }));
+
+        function fmtPing(r: PingResult): string {
+          if (r.ok && r.latencyMs !== null) return chalk.green(`${r.latencyMs}ms`);
+          if (!r.ok && !r.error && r.latencyMs === null) return chalk.gray("—");
+          return chalk.red(`✗ ${r.error ?? "failed"}`);
+        }
+
+        function printIcmpTable(icmpResults: ServerIcmpResult[]) {
+          logger.info(`=== ICMP results (${icmpResults.length} server(s)) ===`);
+          printTable(
+            ["Name", "Host:Port", "ICMP"],
+            icmpResults.map((r) => [r.serverName, `${r.host}:${r.port}`, fmtPing(r.icmp)]),
+          );
+        }
+
+        function printHttpTable(httpResults: ClientHttpPingResult[]) {
+          if (httpResults.length === 0) return;
+          const serverNames = httpResults[0]?.servers.map((s) => s.serverName) ?? [];
+          logger.info(`=== HTTP results (${httpResults.length} client(s) × ${serverNames.length} server(s)) ===`);
+          printTable(
+            ["Client", "UUID", ...serverNames],
+            httpResults.map((r) => [
+              r.clientName,
+              r.userUuid,
+              ...r.servers.map((s) => fmtPing(s.result)),
+            ]),
+          );
+        }
+
+        if (strategy === "icmp" || strategy === "all") {
+          logger.info(`pinging ${servers.length} server(s) via ICMP...`);
+          const icmpResults = await pingAllIcmp(servers, timeoutMs);
+          if (options.json) {
+            if (strategy === "icmp") {
+              console.log(JSON.stringify(icmpResults, null, 2));
+              return;
+            }
+          } else {
+            printIcmpTable(icmpResults);
+          }
+
+          if (strategy === "icmp") return;
+
+          // continue to http for "all"
+          if (options.json) {
+            logger.info(`pinging ${servers.length} server(s) × ${clients.length} client(s) via HTTP...`);
+            const httpResults = await pingAllHttp(servers, clients, timeoutMs);
+            console.log(JSON.stringify({ icmp: icmpResults, http: httpResults }, null, 2));
+            return;
+          }
+
+          logger.info(`pinging ${servers.length} server(s) × ${clients.length} client(s) via HTTP...`);
+          const httpResults = await pingAllHttp(servers, clients, timeoutMs);
+          printHttpTable(httpResults);
+          return;
+        }
+
+        // strategy === "http"
+        logger.info(`pinging ${servers.length} server(s) × ${clients.length} client(s) via HTTP...`);
+        const httpResults = await pingAllHttp(servers, clients, timeoutMs);
+        if (options.json) {
+          console.log(JSON.stringify(httpResults, null, 2));
+          return;
+        }
+        printHttpTable(httpResults);
       }),
     );
 

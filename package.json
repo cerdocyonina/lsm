@@ -9,7 +9,7 @@
     "build:web": "vite build --config web/vite.config.ts",
     "dev": "NODE_ENV=development bun --watch src/index.ts",
     "dev:admin": "NODE_ENV=development bun --watch src/admin-server.ts",
-    "dev:web": "vite --config web/vite.config.ts",
+    "dev:web": "vite --config web/vite.config.ts --host",
     "start": "NODE_ENV=production bun run src/index.ts",
     "start:admin": "NODE_ENV=production bun run src/admin-server.ts",
     "cli": "bun run src/cli.ts"
