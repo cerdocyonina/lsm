@@ -100,6 +100,12 @@ function checkToolOnPath(tool: string): boolean {
   return Bun.spawnSync(["which", tool], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
 }
 
+export function checkHttpPingRequirements(): { ok: true } | { ok: false; error: string } {
+  if (!checkToolOnPath("xray")) return { ok: false, error: "xray not found on PATH" };
+  if (!checkToolOnPath("curl")) return { ok: false, error: "curl not found on PATH" };
+  return { ok: true };
+}
+
 export async function pingIcmp(host: string, timeoutMs = 5000): Promise<PingResult> {
   const isMac = process.platform === "darwin";
   // macOS: -W in ms; Linux: -W in seconds
@@ -138,13 +144,6 @@ export async function pingHttp(
   const params = parseVlessParams(template);
   if (!params) {
     return { ok: false, latencyMs: null, error: "failed to parse server template" };
-  }
-
-  if (!checkToolOnPath("xray")) {
-    return { ok: false, latencyMs: null, error: "xray not found on PATH" };
-  }
-  if (!checkToolOnPath("curl")) {
-    return { ok: false, latencyMs: null, error: "curl not found on PATH" };
   }
 
   let socksPort: number;

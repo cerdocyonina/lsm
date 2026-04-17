@@ -7,7 +7,7 @@ import {
   verifyAdminCredentials,
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
-import { pingAllHttp, pingAllIcmp } from "./ping";
+import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import type { Storage } from "./storage";
 
 const loginSchema = z.object({
@@ -386,6 +386,13 @@ export async function handleAdminApiRequest(
     if (parsed.names && parsed.names.length > 0) {
       const nameSet = new Set(parsed.names);
       records = records.filter((s) => nameSet.has(s.name));
+    }
+
+    if (strategy !== "icmp") {
+      const httpReq = checkHttpPingRequirements();
+      if (!httpReq.ok) {
+        return adminErrorResponse(422, `HTTP ping unavailable: ${httpReq.error}`);
+      }
     }
 
     const servers = records.map((s) => ({ name: s.name, template: s.template }));

@@ -12,7 +12,7 @@ import type { FullDump, LegacyConfig } from "./app-config";
 import { loadDumpOrThrow } from "./app-config";
 import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
-import { pingAllHttp, pingAllIcmp } from "./ping";
+import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import type { ClientHttpPingResult, PingResult, ServerIcmpResult } from "./ping";
 import { SqliteStorage } from "./storage";
 import { createSubscriptionToken, loadAppContext } from "./sub-links";
@@ -389,42 +389,40 @@ async function bootstrap() {
           );
         }
 
+        // HTTP check — done once upfront before starting any pings
+        if (strategy !== "icmp") {
+          const httpReq = checkHttpPingRequirements();
+          if (!httpReq.ok) {
+            throw new Error(`HTTP ping unavailable: ${httpReq.error}`);
+          }
+        }
+
+        let icmpResults: ServerIcmpResult[] | null = null;
+
         if (strategy === "icmp" || strategy === "all") {
           logger.info(`pinging ${servers.length} server(s) via ICMP...`);
-          const icmpResults = await pingAllIcmp(servers, timeoutMs);
-          if (options.json) {
-            if (strategy === "icmp") {
+          icmpResults = await pingAllIcmp(servers, timeoutMs);
+          if (strategy === "icmp") {
+            if (options.json) {
               console.log(JSON.stringify(icmpResults, null, 2));
-              return;
+            } else {
+              printIcmpTable(icmpResults);
             }
-          } else {
-            printIcmpTable(icmpResults);
-          }
-
-          if (strategy === "icmp") return;
-
-          // continue to http for "all"
-          if (options.json) {
-            logger.info(`pinging ${servers.length} server(s) × ${clients.length} client(s) via HTTP...`);
-            const httpResults = await pingAllHttp(servers, clients, timeoutMs);
-            console.log(JSON.stringify({ icmp: icmpResults, http: httpResults }, null, 2));
             return;
           }
-
-          logger.info(`pinging ${servers.length} server(s) × ${clients.length} client(s) via HTTP...`);
-          const httpResults = await pingAllHttp(servers, clients, timeoutMs);
-          printHttpTable(httpResults);
-          return;
+          // strategy === "all": print ICMP table now, HTTP table follows
+          if (!options.json) printIcmpTable(icmpResults);
         }
 
-        // strategy === "http"
         logger.info(`pinging ${servers.length} server(s) × ${clients.length} client(s) via HTTP...`);
         const httpResults = await pingAllHttp(servers, clients, timeoutMs);
+
         if (options.json) {
-          console.log(JSON.stringify(httpResults, null, 2));
-          return;
+          const out = strategy === "all" ? { icmp: icmpResults, http: httpResults } : httpResults;
+          console.log(JSON.stringify(out, null, 2));
+        } else {
+          printHttpTable(httpResults);
         }
-        printHttpTable(httpResults);
       }),
     );
 

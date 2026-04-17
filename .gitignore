@@ -35,3 +35,4 @@ config.json
 .DS_Store
 
 *.sqlite
+.claude
