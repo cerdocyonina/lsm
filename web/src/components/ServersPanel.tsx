@@ -1,8 +1,73 @@
 import { FormEvent, useRef, useState } from "react";
-import { Button, Card, Form, ListGroup, Spinner, Table } from "react-bootstrap";
-import { TbGripVertical, TbTrash as DeleteIcon, TbEdit as EditIcon, TbWifi as PingIcon } from "react-icons/tb";
-import type { ClientHttpPingResult, PingResult, ServerFormState, ServerIcmpResult, ServerRecord } from "../types";
+
+import {
+  Alert,
+  Button,
+  Card,
+  Form,
+  ListGroup,
+  Spinner,
+  Table,
+} from "react-bootstrap";
+import {
+  TbTrash as DeleteIcon,
+  TbEdit as EditIcon,
+  TbWifi as PingIcon,
+  TbGripVertical,
+} from "react-icons/tb";
+import Editor from "react-simple-code-editor";
+import type {
+  ClientHttpPingResult,
+  PingResult,
+  ServerFormState,
+  ServerIcmpResult,
+  ServerRecord,
+} from "../types";
 import { ActionIconButton } from "./ActionIconButton";
+
+function highlightTemplate(code: string): string {
+  // Leading/trailing whitespace highlighted in amber to show it'll be trimmed on blur
+  let result = code
+    .replace(
+      /^(\s+)/,
+      `<mark style="background:rgba(255,193,7,0.45);border-radius:2px">$1</mark>`,
+    )
+    .replace(
+      /(\s+)$/,
+      `<mark style="background:rgba(255,193,7,0.45);border-radius:2px">$1</mark>`,
+    );
+  // DUMMY highlighted in green
+  result = result.replace(
+    /DUMMY/g,
+    `<mark style="background:rgba(25,135,84,0.3);border-radius:2px;padding:0 1px">DUMMY</mark>`,
+  );
+  return result;
+}
+
+function TemplateTextarea({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <Editor
+      value={value}
+      onValueChange={(v) => onChange(v.replace(/[\r\n]/g, ""))}
+      highlight={highlightTemplate}
+      padding={10}
+      className="form-control"
+      style={{
+        fontFamily: "monospace",
+        fontSize: "inherit",
+        minHeight: "6.5rem",
+      }}
+      textareaClassName="focus-ring-0"
+      onBlur={() => onChange(value.trim())}
+    />
+  );
+}
 
 type ServersPanelProps = {
   editingServer: ServerRecord | null;
@@ -21,7 +86,13 @@ type ServersPanelProps = {
   setServerForm: (next: ServerFormState) => void;
 };
 
-function PingBadge({ result, label }: { result: PingResult | undefined; label: string }) {
+function PingBadge({
+  result,
+  label,
+}: {
+  result: PingResult | undefined;
+  label: string;
+}) {
   if (!result) {
     return (
       <span
@@ -55,7 +126,10 @@ function PingBadge({ result, label }: { result: PingResult | undefined; label: s
 function HttpResultCell({ result }: { result: PingResult }) {
   if (result.ok && result.latencyMs !== null) {
     return (
-      <span className="text-success fw-semibold" title={`${result.latencyMs}ms`}>
+      <span
+        className="text-success fw-semibold"
+        title={`${result.latencyMs}ms`}
+      >
         {result.latencyMs}ms
       </span>
     );
@@ -87,7 +161,9 @@ export function ServersPanel({
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const dragSrcIdx = useRef<number | null>(null);
 
-  const icmpByName = Object.fromEntries(icmpResults.map((r) => [r.serverName, r.icmp]));
+  const icmpByName = Object.fromEntries(
+    icmpResults.map((r) => [r.serverName, r.icmp]),
+  );
 
   const filteredServers = search.trim()
     ? servers.filter(
@@ -127,7 +203,9 @@ export function ServersPanel({
 
   // derive server name order from httpResults (consistent with server list)
   const httpServerNames =
-    httpResults.length > 0 ? (httpResults[0]?.servers.map((s) => s.serverName) ?? []) : [];
+    httpResults.length > 0
+      ? (httpResults[0]?.servers.map((s) => s.serverName) ?? [])
+      : [];
 
   return (
     <Card className="shadow-sm h-100">
@@ -141,27 +219,16 @@ export function ServersPanel({
               {editingServer ? "Edit server" : "Create server"}
             </h2>
           </div>
-          <div className="d-flex gap-2">
-            <Button
-              variant="outline-secondary"
-              type="button"
-              onClick={onPingAll}
-              disabled={pinging || servers.length === 0}
-              className="d-flex align-items-center gap-1"
-            >
-              {pinging ? <Spinner size="sm" /> : <PingIcon size={16} />}
-              {pinging ? "Pinging…" : "Ping all"}
-            </Button>
-            {editingServer ? (
-              <Button
-                variant="outline-secondary"
-                type="button"
-                onClick={onCancelEdit}
-              >
-                Cancel edit
-              </Button>
-            ) : null}
-          </div>
+          <Button
+            variant="outline-secondary"
+            type="button"
+            onClick={onPingAll}
+            disabled={pinging || servers.length === 0}
+            className="d-flex align-items-center gap-1"
+          >
+            {pinging ? <Spinner size="sm" /> : <PingIcon size={16} />}
+            {pinging ? "Pinging…" : "Ping all"}
+          </Button>
         </div>
 
         <Form onSubmit={onSubmit}>
@@ -181,27 +248,39 @@ export function ServersPanel({
 
           <Form.Group className="mb-3" controlId="server-template">
             <Form.Label>Template</Form.Label>
-            <Form.Control
-              as="textarea"
-              rows={4}
-              required
+            <TemplateTextarea
               value={serverForm.template}
-              onChange={(event) =>
-                setServerForm({
-                  ...serverForm,
-                  template: event.target.value,
-                })
+              onChange={(template) =>
+                setServerForm({ ...serverForm, template })
               }
             />
+            {serverForm.template.length > 0 &&
+              !serverForm.template.includes("DUMMY") && (
+                <Alert variant="warning" className="mt-2 mb-0 py-2 small">
+                  Template doesn't include <code>DUMMY</code> — the user UUID
+                  won't be substituted.
+                </Alert>
+              )}
           </Form.Group>
 
-          <Button type="submit" disabled={savingServer}>
-            {savingServer
-              ? "Saving..."
-              : editingServer
-                ? "Update server"
-                : "Add server"}
-          </Button>
+          <div className="d-flex gap-2">
+            <Button type="submit" disabled={savingServer}>
+              {savingServer
+                ? "Saving..."
+                : editingServer
+                  ? "Update server"
+                  : "Add server"}
+            </Button>
+            {editingServer ? (
+              <Button
+                variant="outline-secondary"
+                type="button"
+                onClick={onCancelEdit}
+              >
+                Cancel edit
+              </Button>
+            ) : null}
+          </div>
         </Form>
 
         <hr className="my-4" />
@@ -229,7 +308,11 @@ export function ServersPanel({
             >
               <div
                 className="admin-list-item"
-                style={isDraggable ? { gridTemplateColumns: "auto minmax(0,1fr) auto" } : undefined}
+                style={
+                  isDraggable
+                    ? { gridTemplateColumns: "auto minmax(0,1fr) auto" }
+                    : undefined
+                }
               >
                 {isDraggable && (
                   <div
@@ -289,7 +372,12 @@ export function ServersPanel({
               HTTP ping results
             </div>
             <div style={{ overflowX: "auto" }}>
-              <Table size="sm" bordered className="mb-0" style={{ fontSize: "0.8rem" }}>
+              <Table
+                size="sm"
+                bordered
+                className="mb-0"
+                style={{ fontSize: "0.8rem" }}
+              >
                 <thead>
                   <tr>
                     <th>Client</th>
@@ -304,7 +392,9 @@ export function ServersPanel({
                     <tr key={row.clientName}>
                       <td className="fw-semibold">{row.clientName}</td>
                       <td>
-                        <code style={{ fontSize: "0.75rem" }}>{row.userUuid}</code>
+                        <code style={{ fontSize: "0.75rem" }}>
+                          {row.userUuid}
+                        </code>
                       </td>
                       {row.servers.map((s) => (
                         <td key={s.serverName} className="text-center">
