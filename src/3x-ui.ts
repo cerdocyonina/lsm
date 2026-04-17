@@ -55,6 +55,13 @@ export class XUIService {
       throw new Error(`Login failed with status: ${response.status}`);
     }
 
+    const result = (await response.json()) as any;
+    if (!result.success) {
+      throw new Error(
+        `Login failed: ${result.msg ?? "unknown error (check logs)"}`,
+      );
+    }
+
     const setCookie = response.headers.get("set-cookie");
     if (!setCookie) {
       throw new Error("No cookie received from 3x-ui");
@@ -111,7 +118,9 @@ export class XUIService {
       }
 
       // keep-both: find an available suffixed name
-      const existingEmails = new Set(clients.map((c: any) => c.email as string));
+      const existingEmails = new Set(
+        clients.map((c: any) => c.email as string),
+      );
       let suffix = 1;
       let candidate = `${email}_${suffix}`;
       while (existingEmails.has(candidate)) {
@@ -120,7 +129,9 @@ export class XUIService {
       }
       const result = await this.addNewUser(inboundId, candidate, uuid);
       if (result === "added") {
-        logger.info(`User "${email}" already exists — added as "${candidate}".`);
+        logger.info(
+          `User "${email}" already exists — added as "${candidate}".`,
+        );
         return "kept-both";
       }
       return "failed";
