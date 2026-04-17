@@ -4,7 +4,7 @@ import { z } from "zod";
 // Legacy "plain" format: { USERS: { name: uuid }, SERVERS: [template, ...] }
 export const legacyConfigSchema = z.object({
   USERS: z.record(z.string(), z.uuid()),
-  SERVERS: z.array(z.string().min(1)).min(1),
+  SERVERS: z.array(z.string().min(1)),
 });
 
 export type LegacyConfig = z.infer<typeof legacyConfigSchema>;
