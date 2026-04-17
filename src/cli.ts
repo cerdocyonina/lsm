@@ -434,10 +434,21 @@ async function bootstrap() {
     .command("sync <inboundId>")
     .description("Sync users with 3x-ui panel")
     .option("--overwrite", "Overwrite existing users with matching emails")
+    .option("--keep-both", "Add conflicting users under a suffixed name (e.g. client_1)")
     .action(
       withErrorHandling(async (inboundIdStr, options) => {
         const inboundId = Number(inboundIdStr);
         if (isNaN(inboundId)) throw new Error("Inbound ID must be a number");
+
+        if (options.overwrite && options.keepBoth) {
+          throw new Error("--overwrite and --keep-both are mutually exclusive");
+        }
+
+        const onConflict = options.keepBoth
+          ? "keep-both"
+          : options.overwrite
+            ? "overwrite"
+            : "skip";
 
         const host = config.get("XUI_HOST");
         const user = config.get("XUI_USER");
@@ -456,7 +467,7 @@ async function bootstrap() {
         await xuiService.login();
         logger.debug("3x-ui login ok");
 
-        const stats = { added: 0, skipped: 0, overwritten: 0, failed: 0 };
+        const stats = { added: 0, skipped: 0, overwritten: 0, "kept-both": 0, failed: 0 };
 
         try {
           for (const u of users) {
@@ -468,7 +479,7 @@ async function bootstrap() {
               inboundId,
               u.clientName,
               u.userUuid,
-              !!options.overwrite,
+              onConflict,
             );
 
             stats[result]++;
@@ -477,6 +488,7 @@ async function bootstrap() {
           logger.info("=== sync completed ===");
           logger.info(chalk.green(`added:       ${stats.added}`));
           logger.info(chalk.yellow(`overwritten: ${stats.overwritten}`));
+          logger.info(chalk.cyan(`kept-both:   ${stats["kept-both"]}`));
           logger.info(chalk.blue(`skipped:     ${stats.skipped}`));
           logger.info(chalk.red(`failed:      ${stats.failed}`));
         } catch (e) {

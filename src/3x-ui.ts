@@ -93,20 +93,37 @@ export class XUIService {
     inboundId: number,
     email: string,
     uuid: string,
-    overwrite: boolean = false,
-  ): Promise<"added" | "overwritten" | "skipped" | "failed"> {
+    onConflict: "skip" | "overwrite" | "keep-both" = "skip",
+  ): Promise<"added" | "overwritten" | "skipped" | "kept-both" | "failed"> {
     if (!this.cookie) await this.login();
 
     const clients = await this.getInboundClients(inboundId);
     const existingClient = clients.find((c) => c.email === email);
 
     if (existingClient) {
-      if (!overwrite) {
+      if (onConflict === "skip") {
         logger.warn(`User "${email}" already exists. Skipping...`);
         return "skipped";
       }
 
-      return await this.updateUser(inboundId, existingClient.id, email, uuid);
+      if (onConflict === "overwrite") {
+        return await this.updateUser(inboundId, existingClient.id, email, uuid);
+      }
+
+      // keep-both: find an available suffixed name
+      const existingEmails = new Set(clients.map((c: any) => c.email as string));
+      let suffix = 1;
+      let candidate = `${email}_${suffix}`;
+      while (existingEmails.has(candidate)) {
+        suffix++;
+        candidate = `${email}_${suffix}`;
+      }
+      const result = await this.addNewUser(inboundId, candidate, uuid);
+      if (result === "added") {
+        logger.info(`User "${email}" already exists — added as "${candidate}".`);
+        return "kept-both";
+      }
+      return "failed";
     }
 
     return await this.addNewUser(inboundId, email, uuid);
