@@ -26,7 +26,7 @@ export const fullDumpServerSchema = z.object({
 
 export const fullDumpSchema = z.object({
   USERS: z.array(fullDumpUserSchema),
-  SERVERS: z.array(fullDumpServerSchema).min(1),
+  SERVERS: z.array(fullDumpServerSchema),
 });
 
 export type FullDump = z.infer<typeof fullDumpSchema>;
