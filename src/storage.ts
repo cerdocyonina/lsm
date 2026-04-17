@@ -79,11 +79,18 @@ export class SqliteStorage implements Storage {
     userUuid: string,
     createdAt: number,
   ): void {
-    this.db
-      .query(
-        "INSERT INTO users (client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(client_name) DO UPDATE SET user_uuid = excluded.user_uuid",
-      )
-      .run(clientName, subscriptionToken, userUuid, createdAt);
+    try {
+      this.db
+        .query(
+          "INSERT INTO users (client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4)",
+        )
+        .run(clientName, subscriptionToken, userUuid, createdAt);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+        throw new Error(`User "${clientName}" already exists.`);
+      }
+      throw err;
+    }
   }
 
   public renameUser(oldName: string, newName: string): boolean {
@@ -136,9 +143,16 @@ export class SqliteStorage implements Storage {
     const row = this.db
       .query("SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder FROM servers")
       .get() as { nextSortOrder: number };
-    this.db
-      .query("INSERT INTO servers (name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4)")
-      .run(name, row.nextSortOrder, template, createdAt);
+    try {
+      this.db
+        .query("INSERT INTO servers (name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4)")
+        .run(name, row.nextSortOrder, template, createdAt);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+        throw new Error(`Server "${name}" already exists.`);
+      }
+      throw err;
+    }
   }
 
   public renameServer(oldName: string, newName: string): boolean {

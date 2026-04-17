@@ -177,22 +177,23 @@ async function bootstrap() {
     );
 
   usersCmd
-    .command("add <clientName> <userUuid>")
-    .description("Add a new user")
+    .command("add <clientName> [userUuid]")
+    .description("Add a new user (UUID is generated if not provided)")
     .action(
       withErrorHandling((clientName, userUuid) => {
-        assertUuid(userUuid);
+        const resolvedUuid = userUuid ?? crypto.randomUUID();
+        assertUuid(resolvedUuid);
         const subLinkSecret = config.get("SUB_LINK_SECRET");
 
         withStorage((storage) => {
           storage.addUser(
             clientName,
             createSubscriptionToken(clientName, subLinkSecret),
-            userUuid,
+            resolvedUuid,
             Date.now(),
           );
         });
-        logger.info(`stored user "${clientName}" in database`);
+        logger.info(`stored user "${clientName}" with uuid ${resolvedUuid}`);
       }),
     );
 
