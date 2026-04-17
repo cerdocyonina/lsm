@@ -1,7 +1,8 @@
-import { createServer, connect } from "node:net";
+import { rm, writeFile } from "node:fs/promises";
+import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rm, writeFile } from "node:fs/promises";
+import { runWithConcurrency } from "./utils";
 
 export type PingResult = {
   ok: boolean;
@@ -97,19 +98,31 @@ function waitForPort(port: number, timeoutMs: number): Promise<void> {
 }
 
 function checkToolOnPath(tool: string): boolean {
-  return Bun.spawnSync(["which", tool], { stdout: "pipe", stderr: "pipe" }).exitCode === 0;
+  return (
+    Bun.spawnSync(["which", tool], { stdout: "pipe", stderr: "pipe" })
+      .exitCode === 0
+  );
 }
 
-export function checkHttpPingRequirements(): { ok: true } | { ok: false; error: string } {
-  if (!checkToolOnPath("xray")) return { ok: false, error: "xray not found on PATH" };
-  if (!checkToolOnPath("curl")) return { ok: false, error: "curl not found on PATH" };
+export function checkHttpPingRequirements():
+  | { ok: true }
+  | { ok: false; error: string } {
+  if (!checkToolOnPath("xray"))
+    return { ok: false, error: "xray not found on PATH" };
+  if (!checkToolOnPath("curl"))
+    return { ok: false, error: "curl not found on PATH" };
   return { ok: true };
 }
 
-export async function pingIcmp(host: string, timeoutMs = 5000): Promise<PingResult> {
+export async function pingIcmp(
+  host: string,
+  timeoutMs = 5000,
+): Promise<PingResult> {
   const isMac = process.platform === "darwin";
   // macOS: -W in ms; Linux: -W in seconds
-  const waitArg = isMac ? String(timeoutMs) : String(Math.ceil(timeoutMs / 1000));
+  const waitArg = isMac
+    ? String(timeoutMs)
+    : String(Math.ceil(timeoutMs / 1000));
 
   const start = Date.now();
   try {
@@ -136,6 +149,19 @@ export async function pingIcmp(host: string, timeoutMs = 5000): Promise<PingResu
   }
 }
 
+const activePorts = new Set<number>();
+
+async function getUniqueFreePort(): Promise<number> {
+  for (let i = 0; i < 10; i++) {
+    const port = await findFreePort();
+    if (!activePorts.has(port)) {
+      activePorts.add(port);
+      return port;
+    }
+  }
+  throw new Error("failed to find a unique free port");
+}
+
 export async function pingHttp(
   template: string,
   userUuid: string,
@@ -143,12 +169,16 @@ export async function pingHttp(
 ): Promise<PingResult> {
   const params = parseVlessParams(template);
   if (!params) {
-    return { ok: false, latencyMs: null, error: "failed to parse server template" };
+    return {
+      ok: false,
+      latencyMs: null,
+      error: "failed to parse server template",
+    };
   }
 
   let socksPort: number;
   try {
-    socksPort = await findFreePort();
+    socksPort = await getUniqueFreePort();
   } catch {
     return { ok: false, latencyMs: null, error: "failed to find free port" };
   }
@@ -203,12 +233,18 @@ export async function pingHttp(
       stderr: "pipe",
     });
 
+    const portPromise = waitForPort(socksPort, 5000);
+    const crashPromise = (async () => {
+      const code = await xrayProc.exited;
+      throw new Error(`xray crashed instantly with code ${code}`);
+    })();
+
     try {
-      await waitForPort(socksPort, 5000);
-    } catch {
+      await Promise.race([portPromise, crashPromise]);
+    } catch (err) {
       xrayProc.kill();
       await xrayProc.exited;
-      return { ok: false, latencyMs: null, error: "xray failed to start" };
+      return { ok: false, latencyMs: null, error: (err as Error).message };
     }
 
     const curlTimeoutSec = Math.ceil(timeoutMs / 1000);
@@ -249,12 +285,16 @@ export async function pingHttp(
     return {
       ok: false,
       latencyMs: null,
-      error: httpCode === "000" ? "connection failed" : `unexpected HTTP ${httpCode}`,
+      error:
+        httpCode === "000"
+          ? "connection failed"
+          : `unexpected HTTP ${httpCode}`,
     };
   } catch (err) {
     return { ok: false, latencyMs: null, error: (err as Error).message };
   } finally {
     await rm(tmpFile, { force: true });
+    activePorts.delete(socksPort);
   }
 }
 
@@ -267,7 +307,9 @@ export async function pingAllIcmp(
       const params = parseVlessParams(template);
       const host = params?.host ?? "";
       const port = params?.port ?? 0;
-      const icmp = host ? await pingIcmp(host, timeoutMs) : { ok: false, latencyMs: null, error: "invalid template" };
+      const icmp = host
+        ? await pingIcmp(host, timeoutMs)
+        : { ok: false, latencyMs: null, error: "invalid template" };
       return { serverName: name, host, port, icmp };
     }),
   );
@@ -278,7 +320,6 @@ export async function pingAllHttp(
   users: { clientName: string; userUuid: string }[],
   timeoutMs = 10000,
 ): Promise<ClientHttpPingResult[]> {
-  // N×M: all client×server combos in parallel
   const pairs: { clientIdx: number; serverIdx: number }[] = [];
   for (let ci = 0; ci < users.length; ci++) {
     for (let si = 0; si < servers.length; si++) {
@@ -286,10 +327,17 @@ export async function pingAllHttp(
     }
   }
 
-  const results = await Promise.all(
-    pairs.map(({ clientIdx, serverIdx }) =>
-      pingHttp(servers[serverIdx]!.template, users[clientIdx]!.userUuid, timeoutMs),
-    ),
+  const CONCURRENCY_LIMIT = 10;
+
+  const results = await runWithConcurrency(
+    pairs,
+    CONCURRENCY_LIMIT,
+    ({ clientIdx, serverIdx }) =>
+      pingHttp(
+        servers[serverIdx]!.template,
+        users[clientIdx]!.userUuid,
+        timeoutMs,
+      ),
   );
 
   return users.map((user, ci) => ({
