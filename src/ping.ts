@@ -301,7 +301,10 @@ export async function pingHttp(
 export async function pingAllIcmp(
   servers: { name: string; template: string }[],
   timeoutMs = 5000,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<ServerIcmpResult[]> {
+  const total = servers.length;
+  let done = 0;
   return Promise.all(
     servers.map(async ({ name, template }) => {
       const params = parseVlessParams(template);
@@ -310,6 +313,7 @@ export async function pingAllIcmp(
       const icmp = host
         ? await pingIcmp(host, timeoutMs)
         : { ok: false, latencyMs: null, error: "invalid template" };
+      onProgress?.(++done, total);
       return { serverName: name, host, port, icmp };
     }),
   );
@@ -319,6 +323,7 @@ export async function pingAllHttp(
   servers: { name: string; template: string }[],
   users: { clientName: string; userUuid: string }[],
   timeoutMs = 10000,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<ClientHttpPingResult[]> {
   const pairs: { clientIdx: number; serverIdx: number }[] = [];
   for (let ci = 0; ci < users.length; ci++) {
@@ -328,16 +333,21 @@ export async function pingAllHttp(
   }
 
   const CONCURRENCY_LIMIT = 10;
+  const total = pairs.length;
+  let done = 0;
 
   const results = await runWithConcurrency(
     pairs,
     CONCURRENCY_LIMIT,
-    ({ clientIdx, serverIdx }) =>
-      pingHttp(
+    async ({ clientIdx, serverIdx }) => {
+      const result = await pingHttp(
         servers[serverIdx]!.template,
         users[clientIdx]!.userUuid,
         timeoutMs,
-      ),
+      );
+      onProgress?.(++done, total);
+      return result;
+    },
   );
 
   return users.map((user, ci) => ({

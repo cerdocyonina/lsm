@@ -25,6 +25,37 @@ dotenv.config({
 
 const SENSITIVE_SERVER_QUERY_FIELDS = ["pbk", "sid", "spx"] as const;
 
+// progress bar
+class ProgressBar {
+  private done = 0;
+  private readonly width = 24;
+
+  constructor(
+    private readonly label: string,
+    private readonly total: number,
+    private readonly active: boolean,
+  ) {
+    if (this.active) this.render();
+  }
+
+  tick(): void {
+    this.done++;
+    if (this.active) this.render();
+  }
+
+  private render(): void {
+    const filled = this.total > 0 ? Math.round((this.done / this.total) * this.width) : 0;
+    const bar = "█".repeat(filled) + "░".repeat(this.width - filled);
+    const pct = this.total > 0 ? Math.round((this.done / this.total) * 100) : 0;
+    process.stderr.write(`\r${this.label} [${bar}] ${this.done}/${this.total} (${pct}%)`);
+  }
+
+  clear(): void {
+    if (!this.active) return;
+    process.stderr.write("\r" + " ".repeat(this.label.length + this.width + 20) + "\r");
+  }
+}
+
 // print utils
 function printTable(headers: string[], rows: string[][]): void {
   console.log(table([headers, ...rows]));
@@ -338,6 +369,7 @@ async function bootstrap() {
     .option("--strategy <strategy>", "icmp | http | all", "all")
     .option("--timeout <ms>", "Timeout in milliseconds", "10000")
     .option("--json", "Output as JSON")
+    .option("--no-progress", "Suppress progress bar")
     .action(
       withErrorHandling(async (nameArg, options) => {
         const strategy = options.strategy as "icmp" | "http" | "all";
@@ -398,11 +430,14 @@ async function bootstrap() {
           }
         }
 
+        const showProgress = options.progress !== false && process.stderr.isTTY;
+
         let icmpResults: ServerIcmpResult[] | null = null;
 
         if (strategy === "icmp" || strategy === "all") {
-          logger.info(`pinging ${servers.length} server(s) via ICMP...`);
-          icmpResults = await pingAllIcmp(servers, timeoutMs);
+          const bar = new ProgressBar("ICMP", servers.length, showProgress);
+          icmpResults = await pingAllIcmp(servers, timeoutMs, () => bar.tick());
+          bar.clear();
           if (strategy === "icmp") {
             if (options.json) {
               console.log(JSON.stringify(icmpResults, null, 2));
@@ -415,8 +450,10 @@ async function bootstrap() {
           if (!options.json) printIcmpTable(icmpResults);
         }
 
-        logger.info(`pinging ${servers.length} server(s) × ${clients.length} client(s) via HTTP...`);
-        const httpResults = await pingAllHttp(servers, clients, timeoutMs);
+        const httpTotal = servers.length * clients.length;
+        const httpBar = new ProgressBar("HTTP", httpTotal, showProgress);
+        const httpResults = await pingAllHttp(servers, clients, timeoutMs, () => httpBar.tick());
+        httpBar.clear();
 
         if (options.json) {
           const out = strategy === "all" ? { icmp: icmpResults, http: httpResults } : httpResults;
