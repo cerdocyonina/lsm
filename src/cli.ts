@@ -256,7 +256,27 @@ async function bootstrap() {
     );
 
   // profile commands
-  const profileCmd = program.command("profile").description("Manage profiles");
+  const profileCmd = program
+    .command("profile")
+    .description("Manage profiles")
+    .action(
+      withErrorHandling(() => {
+        const id = readCurrentProfile();
+        if (program.opts().verbose) {
+          const profile = withStorage((storage) => storage.getProfile(id));
+          if (!profile) {
+            logger.info(`current profile: "${id}" (not found in database)`);
+          } else {
+            logger.info(`id:         ${profile.id}`);
+            logger.info(`name:       ${profile.name}`);
+            logger.info(`created at: ${new Date(profile.createdAt).toISOString()}`);
+          }
+        } else {
+          const profile = withStorage((storage) => storage.getProfile(id));
+          logger.info(profile?.name ?? id);
+        }
+      }),
+    );
 
   profileCmd
     .command("list")
