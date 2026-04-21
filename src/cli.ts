@@ -159,6 +159,7 @@ async function bootstrap() {
   program
     .command("import-json <path>")
     .description("Import JSON config, full dump (single-profile), or multi-profile dump")
+    .option("--profile <id>", "import into this profile, creating it if needed (default: current profile)")
     .option("--users <names>", "only import these users (comma-separated client names)")
     .option("--users-except <names>", "import all users except these (comma-separated client names)")
     .option("--servers <names>", "only import these servers (comma-separated names; templates for legacy format)")
@@ -189,7 +190,7 @@ async function bootstrap() {
         const parsed = loadDumpOrThrow(path);
 
         if (parsed.kind === "multi-profile") {
-          if (program.opts().profile) {
+          if (options.profile ?? program.opts().profile) {
             throw new Error("--profile cannot be combined with a multi-profile dump; omit --profile to import all profiles");
           }
           withStorage((storage) => {
@@ -200,11 +201,16 @@ async function bootstrap() {
           return;
         }
 
-        const profileId = resolveProfile(program);
+        const profileId = options.profile ?? resolveProfile(program);
         let userCount: number;
         let serverCount: number;
 
         withStorage((storage) => {
+          if (!storage.getProfile(profileId)) {
+            storage.createProfile(profileId, profileId, Date.now());
+            logger.info(`created profile "${profileId}"`);
+          }
+
           if (parsed.kind === "single-profile") {
             const filtered: ProfileDump = {
               USERS: parsed.data.USERS.filter((u) => keepUser(u.clientName)),
