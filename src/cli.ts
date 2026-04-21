@@ -124,8 +124,32 @@ async function bootstrap() {
   program
     .command("import-json <path>")
     .description("Import JSON config (plain legacy format) or full dump")
+    .option("--users <names>", "only import these users (comma-separated client names)")
+    .option("--users-except <names>", "import all users except these (comma-separated client names)")
+    .option("--servers <names>", "only import these servers (comma-separated names; templates for legacy format)")
+    .option("--servers-except <names>", "import all servers except these (comma-separated names; templates for legacy format)")
     .action(
-      withErrorHandling((path) => {
+      withErrorHandling((path, options) => {
+        if (options.users && options.usersExcept) {
+          throw new Error("--users and --users-except are mutually exclusive");
+        }
+        if (options.servers && options.serversExcept) {
+          throw new Error("--servers and --servers-except are mutually exclusive");
+        }
+
+        const parseNames = (val: string): Set<string> =>
+          new Set(val.split(",").map((s: string) => s.trim()).filter(Boolean));
+
+        const usersOnly = options.users ? parseNames(options.users) : null;
+        const usersExcept = options.usersExcept ? parseNames(options.usersExcept) : null;
+        const serversOnly = options.servers ? parseNames(options.servers) : null;
+        const serversExcept = options.serversExcept ? parseNames(options.serversExcept) : null;
+
+        const keepUser = (name: string) =>
+          usersOnly ? usersOnly.has(name) : usersExcept ? !usersExcept.has(name) : true;
+        const keepServer = (identifier: string) =>
+          serversOnly ? serversOnly.has(identifier) : serversExcept ? !serversExcept.has(identifier) : true;
+
         const databasePath = config.get("DATABASE_PATH");
         const dump = loadDumpOrThrow(path);
 
@@ -135,15 +159,25 @@ async function bootstrap() {
         withStorage((storage) => {
           if (Array.isArray(dump.USERS)) {
             // Full dump format
-            storage.mergeFromFullDump(dump as FullDump);
-            userCount = (dump as FullDump).USERS.length;
-            serverCount = dump.SERVERS.length;
+            const filtered: FullDump = {
+              USERS: (dump as FullDump).USERS.filter((u) => keepUser(u.clientName)),
+              SERVERS: (dump as FullDump).SERVERS.filter((s) => keepServer(s.name)),
+            };
+            storage.mergeFromFullDump(filtered);
+            userCount = filtered.USERS.length;
+            serverCount = filtered.SERVERS.length;
           } else {
-            // Legacy plain format
+            // Legacy plain format — servers identified by template string
+            const legacy = dump as LegacyConfig;
+            const filteredUsers = Object.fromEntries(
+              Object.entries(legacy.USERS).filter(([name]) => keepUser(name)),
+            ) as Record<string, string>;
+            const filteredServers = legacy.SERVERS.filter((tpl) => keepServer(tpl));
+            const filteredLegacy: LegacyConfig = { USERS: filteredUsers, SERVERS: filteredServers };
             const subLinkSecret = config.get("SUB_LINK_SECRET");
-            storage.mergeFromLegacyConfig(dump as LegacyConfig, subLinkSecret);
-            userCount = Object.keys((dump as LegacyConfig).USERS).length;
-            serverCount = dump.SERVERS.length;
+            storage.mergeFromLegacyConfig(filteredLegacy, subLinkSecret);
+            userCount = Object.keys(filteredUsers).length;
+            serverCount = filteredServers.length;
           }
         });
 
