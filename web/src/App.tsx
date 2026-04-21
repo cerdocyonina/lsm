@@ -1,5 +1,13 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Alert, Button, Col, Container, Navbar, Row, Spinner } from "react-bootstrap";
+import {
+  Alert,
+  Button,
+  Col,
+  Container,
+  Navbar,
+  Row,
+  Spinner,
+} from "react-bootstrap";
 import toast from "react-hot-toast";
 import { api } from "./api";
 import { LoginPage } from "./components/LoginPage";
@@ -35,13 +43,19 @@ export default function App() {
   const [savingUser, setSavingUser] = useState(false);
   const [savingServer, setSavingServer] = useState(false);
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm);
-  const [serverForm, setServerForm] = useState<ServerFormState>(emptyServerForm);
+  const [serverForm, setServerForm] =
+    useState<ServerFormState>(emptyServerForm);
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
   const [editingServer, setEditingServer] = useState<ServerRecord | null>(null);
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [icmpResults, setIcmpResults] = useState<ServerIcmpResult[]>([]);
   const [httpResults, setHttpResults] = useState<ClientHttpPingResult[]>([]);
   const [pinging, setPinging] = useState(false);
+  const [selectedServers, setSelectedServers] = useState<Set<string>>(
+    new Set(),
+  );
+  const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
+  const [pingSelectionMode, setPingSelectionMode] = useState(false);
 
   async function loadDashboard() {
     const [userPayload, serverPayload] = await Promise.all([
@@ -51,6 +65,26 @@ export default function App() {
 
     setUsers(userPayload.users);
     setServers(serverPayload.servers);
+    // On first load (empty selection): select all. On refresh: keep existing
+    // selections; auto-select newly added items; silently drop deleted items.
+    setSelectedUsers((prev) => {
+      if (prev.size === 0)
+        return new Set(userPayload.users.map((u) => u.clientName));
+      const updated = new Set<string>();
+      for (const u of userPayload.users) {
+        if (prev.has(u.clientName)) updated.add(u.clientName);
+      }
+      return updated;
+    });
+    setSelectedServers((prev) => {
+      if (prev.size === 0)
+        return new Set(serverPayload.servers.map((s) => s.name));
+      const updated = new Set<string>();
+      for (const s of serverPayload.servers) {
+        if (prev.has(s.name)) updated.add(s.name);
+      }
+      return updated;
+    });
   }
 
   useEffect(() => {
@@ -212,7 +246,9 @@ export default function App() {
   async function reorderServers(names: string[]) {
     // Optimistic update: reorder local state immediately
     const nameToRecord = new Map(servers.map((s) => [s.name, s]));
-    setServers(names.map((name, i) => ({ ...nameToRecord.get(name)!, sortOrder: i })));
+    setServers(
+      names.map((name, i) => ({ ...nameToRecord.get(name)!, sortOrder: i })),
+    );
 
     try {
       await api("/servers/order", {
@@ -246,17 +282,72 @@ export default function App() {
     }
   }
 
+  function toggleServer(name: string) {
+    setSelectedServers((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
+  function toggleAllServers(visibleNames: string[]) {
+    const allSelected = visibleNames.every((n) => selectedServers.has(n));
+    setSelectedServers((prev) => {
+      const next = new Set(prev);
+      if (allSelected) visibleNames.forEach((n) => next.delete(n));
+      else visibleNames.forEach((n) => next.add(n));
+      return next;
+    });
+  }
+
+  function toggleUser(clientName: string) {
+    setSelectedUsers((prev) => {
+      const next = new Set(prev);
+      if (next.has(clientName)) next.delete(clientName);
+      else next.add(clientName);
+      return next;
+    });
+  }
+
+  function toggleAllUsers(visibleNames: string[]) {
+    const allSelected = visibleNames.every((n) => selectedUsers.has(n));
+    setSelectedUsers((prev) => {
+      const next = new Set(prev);
+      if (allSelected) visibleNames.forEach((n) => next.delete(n));
+      else visibleNames.forEach((n) => next.add(n));
+      return next;
+    });
+  }
+
   async function pingAllServers() {
     setPinging(true);
     try {
-      const payload = await api<PingResponse>("/servers/ping", {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
+      const body: Record<string, unknown> = {};
+      if (pingSelectionMode) {
+        if (selectedServers.size < servers.length)
+          body.servers = [...selectedServers];
+        if (selectedUsers.size < users.length) body.users = [...selectedUsers];
+      }
+      const serverCount = pingSelectionMode ? selectedServers.size : servers.length;
+      const userCount = pingSelectionMode ? selectedUsers.size : users.length;
+      const payload = await toast.promise(
+        api<PingResponse>("/servers/ping", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
+        {
+          loading: `Pinging ${serverCount} server(s) × ${userCount} user(s)…`,
+          success: "Ping complete",
+          error: "Ping failed.",
+        },
+      );
       if (payload.icmp) setIcmpResults(payload.icmp);
       if (payload.http) setHttpResults(payload.http);
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : "Ping failed.");
+      setDashboardError(
+        error instanceof Error ? error.message : "Ping failed.",
+      );
     } finally {
       setPinging(false);
     }
@@ -303,7 +394,11 @@ export default function App() {
             <span className="text-body-secondary small">
               Signed in as <strong>{session.username}</strong>
             </span>
-            <Button variant="outline-secondary" type="button" onClick={handleLogout}>
+            <Button
+              variant="outline-secondary"
+              type="button"
+              onClick={handleLogout}
+            >
               Logout
             </Button>
           </div>
@@ -346,6 +441,10 @@ export default function App() {
               userForm={userForm}
               users={users}
               setUserForm={setUserForm}
+              selectedUsers={selectedUsers}
+              onToggleUser={toggleUser}
+              onToggleAllUsers={toggleAllUsers}
+              pingSelectionMode={pingSelectionMode}
             />
           </Col>
           <Col xl={6}>
@@ -373,6 +472,11 @@ export default function App() {
               serverForm={serverForm}
               servers={servers}
               setServerForm={setServerForm}
+              selectedServers={selectedServers}
+              onToggleServer={toggleServer}
+              onToggleAllServers={toggleAllServers}
+              pingSelectionMode={pingSelectionMode}
+              onTogglePingSelection={() => setPingSelectionMode((v) => !v)}
             />
           </Col>
         </Row>

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { Button, Card, Form, InputGroup, ListGroup } from "react-bootstrap";
 import {
   TbClipboard,
@@ -22,6 +22,10 @@ type UsersPanelProps = {
   userForm: UserFormState;
   users: UserRecord[];
   setUserForm: (next: UserFormState) => void;
+  selectedUsers: Set<string>;
+  onToggleUser: (clientName: string) => void;
+  onToggleAllUsers: (visibleNames: string[]) => void;
+  pingSelectionMode: boolean;
 };
 
 export function UsersPanel({
@@ -35,10 +39,15 @@ export function UsersPanel({
   userForm,
   users,
   setUserForm,
+  selectedUsers,
+  onToggleUser,
+  onToggleAllUsers,
+  pingSelectionMode,
 }: UsersPanelProps) {
   const [qrModalShown, setQrModalShown] = useState(false);
   const [qrSelectedUser, setQrSelectedUser] = useState<UserRecord | null>(null);
   const [search, setSearch] = useState("");
+  const selectAllRef = useRef<HTMLInputElement>(null);
 
   const UUID_PATTERN =
     "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -51,6 +60,16 @@ export function UsersPanel({
           u.userUuid.toLowerCase().includes(search.toLowerCase()),
       )
     : sortedUsers;
+
+  const allFilteredSelected =
+    filteredUsers.length > 0 && filteredUsers.every((u) => selectedUsers.has(u.clientName));
+  const someFilteredSelected = filteredUsers.some((u) => selectedUsers.has(u.clientName));
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someFilteredSelected && !allFilteredSelected;
+    }
+  }, [someFilteredSelected, allFilteredSelected]);
 
   const regenerateUserUuid = () => {
     setUserForm({
@@ -140,14 +159,29 @@ export function UsersPanel({
 
           <hr className="my-4" />
 
-          <Form.Group className="mb-3" controlId="user-search">
-            <Form.Control
-              type="search"
-              placeholder="Search by name or UUID…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </Form.Group>
+          <div className="d-flex align-items-center gap-2 mb-3">
+            <Form.Group className="flex-grow-1 mb-0" controlId="user-search">
+              <Form.Control
+                type="search"
+                placeholder="Search by name or UUID…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </Form.Group>
+            {pingSelectionMode && (
+              <Form.Check
+                ref={selectAllRef}
+                type="checkbox"
+                id="user-select-all"
+                label="All"
+                checked={allFilteredSelected}
+                onChange={() => onToggleAllUsers(filteredUsers.map((u) => u.clientName))}
+                disabled={filteredUsers.length === 0}
+                title="Select / deselect all visible users for ping"
+                className="mb-0 text-nowrap"
+              />
+            )}
+          </div>
 
           <ListGroup variant="flush">
             {filteredUsers.map((user) => (
@@ -155,7 +189,25 @@ export function UsersPanel({
                 className="px-0 py-3"
                 key={user.subscriptionToken}
               >
-                <div className="admin-list-item">
+                <div
+                  className="admin-list-item"
+                  style={
+                    pingSelectionMode
+                      ? { gridTemplateColumns: "auto minmax(0,1fr) auto" }
+                      : undefined
+                  }
+                >
+                  {pingSelectionMode && (
+                    <Form.Check
+                      type="checkbox"
+                      id={`user-sel-${user.clientName}`}
+                      aria-label={`Select ${user.clientName}`}
+                      checked={selectedUsers.has(user.clientName)}
+                      onChange={() => onToggleUser(user.clientName)}
+                      className="d-flex align-items-center mb-0"
+                      title="Select / deselect user for ping"
+                    />
+                  )}
                   <div className="admin-list-copy">
                     <div className="fw-semibold">{user.clientName}</div>
                     <div className="text-body-secondary">

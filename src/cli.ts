@@ -404,8 +404,22 @@ async function bootstrap() {
     .option("--timeout <ms>", "Timeout in milliseconds", "10000")
     .option("--json", "Output as JSON")
     .option("--no-progress", "Suppress progress bar")
+    .option("--servers <names>", "only ping these servers (comma-separated names)")
+    .option("--servers-except <names>", "ping all servers except these (comma-separated names)")
+    .option("--users <names>", "only ping these users (comma-separated client names)")
+    .option("--users-except <names>", "ping all users except these (comma-separated client names)")
     .action(
       withErrorHandling(async (nameArg, options) => {
+        if (options.servers && options.serversExcept) {
+          throw new Error("--servers and --servers-except are mutually exclusive");
+        }
+        if (options.users && options.usersExcept) {
+          throw new Error("--users and --users-except are mutually exclusive");
+        }
+        if (nameArg && (options.servers || options.serversExcept)) {
+          throw new Error("[name] cannot be combined with --servers/--servers-except");
+        }
+
         const strategy = options.strategy as "icmp" | "http" | "all";
         if (!["icmp", "http", "all"].includes(strategy)) {
           throw new Error(`Invalid strategy: ${strategy}. Use icmp, http, or all.`);
@@ -416,13 +430,29 @@ async function bootstrap() {
           throw new Error("Timeout must be a positive number");
         }
 
+        const parseNames = (val: string): Set<string> =>
+          new Set(val.split(",").map((s: string) => s.trim()).filter(Boolean));
+
+        const serversOnly = options.servers ? parseNames(options.servers) : null;
+        const serversExcept = options.serversExcept ? parseNames(options.serversExcept) : null;
+        const usersOnly = options.users ? parseNames(options.users) : null;
+        const usersExcept = options.usersExcept ? parseNames(options.usersExcept) : null;
+
+        const keepServer = (name: string) =>
+          serversOnly ? serversOnly.has(name) : serversExcept ? !serversExcept.has(name) : true;
+        const keepUser = (name: string) =>
+          usersOnly ? usersOnly.has(name) : usersExcept ? !usersExcept.has(name) : true;
+
         const { serverRecords, users } = withStorage((storage) => {
           let records = storage.listServerRecords();
           if (nameArg) {
             records = records.filter((s) => s.name === nameArg);
             if (records.length === 0) throw new Error(`Unknown server name: ${nameArg}`);
+          } else {
+            records = records.filter((s) => keepServer(s.name));
           }
-          return { serverRecords: records, users: storage.listUsers() };
+          const allUsers = storage.listUsers().filter((u) => keepUser(u.clientName));
+          return { serverRecords: records, users: allUsers };
         });
 
         const servers = serverRecords.map((s) => ({ name: s.name, template: s.template }));

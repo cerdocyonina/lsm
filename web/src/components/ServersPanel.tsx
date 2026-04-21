@@ -1,8 +1,9 @@
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 import {
   Alert,
   Button,
+  ButtonGroup,
   Card,
   Form,
   ListGroup,
@@ -13,6 +14,7 @@ import {
   TbTrash as DeleteIcon,
   TbEdit as EditIcon,
   TbWifi as PingIcon,
+  TbListCheck as SelectionIcon,
   TbGripVertical,
 } from "react-icons/tb";
 import Editor from "react-simple-code-editor";
@@ -84,6 +86,11 @@ type ServersPanelProps = {
   serverForm: ServerFormState;
   servers: ServerRecord[];
   setServerForm: (next: ServerFormState) => void;
+  selectedServers: Set<string>;
+  onToggleServer: (name: string) => void;
+  onToggleAllServers: (visibleNames: string[]) => void;
+  pingSelectionMode: boolean;
+  onTogglePingSelection: () => void;
 };
 
 function PingBadge({
@@ -156,10 +163,16 @@ export function ServersPanel({
   serverForm,
   servers,
   setServerForm,
+  selectedServers,
+  onToggleServer,
+  onToggleAllServers,
+  pingSelectionMode,
+  onTogglePingSelection,
 }: ServersPanelProps) {
   const [search, setSearch] = useState("");
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const dragSrcIdx = useRef<number | null>(null);
+  const selectAllRef = useRef<HTMLInputElement>(null);
 
   const icmpByName = Object.fromEntries(
     icmpResults.map((r) => [r.serverName, r.icmp]),
@@ -174,6 +187,20 @@ export function ServersPanel({
     : servers;
 
   const isDraggable = !search.trim();
+
+  const allFilteredSelected =
+    filteredServers.length > 0 &&
+    filteredServers.every((s) => selectedServers.has(s.name));
+  const someFilteredSelected = filteredServers.some((s) =>
+    selectedServers.has(s.name),
+  );
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate =
+        someFilteredSelected && !allFilteredSelected;
+    }
+  }, [someFilteredSelected, allFilteredSelected]);
 
   function handleDragStart(index: number) {
     dragSrcIdx.current = index;
@@ -219,16 +246,31 @@ export function ServersPanel({
               {editingServer ? "Edit server" : "Create server"}
             </h2>
           </div>
-          <Button
-            variant="outline-secondary"
-            type="button"
-            onClick={onPingAll}
-            disabled={pinging || servers.length === 0}
-            className="d-flex align-items-center gap-1"
-          >
-            {pinging ? <Spinner size="sm" /> : <PingIcon size={16} />}
-            {pinging ? "Pinging…" : "Ping all"}
-          </Button>
+          <ButtonGroup>
+            <Button
+              variant="outline-secondary"
+              type="button"
+              onClick={onPingAll}
+              disabled={pinging || servers.length === 0}
+              className="d-flex align-items-center gap-1"
+            >
+              {pinging ? <Spinner size="sm" /> : <PingIcon size={16} />}
+              {pinging
+                ? "Pinging…"
+                : pingSelectionMode
+                  ? "Ping selected"
+                  : "Ping all"}
+            </Button>
+            <Button
+              variant={pingSelectionMode ? "secondary" : "outline-secondary"}
+              type="button"
+              onClick={onTogglePingSelection}
+              title="Select servers / users to ping"
+              aria-pressed={pingSelectionMode}
+            >
+              <SelectionIcon size={16} />
+            </Button>
+          </ButtonGroup>
         </div>
 
         <Form onSubmit={onSubmit}>
@@ -285,14 +327,31 @@ export function ServersPanel({
 
         <hr className="my-4" />
 
-        <Form.Group className="mb-3" controlId="server-search">
-          <Form.Control
-            type="search"
-            placeholder="Search by name or template…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </Form.Group>
+        <div className="d-flex align-items-center gap-2 mb-3">
+          <Form.Group className="flex-grow-1 mb-0" controlId="server-search">
+            <Form.Control
+              type="search"
+              placeholder="Search by name or template…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </Form.Group>
+          {pingSelectionMode && (
+            <Form.Check
+              ref={selectAllRef}
+              type="checkbox"
+              id="server-select-all"
+              label="All"
+              checked={allFilteredSelected}
+              onChange={() =>
+                onToggleAllServers(filteredServers.map((s) => s.name))
+              }
+              disabled={filteredServers.length === 0}
+              title="Select / deselect all visible servers for ping"
+              className="mb-0 text-nowrap"
+            />
+          )}
+        </div>
 
         <ListGroup variant="flush">
           {filteredServers.map((server, index) => (
@@ -309,11 +368,24 @@ export function ServersPanel({
               <div
                 className="admin-list-item"
                 style={
-                  isDraggable
-                    ? { gridTemplateColumns: "auto minmax(0,1fr) auto" }
-                    : undefined
+                  isDraggable && pingSelectionMode
+                    ? { gridTemplateColumns: "auto auto minmax(0,1fr) auto" }
+                    : pingSelectionMode || isDraggable
+                      ? { gridTemplateColumns: "auto minmax(0,1fr) auto" }
+                      : undefined
                 }
               >
+                {pingSelectionMode && (
+                  <Form.Check
+                    type="checkbox"
+                    id={`server-sel-${server.name}`}
+                    aria-label={`Select ${server.name}`}
+                    checked={selectedServers.has(server.name)}
+                    onChange={() => onToggleServer(server.name)}
+                    className="d-flex align-items-center mb-0"
+                    title="Select / deselect server for ping"
+                  />
+                )}
                 {isDraggable && (
                   <div
                     className="text-body-tertiary d-flex align-items-center"

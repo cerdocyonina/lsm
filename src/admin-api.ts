@@ -40,7 +40,10 @@ const reorderServersSchema = z.object({
 });
 
 const pingServersSchema = z.object({
-  names: z.array(z.string().min(1)).optional(),
+  servers: z.array(z.string().min(1)).optional(),
+  serversExcept: z.array(z.string().min(1)).optional(),
+  users: z.array(z.string().min(1)).optional(),
+  usersExcept: z.array(z.string().min(1)).optional(),
   strategy: z.enum(["icmp", "http", "all"]).optional(),
 });
 
@@ -383,10 +386,10 @@ export async function handleAdminApiRequest(
 
     const strategy = parsed.strategy ?? "all";
     let records = storage.listServerRecords();
-    if (parsed.names && parsed.names.length > 0) {
-      const nameSet = new Set(parsed.names);
-      records = records.filter((s) => nameSet.has(s.name));
-    }
+    const serverSet = parsed.servers && parsed.servers.length > 0 ? new Set(parsed.servers) : null;
+    const serverExceptSet = parsed.serversExcept && parsed.serversExcept.length > 0 ? new Set(parsed.serversExcept) : null;
+    if (serverSet) records = records.filter((s) => serverSet.has(s.name));
+    else if (serverExceptSet) records = records.filter((s) => !serverExceptSet.has(s.name));
 
     if (strategy !== "icmp") {
       const httpReq = checkHttpPingRequirements();
@@ -396,7 +399,12 @@ export async function handleAdminApiRequest(
     }
 
     const servers = records.map((s) => ({ name: s.name, template: s.template }));
-    const users = storage.listUsers().map((u) => ({ clientName: u.clientName, userUuid: u.userUuid }));
+    let userRecords = storage.listUsers();
+    const userSet = parsed.users && parsed.users.length > 0 ? new Set(parsed.users) : null;
+    const userExceptSet = parsed.usersExcept && parsed.usersExcept.length > 0 ? new Set(parsed.usersExcept) : null;
+    if (userSet) userRecords = userRecords.filter((u) => userSet.has(u.clientName));
+    else if (userExceptSet) userRecords = userRecords.filter((u) => !userExceptSet.has(u.clientName));
+    const users = userRecords.map((u) => ({ clientName: u.clientName, userUuid: u.userUuid }));
 
     const [icmp, http] = await Promise.all([
       strategy !== "http" ? pingAllIcmp(servers) : Promise.resolve(null),
