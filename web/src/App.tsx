@@ -9,13 +9,15 @@ import {
   Spinner,
 } from "react-bootstrap";
 import toast from "react-hot-toast";
-import { api } from "./api";
+import { api, profilePath } from "./api";
 import { LoginPage } from "./components/LoginPage";
+import { ProfileTabs } from "./components/ProfileTabs";
 import { ServersPanel } from "./components/ServersPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import type {
   ClientHttpPingResult,
   PingResponse,
+  ProfileRecord,
   ServerFormState,
   ServerIcmpResult,
   ServerRecord,
@@ -37,6 +39,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<ProfileRecord[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string>("main");
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [loginPending, setLoginPending] = useState(false);
@@ -57,16 +61,20 @@ export default function App() {
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
   const [pingSelectionMode, setPingSelectionMode] = useState(false);
 
-  async function loadDashboard() {
+  async function loadProfiles(): Promise<ProfileRecord[]> {
+    const payload = await api<{ profiles: ProfileRecord[] }>("/profiles");
+    setProfiles(payload.profiles);
+    return payload.profiles;
+  }
+
+  async function loadDashboard(profileId: string) {
     const [userPayload, serverPayload] = await Promise.all([
-      api<{ users: UserRecord[] }>("/users"),
-      api<{ servers: ServerRecord[] }>("/servers"),
+      api<{ users: UserRecord[] }>(profilePath(profileId, "/users")),
+      api<{ servers: ServerRecord[] }>(profilePath(profileId, "/servers")),
     ]);
 
     setUsers(userPayload.users);
     setServers(serverPayload.servers);
-    // On first load (empty selection): select all. On refresh: keep existing
-    // selections; auto-select newly added items; silently drop deleted items.
     setSelectedUsers((prev) => {
       if (prev.size === 0)
         return new Set(userPayload.users.map((u) => u.clientName));
@@ -93,39 +101,57 @@ export default function App() {
     async function bootstrap() {
       try {
         const currentSession = await api<Session>("/session");
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
 
         setSession(currentSession);
-        await loadDashboard();
+        const loadedProfiles = await loadProfiles();
+        const initialProfile = loadedProfiles[0]?.id ?? "main";
+        setActiveProfileId(initialProfile);
+        await loadDashboard(initialProfile);
       } catch {
-        if (!cancelled) {
-          setSession(null);
-        }
+        if (!cancelled) setSession(null);
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     }
 
     void bootstrap();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
+
+  // Reload dashboard when active profile changes (after initial load)
+  const [profileSwitchCount, setProfileSwitchCount] = useState(0);
+  useEffect(() => {
+    if (profileSwitchCount === 0) return;
+    setUsers([]);
+    setServers([]);
+    setIcmpResults([]);
+    setHttpResults([]);
+    setEditingUser(null);
+    setEditingServer(null);
+    setUserForm(emptyUserForm());
+    setServerForm(emptyServerForm());
+    setSelectedUsers(new Set());
+    setSelectedServers(new Set());
+    setDashboardError(null);
+    void loadDashboard(activeProfileId).catch((error) => {
+      setDashboardError(error instanceof Error ? error.message : "Failed to load dashboard.");
+    });
+  }, [activeProfileId, profileSwitchCount]);
+
+  function switchProfile(id: string) {
+    setActiveProfileId(id);
+    setProfileSwitchCount((c) => c + 1);
+  }
 
   async function refreshAfterMutation() {
     try {
-      await loadDashboard();
+      await loadDashboard(activeProfileId);
       setDashboardError(null);
     } catch (error) {
       if (error instanceof Error && error.message === "Unauthorized.") {
         setSession(null);
       }
-
       setDashboardError(
         error instanceof Error ? error.message : "Failed to refresh dashboard.",
       );
@@ -143,7 +169,10 @@ export default function App() {
         body: JSON.stringify(loginForm),
       });
       setSession(currentSession);
-      await loadDashboard();
+      const loadedProfiles = await loadProfiles();
+      const initialProfile = loadedProfiles[0]?.id ?? "main";
+      setActiveProfileId(initialProfile);
+      await loadDashboard(initialProfile);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Login failed.");
     } finally {
@@ -154,11 +183,52 @@ export default function App() {
   async function handleLogout() {
     await api("/auth/logout", { method: "POST" });
     setSession(null);
+    setProfiles([]);
     setUsers([]);
     setServers([]);
     setEditingUser(null);
     setEditingServer(null);
     setDashboardError(null);
+  }
+
+  async function handleCreateProfile(id: string, name: string) {
+    try {
+      const payload = await api<{ profiles: ProfileRecord[] }>("/profiles", {
+        method: "POST",
+        body: JSON.stringify({ id, name }),
+      });
+      setProfiles(payload.profiles);
+      toast.success(`Profile "${name}" created`);
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : "Failed to create profile.");
+    }
+  }
+
+  async function handleRenameProfile(id: string, newName: string) {
+    try {
+      const payload = await api<{ profiles: ProfileRecord[] }>(
+        `/profiles/${encodeURIComponent(id)}`,
+        { method: "PATCH", body: JSON.stringify({ name: newName }) },
+      );
+      setProfiles(payload.profiles);
+      toast.success("Profile renamed");
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : "Failed to rename profile.");
+    }
+  }
+
+  async function handleDeleteProfile(id: string) {
+    try {
+      await api(`/profiles/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const remaining = profiles.filter((p) => p.id !== id);
+      setProfiles(remaining);
+      toast.success("Profile deleted");
+      if (activeProfileId === id && remaining.length > 0) {
+        switchProfile(remaining[0]!.id);
+      }
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : "Failed to delete profile.");
+    }
   }
 
   async function submitUserForm(event: FormEvent<HTMLFormElement>) {
@@ -169,12 +239,12 @@ export default function App() {
 
     try {
       if (editingUser) {
-        await api(`/users/${encodeURIComponent(editingUser.clientName)}`, {
+        await api(profilePath(activeProfileId, `/users/${encodeURIComponent(editingUser.clientName)}`), {
           method: "PATCH",
           body: JSON.stringify(userForm),
         });
       } else {
-        await api("/users", {
+        await api(profilePath(activeProfileId, "/users"), {
           method: "POST",
           body: JSON.stringify(userForm),
         });
@@ -201,12 +271,12 @@ export default function App() {
 
     try {
       if (editingServer) {
-        await api(`/servers/${encodeURIComponent(editingServer.name)}`, {
+        await api(profilePath(activeProfileId, `/servers/${encodeURIComponent(editingServer.name)}`), {
           method: "PATCH",
           body: JSON.stringify(serverForm),
         });
       } else {
-        await api("/servers", {
+        await api(profilePath(activeProfileId, "/servers"), {
           method: "POST",
           body: JSON.stringify(serverForm),
         });
@@ -231,7 +301,7 @@ export default function App() {
     }
 
     try {
-      await api(`/users/${encodeURIComponent(clientName)}`, {
+      await api(profilePath(activeProfileId, `/users/${encodeURIComponent(clientName)}`), {
         method: "DELETE",
       });
       await refreshAfterMutation();
@@ -244,14 +314,13 @@ export default function App() {
   }
 
   async function reorderServers(names: string[]) {
-    // Optimistic update: reorder local state immediately
     const nameToRecord = new Map(servers.map((s) => [s.name, s]));
     setServers(
       names.map((name, i) => ({ ...nameToRecord.get(name)!, sortOrder: i })),
     );
 
     try {
-      await api("/servers/order", {
+      await api(profilePath(activeProfileId, "/servers/order"), {
         method: "PUT",
         body: JSON.stringify({ order: names }),
       });
@@ -270,7 +339,7 @@ export default function App() {
     }
 
     try {
-      await api(`/servers/${encodeURIComponent(name)}`, {
+      await api(profilePath(activeProfileId, `/servers/${encodeURIComponent(name)}`), {
         method: "DELETE",
       });
       await refreshAfterMutation();
@@ -332,7 +401,7 @@ export default function App() {
       const serverCount = pingSelectionMode ? selectedServers.size : servers.length;
       const userCount = pingSelectionMode ? selectedUsers.size : users.length;
       const payload = await toast.promise(
-        api<PingResponse>("/servers/ping", {
+        api<PingResponse>(profilePath(activeProfileId, "/servers/ping"), {
           method: "POST",
           body: JSON.stringify(body),
         }),
@@ -404,6 +473,15 @@ export default function App() {
           </div>
         </Container>
       </Navbar>
+
+      <ProfileTabs
+        profiles={profiles}
+        activeProfileId={activeProfileId}
+        onSelect={switchProfile}
+        onCreateProfile={handleCreateProfile}
+        onRenameProfile={handleRenameProfile}
+        onDeleteProfile={handleDeleteProfile}
+      />
 
       <Container fluid="lg" className="py-4">
         <div className="mb-4">

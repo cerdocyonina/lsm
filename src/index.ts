@@ -68,7 +68,6 @@ async function handleRequest(req: Request): Promise<Response> {
   const [clientToken, ...extraParts] = pathParts;
 
   if (clientToken && extraParts.length === 0) {
-    const servers = storage.listServers();
     const userRecord = storage.getUserBySubscriptionToken(clientToken);
     if (!userRecord) {
       logger.warn(`invalid token attempt: ${req.method} ${pathname}`);
@@ -78,6 +77,7 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     }
 
+    const servers = storage.listServers(userRecord.profileId);
     const configs = servers.map((serverTemplate) =>
       serverTemplate.replace("DUMMY", userRecord.userUuid),
     );

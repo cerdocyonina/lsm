@@ -37,3 +37,4 @@ config.json
 *.sqlite
 .claude
 dumps
+.lsm-current-profile

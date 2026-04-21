@@ -2,6 +2,12 @@ export type Session = {
   username: string;
 };
 
+export type ProfileRecord = {
+  id: string;
+  name: string;
+  createdAt: number;
+};
+
 export type UserRecord = {
   clientName: string;
   userUuid: string;

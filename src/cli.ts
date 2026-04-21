@@ -3,20 +3,22 @@
 import chalk from "chalk";
 import { Command } from "commander";
 import dotenv from "dotenv";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { table } from "table";
 import { z } from "zod";
 import { version as VERSION } from "../package.json";
 import { XUIService } from "./3x-ui";
-import type { FullDump, LegacyConfig } from "./app-config";
+import type { ProfileDump } from "./app-config";
 import { loadDumpOrThrow } from "./app-config";
 import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import type { ClientHttpPingResult, PingResult, ServerIcmpResult } from "./ping";
 import { SqliteStorage } from "./storage";
+import { buildMultiProfileDump, buildProfileDump } from "./storage";
 import { createSubscriptionToken, loadAppContext } from "./sub-links";
-import { buildFullDump } from "./storage";
 
 dotenv.config({
   path: resolve(__dirname, "..", process.env.ENV_PATH || ".env"),
@@ -24,6 +26,38 @@ dotenv.config({
 });
 
 const SENSITIVE_SERVER_QUERY_FIELDS = ["pbk", "sid", "spx"] as const;
+const DEFAULT_PROFILE = "main";
+const PROFILE_FILE = resolve(__dirname, "..", ".lsm-current-profile");
+
+function readCurrentProfile(): string {
+  try {
+    if (existsSync(PROFILE_FILE)) {
+      const val = readFileSync(PROFILE_FILE, "utf8").trim();
+      if (val) return val;
+    }
+  } catch {
+    // ignore
+  }
+  return DEFAULT_PROFILE;
+}
+
+function writeCurrentProfile(profileId: string): void {
+  writeFileSync(PROFILE_FILE, `${profileId}\n`, "utf8");
+}
+
+function resolveProfile(program: Command): string {
+  return (program.opts().profile as string | undefined) ?? readCurrentProfile();
+}
+
+async function confirm(message: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(`${message} [y/N] `, (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase() === "y");
+    });
+  });
+}
 
 // progress bar
 class ProgressBar {
@@ -118,12 +152,13 @@ async function bootstrap() {
     .name("lsm-cli")
     .description("LSM CLI")
     .version(VERSION)
-    .option("-v, --verbose", "enable verbose (debug) logging");
+    .option("-v, --verbose", "enable verbose (debug) logging")
+    .option("-p, --profile <id>", "profile to operate on");
 
   // global commands
   program
     .command("import-json <path>")
-    .description("Import JSON config (plain legacy format) or full dump")
+    .description("Import JSON config, full dump (single-profile), or multi-profile dump")
     .option("--users <names>", "only import these users (comma-separated client names)")
     .option("--users-except <names>", "import all users except these (comma-separated client names)")
     .option("--servers <names>", "only import these servers (comma-separated names; templates for legacy format)")
@@ -151,49 +186,149 @@ async function bootstrap() {
           serversOnly ? serversOnly.has(identifier) : serversExcept ? !serversExcept.has(identifier) : true;
 
         const databasePath = config.get("DATABASE_PATH");
-        const dump = loadDumpOrThrow(path);
+        const parsed = loadDumpOrThrow(path);
 
+        if (parsed.kind === "multi-profile") {
+          if (program.opts().profile) {
+            throw new Error("--profile cannot be combined with a multi-profile dump; omit --profile to import all profiles");
+          }
+          withStorage((storage) => {
+            storage.mergeAllFromMultiProfileDump(parsed.data);
+          });
+          const profileCount = Object.keys(parsed.data.profiles).length;
+          logger.info(`imported ${profileCount} profile(s) from ${path} into ${databasePath}`);
+          return;
+        }
+
+        const profileId = resolveProfile(program);
         let userCount: number;
         let serverCount: number;
 
         withStorage((storage) => {
-          if (Array.isArray(dump.USERS)) {
-            // Full dump format
-            const filtered: FullDump = {
-              USERS: (dump as FullDump).USERS.filter((u) => keepUser(u.clientName)),
-              SERVERS: (dump as FullDump).SERVERS.filter((s) => keepServer(s.name)),
+          if (parsed.kind === "single-profile") {
+            const filtered: ProfileDump = {
+              USERS: parsed.data.USERS.filter((u) => keepUser(u.clientName)),
+              SERVERS: parsed.data.SERVERS.filter((s) => keepServer(s.name)),
             };
-            storage.mergeFromFullDump(filtered);
+            storage.mergeProfileFromFullDump(profileId, filtered);
             userCount = filtered.USERS.length;
             serverCount = filtered.SERVERS.length;
           } else {
-            // Legacy plain format — servers identified by template string
-            const legacy = dump as LegacyConfig;
+            const legacy = parsed.data;
             const filteredUsers = Object.fromEntries(
               Object.entries(legacy.USERS).filter(([name]) => keepUser(name)),
             ) as Record<string, string>;
             const filteredServers = legacy.SERVERS.filter((tpl) => keepServer(tpl));
-            const filteredLegacy: LegacyConfig = { USERS: filteredUsers, SERVERS: filteredServers };
+            const filteredLegacy = { USERS: filteredUsers, SERVERS: filteredServers };
             const subLinkSecret = config.get("SUB_LINK_SECRET");
-            storage.mergeFromLegacyConfig(filteredLegacy, subLinkSecret);
+            storage.mergeProfileFromLegacyConfig(profileId, filteredLegacy, subLinkSecret);
             userCount = Object.keys(filteredUsers).length;
             serverCount = filteredServers.length;
           }
         });
 
         logger.info(
-          `imported ${userCount!} users and ${serverCount!} servers from ${path} into ${databasePath}`,
+          `imported ${userCount!} users and ${serverCount!} servers from ${path} into profile "${profileId}" in ${databasePath}`,
         );
       }),
     );
 
   program
     .command("json")
-    .description("Export full database dump as JSON (round-trippable via import-json)")
+    .description("Export full database dump as JSON (all profiles, or single profile with --profile)")
     .action(
       withErrorHandling(() => {
-        const dump = withStorage((storage) => buildFullDump(storage));
+        const profileOpt = program.opts().profile as string | undefined;
+        const dump = withStorage((storage) => {
+          if (profileOpt) {
+            return buildProfileDump(storage, profileOpt);
+          }
+          return buildMultiProfileDump(storage);
+        });
         console.log(JSON.stringify(dump, null, 2));
+      }),
+    );
+
+  // profile commands
+  const profileCmd = program.command("profile").description("Manage profiles");
+
+  profileCmd
+    .command("list")
+    .description("List all profiles")
+    .action(
+      withErrorHandling(() => {
+        const profiles = withStorage((storage) => storage.listProfiles());
+        const current = readCurrentProfile();
+        printTable(
+          ["ID", "Name", "Default", "Created At"],
+          profiles.map(({ id, name, createdAt }) => [
+            id,
+            name,
+            id === current ? "*" : "",
+            new Date(createdAt).toISOString(),
+          ]),
+        );
+      }),
+    );
+
+  profileCmd
+    .command("create <id> [name]")
+    .description("Create a new profile (ID must be lowercase alphanumeric, hyphens, or underscores)")
+    .action(
+      withErrorHandling((id, nameArg) => {
+        if (!/^[a-z0-9_-]+$/.test(id)) {
+          throw new Error("Profile ID must be lowercase alphanumeric, hyphens, or underscores");
+        }
+        const name = nameArg ?? id;
+        withStorage((storage) => storage.createProfile(id, name, Date.now()));
+        logger.info(`created profile "${id}"`);
+      }),
+    );
+
+  profileCmd
+    .command("rename <id> <newName>")
+    .description("Rename a profile (changes display name, not the ID)")
+    .action(
+      withErrorHandling((id, newName) => {
+        const ok = withStorage((storage) => storage.renameProfile(id, newName));
+        if (!ok) throw new Error(`Unknown profile: ${id}`);
+        logger.info(`renamed profile "${id}" to "${newName}"`);
+      }),
+    );
+
+  profileCmd
+    .command("delete <id>")
+    .description("Delete a profile and all its users and servers")
+    .option("--force", "skip confirmation prompt")
+    .action(
+      withErrorHandling(async (id, options) => {
+        if (!options.force) {
+          const userCount = withStorage((storage) => storage.listUsers(id).length);
+          const serverCount = withStorage((storage) => storage.listServerRecords(id).length);
+          const ok = await confirm(
+            `Delete profile "${id}" with ${userCount} user(s) and ${serverCount} server(s)?`,
+          );
+          if (!ok) {
+            logger.info("aborted");
+            return;
+          }
+        }
+        const deleted = withStorage((storage) => storage.deleteProfile(id));
+        if (!deleted) throw new Error(`Unknown profile: ${id}`);
+        logger.info(`deleted profile "${id}"`);
+      }),
+    );
+
+  profileCmd
+    .command("set-default <id>")
+    .description("Set the default profile for CLI commands")
+    .action(
+      withErrorHandling((id) => {
+        withStorage((storage) => {
+          if (!storage.getProfile(id)) throw new Error(`Unknown profile: ${id}`);
+        });
+        writeCurrentProfile(id);
+        logger.info(`default profile set to "${id}"`);
       }),
     );
 
@@ -206,7 +341,8 @@ async function bootstrap() {
     .option("--json", "Output as JSON")
     .action(
       withErrorHandling((baseUrlArg, options) => {
-        const { port, baseUrl, users, getSubLink } = loadAppContext();
+        const profileId = resolveProfile(program);
+        const { port, baseUrl, users, getSubLink } = loadAppContext(profileId);
         const resolvedBaseUrl =
           baseUrlArg ?? baseUrl ?? `http://127.0.0.1:${port}`;
 
@@ -231,7 +367,8 @@ async function bootstrap() {
     .description("Get subscription link for a specific user")
     .action(
       withErrorHandling((clientName, baseUrlArg) => {
-        const { port, baseUrl, users, getSubLink } = loadAppContext();
+        const profileId = resolveProfile(program);
+        const { port, baseUrl, users, getSubLink } = loadAppContext(profileId);
         if (!(clientName in users))
           throw new Error(`Unknown client: ${clientName}`);
 
@@ -246,19 +383,21 @@ async function bootstrap() {
     .description("Add a new user (UUID is generated if not provided)")
     .action(
       withErrorHandling((clientName, userUuid) => {
+        const profileId = resolveProfile(program);
         const resolvedUuid = userUuid ?? crypto.randomUUID();
         assertUuid(resolvedUuid);
         const subLinkSecret = config.get("SUB_LINK_SECRET");
 
         withStorage((storage) => {
           storage.addUser(
+            profileId,
             clientName,
-            createSubscriptionToken(clientName, subLinkSecret),
+            createSubscriptionToken(profileId, clientName, subLinkSecret),
             resolvedUuid,
             Date.now(),
           );
         });
-        logger.info(`stored user "${clientName}" with uuid ${resolvedUuid}`);
+        logger.info(`stored user "${clientName}" with uuid ${resolvedUuid} in profile "${profileId}"`);
       }),
     );
 
@@ -267,8 +406,9 @@ async function bootstrap() {
     .description("Rename an existing user")
     .action(
       withErrorHandling((oldName, newName) => {
+        const profileId = resolveProfile(program);
         const renamed = withStorage((storage) =>
-          storage.renameUser(oldName, newName),
+          storage.renameUser(profileId, oldName, newName),
         );
         if (!renamed) throw new Error(`Unknown client: ${oldName}`);
         logger.info(`renamed user "${oldName}" to "${newName}"`);
@@ -280,9 +420,10 @@ async function bootstrap() {
     .description("Update UUID for a user")
     .action(
       withErrorHandling((name, newUuid) => {
+        const profileId = resolveProfile(program);
         assertUuid(newUuid);
         const updated = withStorage((storage) =>
-          storage.setUserUuid(name, newUuid),
+          storage.setUserUuid(profileId, name, newUuid),
         );
         if (!updated) throw new Error(`Unknown client: ${name}`);
         logger.info(`updated uuid for user "${name}"`);
@@ -294,8 +435,9 @@ async function bootstrap() {
     .description("Remove a user")
     .action(
       withErrorHandling((clientName) => {
+        const profileId = resolveProfile(program);
         const removed = withStorage((storage) =>
-          storage.removeUser(clientName),
+          storage.removeUser(profileId, clientName),
         );
         if (!removed) throw new Error(`Unknown client: ${clientName}`);
         logger.info(`removed user "${clientName}"`);
@@ -312,8 +454,9 @@ async function bootstrap() {
     .option("--full", "Show full unmasked templates")
     .action(
       withErrorHandling((options) => {
+        const profileId = resolveProfile(program);
         const serverRecords = withStorage((storage) =>
-          storage.listServerRecords(),
+          storage.listServerRecords(profileId),
         );
 
         if (options.json) {
@@ -344,8 +487,9 @@ async function bootstrap() {
     .description("Add a new server template")
     .action(
       withErrorHandling((name, template) => {
-        withStorage((storage) => storage.addServer(name, template, Date.now()));
-        logger.info(`stored server "${name}"`);
+        const profileId = resolveProfile(program);
+        withStorage((storage) => storage.addServer(profileId, name, template, Date.now()));
+        logger.info(`stored server "${name}" in profile "${profileId}"`);
       }),
     );
 
@@ -354,7 +498,8 @@ async function bootstrap() {
     .description("Get full URL/template for a server")
     .action(
       withErrorHandling((name) => {
-        const template = withStorage((storage) => storage.getServerUrl(name));
+        const profileId = resolveProfile(program);
+        const template = withStorage((storage) => storage.getServerUrl(profileId, name));
         if (!template) throw new Error(`Unknown server name: ${name}`);
         console.log(template);
       }),
@@ -365,8 +510,9 @@ async function bootstrap() {
     .description("Rename a server")
     .action(
       withErrorHandling((oldName, newName) => {
+        const profileId = resolveProfile(program);
         const renamed = withStorage((storage) =>
-          storage.renameServer(oldName, newName),
+          storage.renameServer(profileId, oldName, newName),
         );
         if (!renamed) throw new Error(`Unknown server name: ${oldName}`);
         logger.info(`renamed server "${oldName}" to "${newName}"`);
@@ -378,8 +524,9 @@ async function bootstrap() {
     .description("Update URL/template for a server")
     .action(
       withErrorHandling((name, newUrl) => {
+        const profileId = resolveProfile(program);
         const updated = withStorage((storage) =>
-          storage.setServerUrl(name, newUrl),
+          storage.setServerUrl(profileId, name, newUrl),
         );
         if (!updated) throw new Error(`Unknown server name: ${name}`);
         logger.info(`updated url for server "${name}"`);
@@ -391,7 +538,8 @@ async function bootstrap() {
     .description("Remove a server")
     .action(
       withErrorHandling((name) => {
-        const removed = withStorage((storage) => storage.removeServer(name));
+        const profileId = resolveProfile(program);
+        const removed = withStorage((storage) => storage.removeServer(profileId, name));
         if (!removed) throw new Error(`Unknown server name: ${name}`);
         logger.info(`removed server "${name}"`);
       }),
@@ -443,15 +591,16 @@ async function bootstrap() {
         const keepUser = (name: string) =>
           usersOnly ? usersOnly.has(name) : usersExcept ? !usersExcept.has(name) : true;
 
+        const profileId = resolveProfile(program);
         const { serverRecords, users } = withStorage((storage) => {
-          let records = storage.listServerRecords();
+          let records = storage.listServerRecords(profileId);
           if (nameArg) {
             records = records.filter((s) => s.name === nameArg);
             if (records.length === 0) throw new Error(`Unknown server name: ${nameArg}`);
           } else {
             records = records.filter((s) => keepServer(s.name));
           }
-          const allUsers = storage.listUsers().filter((u) => keepUser(u.clientName));
+          const allUsers = storage.listUsers(profileId).filter((u) => keepUser(u.clientName));
           return { serverRecords: records, users: allUsers };
         });
 
@@ -486,7 +635,6 @@ async function bootstrap() {
           );
         }
 
-        // HTTP check — done once upfront before starting any pings
         if (strategy !== "icmp") {
           const httpReq = checkHttpPingRequirements();
           if (!httpReq.ok) {
@@ -510,7 +658,6 @@ async function bootstrap() {
             }
             return;
           }
-          // strategy === "all": print ICMP table now, HTTP table follows
           if (!options.json) printIcmpTable(icmpResults);
         }
 
@@ -561,7 +708,8 @@ async function bootstrap() {
           );
         }
 
-        const users = withStorage((storage) => storage.listUsers());
+        const profileId = resolveProfile(program);
+        const users = withStorage((storage) => storage.listUsers(profileId));
         const xuiService = new XUIService({ host, user, password });
 
         logger.debug("logging into 3x-ui...");

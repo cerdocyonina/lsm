@@ -1,8 +1,15 @@
 import { createHmac } from "node:crypto";
 import { Database } from "bun:sqlite";
-import type { FullDump, LegacyConfig } from "./app-config";
+import type { LegacyConfig, MultiProfileDump, ProfileDump } from "./app-config";
+
+export type ProfileRecord = {
+  id: string;
+  name: string;
+  createdAt: number;
+};
 
 export type UserRecord = {
+  profileId: string;
   clientName: string;
   subscriptionToken: string;
   userUuid: string;
@@ -17,25 +24,33 @@ export type ServerRecord = {
 };
 
 export interface Storage {
-  listUsers(): UserRecord[];
+  listProfiles(): ProfileRecord[];
+  getProfile(id: string): ProfileRecord | null;
+  createProfile(id: string, name: string, createdAt: number): void;
+  renameProfile(id: string, newName: string): boolean;
+  deleteProfile(id: string): boolean;
+
+  listUsers(profileId: string): UserRecord[];
   getUserBySubscriptionToken(subscriptionToken: string): UserRecord | null;
-  getUserUuid(clientName: string): string | null;
-  addUser(clientName: string, subscriptionToken: string, userUuid: string, createdAt: number): void;
-  renameUser(oldName: string, newName: string): boolean;
-  setUserUuid(clientName: string, userUuid: string): boolean;
-  removeUser(clientName: string): boolean;
-  listServers(): string[];
-  listServerRecords(): ServerRecord[];
-  getServerUrl(name: string): string | null;
-  addServer(name: string, template: string, createdAt: number): void;
-  renameServer(oldName: string, newName: string): boolean;
-  setServerUrl(name: string, template: string): boolean;
-  removeServer(name: string): boolean;
-  reorderServers(names: string[]): void;
-  replaceFromConfig(config: LegacyConfig, subLinkSecret: string): void;
-  replaceFromFullDump(dump: FullDump): void;
-  mergeFromFullDump(dump: FullDump): void;
-  mergeFromLegacyConfig(config: LegacyConfig, subLinkSecret: string): void;
+  addUser(profileId: string, clientName: string, subscriptionToken: string, userUuid: string, createdAt: number): void;
+  renameUser(profileId: string, oldName: string, newName: string): boolean;
+  setUserUuid(profileId: string, clientName: string, userUuid: string): boolean;
+  removeUser(profileId: string, clientName: string): boolean;
+
+  listServers(profileId: string): string[];
+  listServerRecords(profileId: string): ServerRecord[];
+  getServerUrl(profileId: string, name: string): string | null;
+  addServer(profileId: string, name: string, template: string, createdAt: number): void;
+  renameServer(profileId: string, oldName: string, newName: string): boolean;
+  setServerUrl(profileId: string, name: string, template: string): boolean;
+  removeServer(profileId: string, name: string): boolean;
+  reorderServers(profileId: string, names: string[]): void;
+
+  replaceProfileFromFullDump(profileId: string, dump: ProfileDump): void;
+  mergeProfileFromFullDump(profileId: string, dump: ProfileDump): void;
+  mergeProfileFromLegacyConfig(profileId: string, config: LegacyConfig, subLinkSecret: string): void;
+  mergeAllFromMultiProfileDump(dump: MultiProfileDump): void;
+
   close(): void;
 }
 
@@ -44,36 +59,104 @@ export class SqliteStorage implements Storage {
 
   public constructor(path: string) {
     this.db = new Database(path, { create: true, strict: true });
+    this.db.exec("PRAGMA foreign_keys = ON;");
     this.initialize();
   }
 
-  public listUsers(): UserRecord[] {
+  private initialize(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS profiles (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS users (
+        profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+        client_name TEXT NOT NULL,
+        subscription_token TEXT NOT NULL UNIQUE,
+        user_uuid TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (profile_id, client_name)
+      );
+      CREATE TABLE IF NOT EXISTS servers (
+        profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        sort_order INTEGER NOT NULL,
+        template TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (profile_id, name)
+      );
+    `);
+    this.db
+      .query("INSERT OR IGNORE INTO profiles (id, name, created_at) VALUES (?1, ?2, ?3)")
+      .run("main", "Main", Date.now());
+  }
+
+  // Profile methods
+
+  public listProfiles(): ProfileRecord[] {
+    return this.db
+      .query("SELECT id, name, created_at AS createdAt FROM profiles ORDER BY created_at, id")
+      .all() as ProfileRecord[];
+  }
+
+  public getProfile(id: string): ProfileRecord | null {
+    return (
+      (this.db
+        .query("SELECT id, name, created_at AS createdAt FROM profiles WHERE id = ?1")
+        .get(id) as ProfileRecord | null) ?? null
+    );
+  }
+
+  public createProfile(id: string, name: string, createdAt: number): void {
+    try {
+      this.db
+        .query("INSERT INTO profiles (id, name, created_at) VALUES (?1, ?2, ?3)")
+        .run(id, name, createdAt);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+        throw new Error(`Profile "${id}" already exists.`);
+      }
+      throw err;
+    }
+  }
+
+  public renameProfile(id: string, newName: string): boolean {
+    const result = this.db
+      .query("UPDATE profiles SET name = ?1 WHERE id = ?2")
+      .run(newName, id);
+    return result.changes > 0;
+  }
+
+  public deleteProfile(id: string): boolean {
+    const result = this.db
+      .query("DELETE FROM profiles WHERE id = ?1")
+      .run(id);
+    return result.changes > 0;
+  }
+
+  // User methods
+
+  public listUsers(profileId: string): UserRecord[] {
     return this.db
       .query(
-        "SELECT client_name AS clientName, subscription_token AS subscriptionToken, user_uuid AS userUuid, created_at AS createdAt FROM users ORDER BY created_at DESC, client_name",
+        "SELECT profile_id AS profileId, client_name AS clientName, subscription_token AS subscriptionToken, user_uuid AS userUuid, created_at AS createdAt FROM users WHERE profile_id = ?1 ORDER BY created_at DESC, client_name",
       )
-      .all() as UserRecord[];
+      .all(profileId) as UserRecord[];
   }
 
   public getUserBySubscriptionToken(subscriptionToken: string): UserRecord | null {
     return (
       (this.db
         .query(
-          "SELECT client_name AS clientName, subscription_token AS subscriptionToken, user_uuid AS userUuid, created_at AS createdAt FROM users WHERE subscription_token = ?1",
+          "SELECT profile_id AS profileId, client_name AS clientName, subscription_token AS subscriptionToken, user_uuid AS userUuid, created_at AS createdAt FROM users WHERE subscription_token = ?1",
         )
         .get(subscriptionToken) as UserRecord | null) ?? null
     );
   }
 
-  public getUserUuid(clientName: string): string | null {
-    const row = this.db
-      .query("SELECT user_uuid AS userUuid FROM users WHERE client_name = ?1")
-      .get(clientName) as { userUuid: string } | null;
-
-    return row?.userUuid ?? null;
-  }
-
   public addUser(
+    profileId: string,
     clientName: string,
     subscriptionToken: string,
     userUuid: string,
@@ -82,9 +165,9 @@ export class SqliteStorage implements Storage {
     try {
       this.db
         .query(
-          "INSERT INTO users (client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4)",
+          "INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
         )
-        .run(clientName, subscriptionToken, userUuid, createdAt);
+        .run(profileId, clientName, subscriptionToken, userUuid, createdAt);
     } catch (err) {
       if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
         throw new Error(`User "${clientName}" already exists.`);
@@ -93,60 +176,58 @@ export class SqliteStorage implements Storage {
     }
   }
 
-  public renameUser(oldName: string, newName: string): boolean {
+  public renameUser(profileId: string, oldName: string, newName: string): boolean {
     const result = this.db
-      .query("UPDATE users SET client_name = ?1 WHERE client_name = ?2")
-      .run(newName, oldName);
-
+      .query("UPDATE users SET client_name = ?1 WHERE profile_id = ?2 AND client_name = ?3")
+      .run(newName, profileId, oldName);
     return result.changes > 0;
   }
 
-  public setUserUuid(clientName: string, userUuid: string): boolean {
+  public setUserUuid(profileId: string, clientName: string, userUuid: string): boolean {
     const result = this.db
-      .query("UPDATE users SET user_uuid = ?1 WHERE client_name = ?2")
-      .run(userUuid, clientName);
-
+      .query("UPDATE users SET user_uuid = ?1 WHERE profile_id = ?2 AND client_name = ?3")
+      .run(userUuid, profileId, clientName);
     return result.changes > 0;
   }
 
-  public removeUser(clientName: string): boolean {
+  public removeUser(profileId: string, clientName: string): boolean {
     const result = this.db
-      .query("DELETE FROM users WHERE client_name = ?1")
-      .run(clientName);
-
+      .query("DELETE FROM users WHERE profile_id = ?1 AND client_name = ?2")
+      .run(profileId, clientName);
     return result.changes > 0;
   }
 
-  public listServers(): string[] {
-    const rows = this.listServerRecords();
+  // Server methods
 
-    return rows.map((row) => row.template);
+  public listServers(profileId: string): string[] {
+    return this.listServerRecords(profileId).map((r) => r.template);
   }
 
-  public listServerRecords(): ServerRecord[] {
+  public listServerRecords(profileId: string): ServerRecord[] {
     return this.db
       .query(
-        "SELECT name, sort_order AS sortOrder, template, created_at AS createdAt FROM servers ORDER BY sort_order, rowid",
+        "SELECT name, sort_order AS sortOrder, template, created_at AS createdAt FROM servers WHERE profile_id = ?1 ORDER BY sort_order, rowid",
       )
-      .all() as ServerRecord[];
+      .all(profileId) as ServerRecord[];
   }
 
-  public getServerUrl(name: string): string | null {
+  public getServerUrl(profileId: string, name: string): string | null {
     const row = this.db
-      .query("SELECT template FROM servers WHERE name = ?1")
-      .get(name) as { template: string } | null;
-
+      .query("SELECT template FROM servers WHERE profile_id = ?1 AND name = ?2")
+      .get(profileId, name) as { template: string } | null;
     return row?.template ?? null;
   }
 
-  public addServer(name: string, template: string, createdAt: number): void {
+  public addServer(profileId: string, name: string, template: string, createdAt: number): void {
     const row = this.db
-      .query("SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder FROM servers")
-      .get() as { nextSortOrder: number };
+      .query("SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder FROM servers WHERE profile_id = ?1")
+      .get(profileId) as { nextSortOrder: number };
     try {
       this.db
-        .query("INSERT INTO servers (name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4)")
-        .run(name, row.nextSortOrder, template, createdAt);
+        .query(
+          "INSERT INTO servers (profile_id, name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .run(profileId, name, row.nextSortOrder, template, createdAt);
     } catch (err) {
       if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
         throw new Error(`Server "${name}" already exists.`);
@@ -155,159 +236,135 @@ export class SqliteStorage implements Storage {
     }
   }
 
-  public renameServer(oldName: string, newName: string): boolean {
+  public renameServer(profileId: string, oldName: string, newName: string): boolean {
     const result = this.db
-      .query("UPDATE servers SET name = ?1 WHERE name = ?2")
-      .run(newName, oldName);
-
+      .query("UPDATE servers SET name = ?1 WHERE profile_id = ?2 AND name = ?3")
+      .run(newName, profileId, oldName);
     return result.changes > 0;
   }
 
-  public setServerUrl(name: string, template: string): boolean {
+  public setServerUrl(profileId: string, name: string, template: string): boolean {
     const result = this.db
-      .query("UPDATE servers SET template = ?1 WHERE name = ?2")
-      .run(template, name);
-
+      .query("UPDATE servers SET template = ?1 WHERE profile_id = ?2 AND name = ?3")
+      .run(template, profileId, name);
     return result.changes > 0;
   }
 
-  public removeServer(name: string): boolean {
+  public removeServer(profileId: string, name: string): boolean {
     const result = this.db
-      .query("DELETE FROM servers WHERE name = ?1")
-      .run(name);
-
+      .query("DELETE FROM servers WHERE profile_id = ?1 AND name = ?2")
+      .run(profileId, name);
     return result.changes > 0;
   }
 
-  public reorderServers(names: string[]): void {
-    const tx = this.db.transaction((nameList: string[]) => {
-      const update = this.db.query("UPDATE servers SET sort_order = ?1 WHERE name = ?2");
+  public reorderServers(profileId: string, names: string[]): void {
+    const tx = this.db.transaction((pid: string, nameList: string[]) => {
+      const update = this.db.query(
+        "UPDATE servers SET sort_order = ?1 WHERE profile_id = ?2 AND name = ?3",
+      );
       nameList.forEach((name, index) => {
-        update.run(index, name);
+        update.run(index, pid, name);
       });
     });
-    tx(names);
+    tx(profileId, names);
   }
 
-  public replaceFromConfig(config: LegacyConfig, subLinkSecret: string): void {
-    const tx = this.db.transaction(
-      (appConfig: LegacyConfig, secret: string) => {
-        this.db.query("DELETE FROM users").run();
-        this.db.query("DELETE FROM servers").run();
+  // Import/export methods
 
-        const now = Date.now();
-        const insertUser = this.db.query(
-          "INSERT INTO users (client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4)",
-        );
-        for (const [clientName, userUuid] of Object.entries(appConfig.USERS) as [string, string][]) {
-          insertUser.run(
-            clientName,
-            createHmac("sha256", secret).update(clientName).digest("base64url"),
-            userUuid,
-            now,
-          );
-        }
-
-        const insertServer = this.db.query(
-          "INSERT INTO servers (name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4)",
-        );
-        appConfig.SERVERS.forEach((template: string, index: number) => {
-          insertServer.run(`server-${index + 1}`, index, template, now);
-        });
-      },
-    );
-
-    tx(config, subLinkSecret);
-  }
-
-  public replaceFromFullDump(dump: FullDump): void {
-    const tx = this.db.transaction((d: FullDump) => {
-      this.db.query("DELETE FROM users").run();
-      this.db.query("DELETE FROM servers").run();
+  public replaceProfileFromFullDump(profileId: string, dump: ProfileDump): void {
+    const tx = this.db.transaction((pid: string, d: ProfileDump) => {
+      this.db.query("DELETE FROM users WHERE profile_id = ?1").run(pid);
+      this.db.query("DELETE FROM servers WHERE profile_id = ?1").run(pid);
 
       const insertUser = this.db.query(
-        "INSERT INTO users (client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
       );
       for (const user of d.USERS) {
-        insertUser.run(user.clientName, user.subscriptionToken, user.userUuid, user.createdAt);
+        insertUser.run(pid, user.clientName, user.subscriptionToken, user.userUuid, user.createdAt);
       }
 
       const insertServer = this.db.query(
-        "INSERT INTO servers (name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO servers (profile_id, name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
       );
       for (const server of d.SERVERS) {
-        insertServer.run(server.name, server.sortOrder, server.template, server.createdAt);
+        insertServer.run(pid, server.name, server.sortOrder, server.template, server.createdAt);
       }
     });
-
-    tx(dump);
+    tx(profileId, dump);
   }
 
-  // Merge incoming full dump into the DB. For each record:
-  //   - not in DB → insert
-  //   - in DB with older createdAt → update to incoming
-  //   - in DB with equal or newer createdAt → keep DB version (no-op)
-  public mergeFromFullDump(dump: FullDump): void {
-    const tx = this.db.transaction((d: FullDump) => {
+  public mergeProfileFromFullDump(profileId: string, dump: ProfileDump): void {
+    const tx = this.db.transaction((pid: string, d: ProfileDump) => {
       const upsertUser = this.db.query(`
-        INSERT INTO users (client_name, subscription_token, user_uuid, created_at)
-        VALUES (?1, ?2, ?3, ?4)
-        ON CONFLICT(client_name) DO UPDATE SET
+        INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(profile_id, client_name) DO UPDATE SET
           subscription_token = excluded.subscription_token,
           user_uuid = excluded.user_uuid,
           created_at = excluded.created_at
         WHERE excluded.created_at > users.created_at
       `);
       for (const user of d.USERS) {
-        upsertUser.run(user.clientName, user.subscriptionToken, user.userUuid, user.createdAt);
+        upsertUser.run(pid, user.clientName, user.subscriptionToken, user.userUuid, user.createdAt);
       }
 
       const upsertServer = this.db.query(`
-        INSERT INTO servers (name, sort_order, template, created_at)
-        VALUES (?1, ?2, ?3, ?4)
-        ON CONFLICT(name) DO UPDATE SET
+        INSERT INTO servers (profile_id, name, sort_order, template, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(profile_id, name) DO UPDATE SET
           sort_order = excluded.sort_order,
           template = excluded.template,
           created_at = excluded.created_at
         WHERE excluded.created_at > servers.created_at
       `);
       for (const server of d.SERVERS) {
-        upsertServer.run(server.name, server.sortOrder, server.template, server.createdAt);
+        upsertServer.run(pid, server.name, server.sortOrder, server.template, server.createdAt);
       }
     });
-
-    tx(dump);
+    tx(profileId, dump);
   }
 
-  // Merge legacy config into the DB.
-  //   Users: insert if clientName not present (keep existing, no createdAt to compare).
-  //   Servers: insert if template not already present (matched by template value).
-  public mergeFromLegacyConfig(config: LegacyConfig, subLinkSecret: string): void {
-    const tx = this.db.transaction((appConfig: LegacyConfig, secret: string) => {
+  public mergeProfileFromLegacyConfig(profileId: string, config: LegacyConfig, subLinkSecret: string): void {
+    const tx = this.db.transaction((pid: string, appConfig: LegacyConfig, secret: string) => {
       const now = Date.now();
 
       const insertUser = this.db.query(`
-        INSERT INTO users (client_name, subscription_token, user_uuid, created_at)
-        VALUES (?1, ?2, ?3, ?4)
-        ON CONFLICT(client_name) DO NOTHING
+        INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(profile_id, client_name) DO NOTHING
       `);
       for (const [clientName, userUuid] of Object.entries(appConfig.USERS) as [string, string][]) {
         insertUser.run(
+          pid,
           clientName,
-          createHmac("sha256", secret).update(clientName).digest("base64url"),
+          createHmac("sha256", secret).update(`${pid}:${clientName}`).digest("base64url"),
           userUuid,
           now,
         );
       }
 
       const existingTemplates = new Set(
-        (this.db.query("SELECT template FROM servers").all() as { template: string }[])
-          .map((r) => r.template),
+        (
+          this.db.query("SELECT template FROM servers WHERE profile_id = ?1").all(pid) as {
+            template: string;
+          }[]
+        ).map((r) => r.template),
       );
       const existingNames = new Set(
-        (this.db.query("SELECT name FROM servers").all() as { name: string }[])
-          .map((r) => r.name),
+        (
+          this.db.query("SELECT name FROM servers WHERE profile_id = ?1").all(pid) as {
+            name: string;
+          }[]
+        ).map((r) => r.name),
       );
+
+      const getNextSortOrder = this.db.query(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder FROM servers WHERE profile_id = ?1",
+      );
+      const insertServer = this.db.query(
+        "INSERT INTO servers (profile_id, name, sort_order, template, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+      );
+
       let counter = existingNames.size;
       for (const template of appConfig.SERVERS) {
         if (existingTemplates.has(template)) continue;
@@ -317,51 +374,84 @@ export class SqliteStorage implements Storage {
           counter++;
           name = `server-${counter}`;
         }
-        this.addServer(name, template, now);
+        const row = getNextSortOrder.get(pid) as { nextSortOrder: number };
+        insertServer.run(pid, name, row.nextSortOrder, template, now);
         existingNames.add(name);
         existingTemplates.add(template);
       }
     });
+    tx(profileId, config, subLinkSecret);
+  }
 
-    tx(config, subLinkSecret);
+  public mergeAllFromMultiProfileDump(dump: MultiProfileDump): void {
+    const tx = this.db.transaction((d: MultiProfileDump) => {
+      const now = Date.now();
+
+      const ensureProfile = this.db.query(`
+        INSERT INTO profiles (id, name, created_at)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT(id) DO NOTHING
+      `);
+      const upsertUser = this.db.query(`
+        INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(profile_id, client_name) DO UPDATE SET
+          subscription_token = excluded.subscription_token,
+          user_uuid = excluded.user_uuid,
+          created_at = excluded.created_at
+        WHERE excluded.created_at > users.created_at
+      `);
+      const upsertServer = this.db.query(`
+        INSERT INTO servers (profile_id, name, sort_order, template, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(profile_id, name) DO UPDATE SET
+          sort_order = excluded.sort_order,
+          template = excluded.template,
+          created_at = excluded.created_at
+        WHERE excluded.created_at > servers.created_at
+      `);
+
+      for (const [profileId, profileData] of Object.entries(d.profiles)) {
+        ensureProfile.run(profileId, profileId, now);
+
+        for (const user of profileData.USERS) {
+          upsertUser.run(profileId, user.clientName, user.subscriptionToken, user.userUuid, user.createdAt);
+        }
+        for (const server of profileData.SERVERS) {
+          upsertServer.run(profileId, server.name, server.sortOrder, server.template, server.createdAt);
+        }
+      }
+    });
+    tx(dump);
   }
 
   public close(): void {
     this.db.close();
   }
-
-  private initialize(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS users (
-        client_name TEXT PRIMARY KEY,
-        subscription_token TEXT NOT NULL UNIQUE,
-        user_uuid TEXT NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT 0
-      );
-
-      CREATE TABLE IF NOT EXISTS servers (
-        name TEXT PRIMARY KEY,
-        sort_order INTEGER NOT NULL,
-        template TEXT NOT NULL,
-        created_at INTEGER NOT NULL DEFAULT 0
-      );
-    `);
-  }
 }
 
-export function buildFullDump(storage: Storage): FullDump {
+export function buildProfileDump(storage: Storage, profileId: string): ProfileDump {
   return {
-    USERS: storage.listUsers().map(({ clientName, userUuid, subscriptionToken, createdAt }) => ({
+    USERS: storage.listUsers(profileId).map(({ clientName, userUuid, subscriptionToken, createdAt }) => ({
       clientName,
       userUuid,
       subscriptionToken,
       createdAt,
     })),
-    SERVERS: storage.listServerRecords().map(({ name, sortOrder, template, createdAt }) => ({
+    SERVERS: storage.listServerRecords(profileId).map(({ name, sortOrder, template, createdAt }) => ({
       name,
       sortOrder,
       template,
       createdAt,
     })),
   };
+}
+
+export function buildMultiProfileDump(storage: Storage): MultiProfileDump {
+  const profiles = storage.listProfiles();
+  const result: MultiProfileDump = { profiles: {} };
+  for (const profile of profiles) {
+    result.profiles[profile.id] = buildProfileDump(storage, profile.id);
+  }
+  return result;
 }

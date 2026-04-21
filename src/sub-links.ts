@@ -16,11 +16,11 @@ function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-export function createSubscriptionToken(token: string, secret: string): string {
-  return createHmac("sha256", secret).update(token).digest("base64url");
+export function createSubscriptionToken(profileId: string, clientName: string, secret: string): string {
+  return createHmac("sha256", secret).update(`${profileId}:${clientName}`).digest("base64url");
 }
 
-export function loadAppContext(): AppContext {
+export function loadAppContext(profileId: string): AppContext {
   config.init(validateEnvOrThrow());
 
   const port = config.get("PORT");
@@ -28,8 +28,8 @@ export function loadAppContext(): AppContext {
   const databasePath = config.get("DATABASE_PATH");
   const subLinkSecret = config.get("SUB_LINK_SECRET");
   const storage = new SqliteStorage(databasePath);
-  const userRecords = storage.listUsers();
-  const servers = storage.listServers();
+  const userRecords = storage.listUsers(profileId);
+  const servers = storage.listServers(profileId);
   storage.close();
 
   const users = Object.fromEntries(

@@ -100,7 +100,7 @@ async function handleRequest(req: Request): Promise<Response> {
     req,
     pathname,
     storage,
-    (name) => createSubscriptionToken(name, config.get("SUB_LINK_SECRET")),
+    (profileId, name) => createSubscriptionToken(profileId, name, config.get("SUB_LINK_SECRET")),
     adminBasePath,
     config.get("BASE_URL"),
     loginRateLimiter,

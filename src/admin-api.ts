@@ -8,11 +8,20 @@ import {
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
-import type { Storage } from "./storage";
+import type { ProfileRecord, Storage } from "./storage";
 
 const loginSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
+});
+
+const createProfileSchema = z.object({
+  id: z.string().min(1).regex(/^[a-z0-9_-]+$/, "Profile ID must be lowercase alphanumeric, hyphens, or underscores"),
+  name: z.string().min(1),
+});
+
+const updateProfileSchema = z.object({
+  name: z.string().min(1),
 });
 
 const createUserSchema = z.object({
@@ -103,16 +112,6 @@ function createSubscriptionUrl(
   return `${baseUrl}/${subscriptionToken}`;
 }
 
-function getUserPathName(pathname: string): string | null {
-  const match = pathname.match(/^\/users\/([^/]+)$/);
-  return match ? decodeURIComponent(match[1] ?? "") : null;
-}
-
-function getServerPathName(pathname: string): string | null {
-  const match = pathname.match(/^\/servers\/([^/]+)$/);
-  return match ? decodeURIComponent(match[1] ?? "") : null;
-}
-
 function requireAuth(req: Request): Response | null {
   if (isAdminAuthenticated(req)) {
     return null;
@@ -121,8 +120,16 @@ function requireAuth(req: Request): Response | null {
   return adminErrorResponse(401, "Unauthorized.");
 }
 
-function mapUsers(storage: Storage, baseUrl: string) {
-  return storage.listUsers().map((user) => ({
+function requireProfile(storage: Storage, profileId: string): ProfileRecord | Response {
+  const profile = storage.getProfile(profileId);
+  if (!profile) {
+    return adminErrorResponse(404, `Unknown profile: ${profileId}`);
+  }
+  return profile;
+}
+
+function mapUsers(storage: Storage, profileId: string, baseUrl: string) {
+  return storage.listUsers(profileId).map((user) => ({
     clientName: user.clientName,
     userUuid: user.userUuid,
     subscriptionToken: user.subscriptionToken,
@@ -131,8 +138,8 @@ function mapUsers(storage: Storage, baseUrl: string) {
   }));
 }
 
-function mapServers(storage: Storage) {
-  return storage.listServerRecords().map((server) => ({
+function mapServers(storage: Storage, profileId: string) {
+  return storage.listServerRecords(profileId).map((server) => ({
     name: server.name,
     sortOrder: server.sortOrder,
     template: server.template,
@@ -140,11 +147,31 @@ function mapServers(storage: Storage) {
   }));
 }
 
+// Extracts profileId and the sub-path under /profiles/:profileId
+function extractProfileRoute(pathname: string): { profileId: string; subPath: string } | null {
+  const match = pathname.match(/^\/profiles\/([^/]+)(\/.*)?$/);
+  if (!match) return null;
+  return {
+    profileId: decodeURIComponent(match[1] ?? ""),
+    subPath: match[2] ?? "/",
+  };
+}
+
+function getUserSubPath(subPath: string): string | null {
+  const match = subPath.match(/^\/users\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1] ?? "") : null;
+}
+
+function getServerSubPath(subPath: string): string | null {
+  const match = subPath.match(/^\/servers\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1] ?? "") : null;
+}
+
 export async function handleAdminApiRequest(
   req: Request,
   pathname: string,
   storage: Storage,
-  createSubscriptionToken: (name: string) => string,
+  createSubscriptionToken: (profileId: string, name: string) => string,
   adminBasePath: string,
   baseUrl: string,
   loginRateLimiter: LoginRateLimiter,
@@ -238,11 +265,77 @@ export async function handleAdminApiRequest(
     return unauthorized;
   }
 
-  if (adminPathname === "/users" && req.method === "GET") {
-    return noStoreResponse(jsonResponse({ users: mapUsers(storage, baseUrl) }));
+  // Profile list and create
+  if (adminPathname === "/profiles" && req.method === "GET") {
+    return noStoreResponse(jsonResponse({ profiles: storage.listProfiles() }));
   }
 
-  if (adminPathname === "/users" && req.method === "POST") {
+  if (adminPathname === "/profiles" && req.method === "POST") {
+    const parsed = await parseJson(req, createProfileSchema);
+    if (parsed instanceof Response) {
+      return noStoreResponse(parsed);
+    }
+
+    try {
+      storage.createProfile(parsed.id, parsed.name, Date.now());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create profile.";
+      return adminErrorResponse(400, message);
+    }
+
+    return noStoreResponse(
+      jsonResponse({ profiles: storage.listProfiles() }, { status: 201 }),
+    );
+  }
+
+  // Profile-scoped routes: /profiles/:profileId/...
+  const profileRoute = extractProfileRoute(adminPathname);
+  if (!profileRoute) {
+    return adminErrorResponse(404, "Not found.");
+  }
+
+  const { profileId, subPath } = profileRoute;
+
+  // Profile rename and delete: /profiles/:profileId with no subpath
+  if (subPath === "/") {
+    if (req.method === "PATCH") {
+      const parsed = await parseJson(req, updateProfileSchema);
+      if (parsed instanceof Response) {
+        return noStoreResponse(parsed);
+      }
+
+      const renamed = storage.renameProfile(profileId, parsed.name);
+      if (!renamed) {
+        return adminErrorResponse(404, `Unknown profile: ${profileId}`);
+      }
+
+      return noStoreResponse(jsonResponse({ profiles: storage.listProfiles() }));
+    }
+
+    if (req.method === "DELETE") {
+      const deleted = storage.deleteProfile(profileId);
+      if (!deleted) {
+        return adminErrorResponse(404, `Unknown profile: ${profileId}`);
+      }
+
+      return noStoreResponse(new Response(null, { status: 204 }));
+    }
+
+    return adminErrorResponse(405, "Method not allowed.");
+  }
+
+  // All sub-routes require the profile to exist
+  const profileOrError = requireProfile(storage, profileId);
+  if (profileOrError instanceof Response) {
+    return profileOrError;
+  }
+
+  // Users
+  if (subPath === "/users" && req.method === "GET") {
+    return noStoreResponse(jsonResponse({ users: mapUsers(storage, profileId, baseUrl) }));
+  }
+
+  if (subPath === "/users" && req.method === "POST") {
     const parsed = await parseJson(req, createUserSchema);
     if (parsed instanceof Response) {
       return noStoreResponse(parsed);
@@ -250,8 +343,9 @@ export async function handleAdminApiRequest(
 
     try {
       storage.addUser(
+        profileId,
         parsed.clientName,
-        createSubscriptionToken(parsed.clientName),
+        createSubscriptionToken(profileId, parsed.clientName),
         parsed.userUuid,
         Date.now(),
       );
@@ -261,11 +355,11 @@ export async function handleAdminApiRequest(
     }
 
     return noStoreResponse(
-      jsonResponse({ users: mapUsers(storage, baseUrl) }, { status: 201 }),
+      jsonResponse({ users: mapUsers(storage, profileId, baseUrl) }, { status: 201 }),
     );
   }
 
-  const userPathName = getUserPathName(adminPathname);
+  const userPathName = getUserSubPath(subPath);
   if (userPathName && req.method === "PATCH") {
     const parsed = await parseJson(req, updateUserSchema);
     if (parsed instanceof Response) {
@@ -274,7 +368,7 @@ export async function handleAdminApiRequest(
 
     try {
       if (parsed.clientName !== undefined) {
-        const renamed = storage.renameUser(userPathName, parsed.clientName);
+        const renamed = storage.renameUser(profileId, userPathName, parsed.clientName);
         if (!renamed) {
           return adminErrorResponse(404, `Unknown client: ${userPathName}`);
         }
@@ -282,7 +376,7 @@ export async function handleAdminApiRequest(
 
       if (parsed.userUuid !== undefined) {
         const targetName = parsed.clientName ?? userPathName;
-        const updated = storage.setUserUuid(targetName, parsed.userUuid);
+        const updated = storage.setUserUuid(profileId, targetName, parsed.userUuid);
         if (!updated) {
           return adminErrorResponse(404, `Unknown client: ${targetName}`);
         }
@@ -293,11 +387,11 @@ export async function handleAdminApiRequest(
       return adminErrorResponse(400, message);
     }
 
-    return noStoreResponse(jsonResponse({ users: mapUsers(storage, baseUrl) }));
+    return noStoreResponse(jsonResponse({ users: mapUsers(storage, profileId, baseUrl) }));
   }
 
   if (userPathName && req.method === "DELETE") {
-    const removed = storage.removeUser(userPathName);
+    const removed = storage.removeUser(profileId, userPathName);
     if (!removed) {
       return adminErrorResponse(404, `Unknown client: ${userPathName}`);
     }
@@ -305,18 +399,19 @@ export async function handleAdminApiRequest(
     return noStoreResponse(new Response(null, { status: 204 }));
   }
 
-  if (adminPathname === "/servers" && req.method === "GET") {
-    return noStoreResponse(jsonResponse({ servers: mapServers(storage) }));
+  // Servers
+  if (subPath === "/servers" && req.method === "GET") {
+    return noStoreResponse(jsonResponse({ servers: mapServers(storage, profileId) }));
   }
 
-  if (adminPathname === "/servers" && req.method === "POST") {
+  if (subPath === "/servers" && req.method === "POST") {
     const parsed = await parseJson(req, createServerSchema);
     if (parsed instanceof Response) {
       return noStoreResponse(parsed);
     }
 
     try {
-      storage.addServer(parsed.name, parsed.template, Date.now());
+      storage.addServer(profileId, parsed.name, parsed.template, Date.now());
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to add server.";
@@ -324,68 +419,28 @@ export async function handleAdminApiRequest(
     }
 
     return noStoreResponse(
-      jsonResponse({ servers: mapServers(storage) }, { status: 201 }),
+      jsonResponse({ servers: mapServers(storage, profileId) }, { status: 201 }),
     );
   }
 
-  if (adminPathname === "/servers/order" && req.method === "PUT") {
+  if (subPath === "/servers/order" && req.method === "PUT") {
     const parsed = await parseJson(req, reorderServersSchema);
     if (parsed instanceof Response) {
       return noStoreResponse(parsed);
     }
 
-    storage.reorderServers(parsed.order);
-    return noStoreResponse(jsonResponse({ servers: mapServers(storage) }));
+    storage.reorderServers(profileId, parsed.order);
+    return noStoreResponse(jsonResponse({ servers: mapServers(storage, profileId) }));
   }
 
-  const serverPathName = getServerPathName(adminPathname);
-  if (serverPathName && req.method === "PATCH") {
-    const parsed = await parseJson(req, updateServerSchema);
-    if (parsed instanceof Response) {
-      return noStoreResponse(parsed);
-    }
-
-    try {
-      if (parsed.name !== undefined) {
-        const renamed = storage.renameServer(serverPathName, parsed.name);
-        if (!renamed) {
-          return adminErrorResponse(404, `Unknown server name: ${serverPathName}`);
-        }
-      }
-
-      if (parsed.template !== undefined) {
-        const targetName = parsed.name ?? serverPathName;
-        const updated = storage.setServerUrl(targetName, parsed.template);
-        if (!updated) {
-          return adminErrorResponse(404, `Unknown server name: ${targetName}`);
-        }
-      }
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to update server.";
-      return adminErrorResponse(400, message);
-    }
-
-    return noStoreResponse(jsonResponse({ servers: mapServers(storage) }));
-  }
-
-  if (serverPathName && req.method === "DELETE") {
-    const removed = storage.removeServer(serverPathName);
-    if (!removed) {
-      return adminErrorResponse(404, `Unknown server name: ${serverPathName}`);
-    }
-
-    return noStoreResponse(new Response(null, { status: 204 }));
-  }
-
-  if (adminPathname === "/servers/ping" && req.method === "POST") {
+  if (subPath === "/servers/ping" && req.method === "POST") {
     const parsed = await parseJson(req, pingServersSchema);
     if (parsed instanceof Response) {
       return noStoreResponse(parsed);
     }
 
     const strategy = parsed.strategy ?? "all";
-    let records = storage.listServerRecords();
+    let records = storage.listServerRecords(profileId);
     const serverSet = parsed.servers && parsed.servers.length > 0 ? new Set(parsed.servers) : null;
     const serverExceptSet = parsed.serversExcept && parsed.serversExcept.length > 0 ? new Set(parsed.serversExcept) : null;
     if (serverSet) records = records.filter((s) => serverSet.has(s.name));
@@ -399,7 +454,7 @@ export async function handleAdminApiRequest(
     }
 
     const servers = records.map((s) => ({ name: s.name, template: s.template }));
-    let userRecords = storage.listUsers();
+    let userRecords = storage.listUsers(profileId);
     const userSet = parsed.users && parsed.users.length > 0 ? new Set(parsed.users) : null;
     const userExceptSet = parsed.usersExcept && parsed.usersExcept.length > 0 ? new Set(parsed.usersExcept) : null;
     if (userSet) userRecords = userRecords.filter((u) => userSet.has(u.clientName));
@@ -412,6 +467,46 @@ export async function handleAdminApiRequest(
     ]);
 
     return noStoreResponse(jsonResponse({ icmp, http }));
+  }
+
+  const serverPathName = getServerSubPath(subPath);
+  if (serverPathName && req.method === "PATCH") {
+    const parsed = await parseJson(req, updateServerSchema);
+    if (parsed instanceof Response) {
+      return noStoreResponse(parsed);
+    }
+
+    try {
+      if (parsed.name !== undefined) {
+        const renamed = storage.renameServer(profileId, serverPathName, parsed.name);
+        if (!renamed) {
+          return adminErrorResponse(404, `Unknown server name: ${serverPathName}`);
+        }
+      }
+
+      if (parsed.template !== undefined) {
+        const targetName = parsed.name ?? serverPathName;
+        const updated = storage.setServerUrl(profileId, targetName, parsed.template);
+        if (!updated) {
+          return adminErrorResponse(404, `Unknown server name: ${targetName}`);
+        }
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to update server.";
+      return adminErrorResponse(400, message);
+    }
+
+    return noStoreResponse(jsonResponse({ servers: mapServers(storage, profileId) }));
+  }
+
+  if (serverPathName && req.method === "DELETE") {
+    const removed = storage.removeServer(profileId, serverPathName);
+    if (!removed) {
+      return adminErrorResponse(404, `Unknown server name: ${serverPathName}`);
+    }
+
+    return noStoreResponse(new Response(null, { status: 204 }));
   }
 
   return adminErrorResponse(404, "Not found.");

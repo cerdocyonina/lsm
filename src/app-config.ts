@@ -33,6 +33,21 @@ export type FullDump = z.infer<typeof fullDumpSchema>;
 export type FullDumpUser = z.infer<typeof fullDumpUserSchema>;
 export type FullDumpServer = z.infer<typeof fullDumpServerSchema>;
 
+// ProfileDump is the same shape as FullDump — single-profile snapshot
+export const profileDumpSchema = fullDumpSchema;
+export type ProfileDump = FullDump;
+
+// Multi-profile dump: { profiles: { "main": ProfileDump, "work": ProfileDump, ... } }
+export const multiProfileDumpSchema = z.object({
+  profiles: z.record(z.string().min(1), profileDumpSchema),
+});
+export type MultiProfileDump = z.infer<typeof multiProfileDumpSchema>;
+
+export type ParsedDump =
+  | { kind: "multi-profile"; data: MultiProfileDump }
+  | { kind: "single-profile"; data: ProfileDump }
+  | { kind: "legacy"; data: LegacyConfig };
+
 function readAndParseJsonFile(path: string): unknown {
   let fileContent: string;
 
@@ -53,27 +68,40 @@ function readAndParseJsonFile(path: string): unknown {
   }
 }
 
-export function loadDumpOrThrow(path: string): FullDump | LegacyConfig {
+export function loadDumpOrThrow(path: string): ParsedDump {
   const parsedJson = readAndParseJsonFile(path);
 
-  // Detect format: full dump has USERS as an array, legacy has it as an object
-  if (
-    parsedJson !== null &&
-    typeof parsedJson === "object" &&
-    Array.isArray((parsedJson as Record<string, unknown>).USERS)
-  ) {
-    try {
-      return fullDumpSchema.parse(parsedJson);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        throw new Error(`Invalid full dump format at ${path}: ${z.prettifyError(error)}`);
+  if (parsedJson !== null && typeof parsedJson === "object") {
+    const obj = parsedJson as Record<string, unknown>;
+
+    // Multi-profile dump: has "profiles" key that is an object (not array)
+    if ("profiles" in obj && obj.profiles !== null && typeof obj.profiles === "object" && !Array.isArray(obj.profiles)) {
+      try {
+        return { kind: "multi-profile", data: multiProfileDumpSchema.parse(parsedJson) };
+      } catch (error) {
+        if (error instanceof z.ZodError) {
+          throw new Error(`Invalid multi-profile dump format at ${path}: ${z.prettifyError(error)}`);
+        }
+        throw error;
       }
-      throw error;
+    }
+
+    // Single-profile full dump: USERS is an array
+    if (Array.isArray(obj.USERS)) {
+      try {
+        return { kind: "single-profile", data: profileDumpSchema.parse(parsedJson) };
+      } catch (error) {
+        if (error instanceof z.ZodError) {
+          throw new Error(`Invalid full dump format at ${path}: ${z.prettifyError(error)}`);
+        }
+        throw error;
+      }
     }
   }
 
+  // Legacy plain format
   try {
-    return legacyConfigSchema.parse(parsedJson);
+    return { kind: "legacy", data: legacyConfigSchema.parse(parsedJson) };
   } catch (error) {
     if (error instanceof z.ZodError) {
       throw new Error(`Invalid config format at ${path}: ${z.prettifyError(error)}`);
