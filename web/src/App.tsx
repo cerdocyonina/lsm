@@ -30,7 +30,7 @@ import type {
 } from "./types";
 
 function emptyUserForm(): UserFormState {
-  return { clientName: "", userUuid: "" };
+  return { clientName: "", userUuid: crypto.randomUUID() };
 }
 
 function emptyServerForm(): ServerFormState {

@@ -78,12 +78,6 @@ export function UsersPanel({
     });
   };
 
-  useEffect(() => {
-    if (!editingUser) {
-      regenerateUserUuid();
-    }
-  }, [editingUser]);
-
   return (
     <>
       <Card className="shadow-sm h-100">
