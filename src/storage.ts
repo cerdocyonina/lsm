@@ -26,6 +26,7 @@ export type ServerRecord = {
 export interface Storage {
   listProfiles(): ProfileRecord[];
   getProfile(name: string): ProfileRecord | null;
+  getProfileById(id: number): ProfileRecord | null;
   createProfile(name: string, createdAt: number): void;
   renameProfile(name: string, newName: string): boolean;
   renameProfileById(id: number, newName: string): boolean;
@@ -88,9 +89,14 @@ export class SqliteStorage implements Storage {
         PRIMARY KEY (profile_id, name)
       );
     `);
-    this.db
-      .query("INSERT OR IGNORE INTO profiles (name, created_at) VALUES (?1, ?2)")
-      .run("main", Date.now());
+    const mainExists = this.db
+      .query("SELECT 1 FROM profiles WHERE name = 'main' LIMIT 1")
+      .get();
+    if (!mainExists) {
+      this.db
+        .query("INSERT INTO profiles (name, created_at) VALUES (?1, ?2)")
+        .run("main", Date.now());
+    }
   }
 
   // Profile methods
@@ -106,6 +112,14 @@ export class SqliteStorage implements Storage {
       (this.db
         .query("SELECT id, name, created_at AS createdAt FROM profiles WHERE name = ?1")
         .get(name) as ProfileRecord | null) ?? null
+    );
+  }
+
+  public getProfileById(id: number): ProfileRecord | null {
+    return (
+      (this.db
+        .query("SELECT id, name, created_at AS createdAt FROM profiles WHERE id = ?1")
+        .get(id) as ProfileRecord | null) ?? null
     );
   }
 
