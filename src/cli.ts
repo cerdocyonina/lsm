@@ -326,25 +326,42 @@ async function bootstrap() {
     );
 
   profileCmd
-    .command("delete <id>")
-    .description("Delete a profile and all its users and servers")
+    .command("delete <nameOrId>")
+    .description("Delete a profile and all its users and servers (accepts numeric id or name; numeric id takes priority)")
     .option("--force", "skip confirmation prompt")
     .action(
-      withErrorHandling(async (id, options) => {
-        if (!options.force) {
-          const userCount = withStorage((storage) => storage.listUsers(id).length);
-          const serverCount = withStorage((storage) => storage.listServerRecords(id).length);
+      withErrorHandling(async (nameOrId, options) => {
+        const numericId = Number(nameOrId);
+        const isNumeric = Number.isInteger(numericId) && !Number.isNaN(numericId) && String(numericId) === nameOrId;
+
+        const resolved = withStorage((storage) => {
+          const profile = isNumeric
+            ? storage.getProfileById(numericId)
+            : storage.getProfile(nameOrId);
+          if (!profile) return null;
+          return {
+            profile,
+            userCount: storage.listUsers(profile.name).length,
+            serverCount: storage.listServerRecords(profile.name).length,
+          };
+        });
+
+        if (!resolved) throw new Error(`Unknown profile: ${nameOrId}`);
+        const { profile, userCount, serverCount } = resolved;
+
+        const isEmpty = userCount === 0 && serverCount === 0;
+        if (!options.force && !isEmpty) {
           const ok = await confirm(
-            `Delete profile "${id}" with ${userCount} user(s) and ${serverCount} server(s)?`,
+            `Delete profile id=${profile.id}, name=${profile.name} with ${userCount} user(s) and ${serverCount} server(s)?`,
           );
           if (!ok) {
             logger.info("aborted");
             return;
           }
         }
-        const deleted = withStorage((storage) => storage.deleteProfile(id));
-        if (!deleted) throw new Error(`Unknown profile: ${id}`);
-        logger.info(`deleted profile "${id}"`);
+
+        withStorage((storage) => storage.deleteProfile(profile.name));
+        logger.info(`deleted profile "${profile.name}"`);
       }),
     );
 
