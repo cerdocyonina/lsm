@@ -4,11 +4,14 @@ import {
   Button,
   Col,
   Container,
+  Form,
+  Modal,
   Navbar,
   Row,
   Spinner,
 } from "react-bootstrap";
 import toast from "react-hot-toast";
+import { TbPencil, TbTrash } from "react-icons/tb";
 import { api, profilePath } from "./api";
 import { LoginPage } from "./components/LoginPage";
 import { ProfileTabs } from "./components/ProfileTabs";
@@ -60,6 +63,10 @@ export default function App() {
   );
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
   const [pingSelectionMode, setPingSelectionMode] = useState(false);
+
+  const [showRenameProfile, setShowRenameProfile] = useState(false);
+  const [renameProfileName, setRenameProfileName] = useState("");
+  const [showDeleteProfile, setShowDeleteProfile] = useState(false);
 
   async function loadProfiles(): Promise<ProfileRecord[]> {
     const payload = await api<{ profiles: ProfileRecord[] }>("/profiles");
@@ -116,7 +123,9 @@ export default function App() {
     }
 
     void bootstrap();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Reload dashboard when active profile changes (after initial load)
@@ -135,7 +144,9 @@ export default function App() {
     setSelectedServers(new Set());
     setDashboardError(null);
     void loadDashboard(activeProfileId).catch((error) => {
-      setDashboardError(error instanceof Error ? error.message : "Failed to load dashboard.");
+      setDashboardError(
+        error instanceof Error ? error.message : "Failed to load dashboard.",
+      );
     });
   }, [activeProfileId, profileSwitchCount]);
 
@@ -200,7 +211,9 @@ export default function App() {
       setProfiles(payload.profiles);
       toast.success(`Profile "${name}" created`);
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : "Failed to create profile.");
+      setDashboardError(
+        error instanceof Error ? error.message : "Failed to create profile.",
+      );
     }
   }
 
@@ -214,7 +227,9 @@ export default function App() {
       if (activeProfileId === name) setActiveProfileId(newName);
       toast.success("Profile renamed");
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : "Failed to rename profile.");
+      setDashboardError(
+        error instanceof Error ? error.message : "Failed to rename profile.",
+      );
     }
   }
 
@@ -228,7 +243,9 @@ export default function App() {
         switchProfile(remaining[0]!.name);
       }
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : "Failed to delete profile.");
+      setDashboardError(
+        error instanceof Error ? error.message : "Failed to delete profile.",
+      );
     }
   }
 
@@ -240,10 +257,16 @@ export default function App() {
 
     try {
       if (editingUser) {
-        await api(profilePath(activeProfileId, `/users/${encodeURIComponent(editingUser.clientName)}`), {
-          method: "PATCH",
-          body: JSON.stringify(userForm),
-        });
+        await api(
+          profilePath(
+            activeProfileId,
+            `/users/${encodeURIComponent(editingUser.clientName)}`,
+          ),
+          {
+            method: "PATCH",
+            body: JSON.stringify(userForm),
+          },
+        );
       } else {
         await api(profilePath(activeProfileId, "/users"), {
           method: "POST",
@@ -272,10 +295,16 @@ export default function App() {
 
     try {
       if (editingServer) {
-        await api(profilePath(activeProfileId, `/servers/${encodeURIComponent(editingServer.name)}`), {
-          method: "PATCH",
-          body: JSON.stringify(serverForm),
-        });
+        await api(
+          profilePath(
+            activeProfileId,
+            `/servers/${encodeURIComponent(editingServer.name)}`,
+          ),
+          {
+            method: "PATCH",
+            body: JSON.stringify(serverForm),
+          },
+        );
       } else {
         await api(profilePath(activeProfileId, "/servers"), {
           method: "POST",
@@ -302,9 +331,15 @@ export default function App() {
     }
 
     try {
-      await api(profilePath(activeProfileId, `/users/${encodeURIComponent(clientName)}`), {
-        method: "DELETE",
-      });
+      await api(
+        profilePath(
+          activeProfileId,
+          `/users/${encodeURIComponent(clientName)}`,
+        ),
+        {
+          method: "DELETE",
+        },
+      );
       await refreshAfterMutation();
       toast.success("User deleted");
     } catch (error) {
@@ -340,9 +375,12 @@ export default function App() {
     }
 
     try {
-      await api(profilePath(activeProfileId, `/servers/${encodeURIComponent(name)}`), {
-        method: "DELETE",
-      });
+      await api(
+        profilePath(activeProfileId, `/servers/${encodeURIComponent(name)}`),
+        {
+          method: "DELETE",
+        },
+      );
       await refreshAfterMutation();
       toast.success("Server deleted");
     } catch (error) {
@@ -399,7 +437,9 @@ export default function App() {
           body.servers = [...selectedServers];
         if (selectedUsers.size < users.length) body.users = [...selectedUsers];
       }
-      const serverCount = pingSelectionMode ? selectedServers.size : servers.length;
+      const serverCount = pingSelectionMode
+        ? selectedServers.size
+        : servers.length;
       const userCount = pingSelectionMode ? selectedUsers.size : users.length;
       const payload = await toast.promise(
         api<PingResponse>(profilePath(activeProfileId, "/servers/ping"), {
@@ -480,8 +520,6 @@ export default function App() {
         activeProfileName={activeProfileId}
         onSelect={switchProfile}
         onCreateProfile={handleCreateProfile}
-        onRenameProfile={handleRenameProfile}
-        onDeleteProfile={handleDeleteProfile}
       />
 
       <Container fluid="lg" className="py-4">
@@ -498,7 +536,7 @@ export default function App() {
           </Alert>
         ) : null}
 
-        <Row className="g-4">
+        <Row className="g-4 mb-4">
           <Col xl={6}>
             <UsersPanel
               editingUser={editingUser}
@@ -559,7 +597,122 @@ export default function App() {
             />
           </Col>
         </Row>
+
+        <div className="pt-3 border-top d-flex align-items-center gap-2">
+          <span className="text-body-secondary small me-1">
+            Profile: <strong>{activeProfileId}</strong>
+          </span>
+          <div className="d-flex gap-1">
+            <Button
+              variant="outline-secondary"
+              size="sm"
+              onClick={() => {
+                setRenameProfileName(activeProfileId);
+                setShowRenameProfile(true);
+              }}
+            >
+              <TbPencil size={13} className="me-1" />
+              Rename
+            </Button>
+            <Button
+              variant="outline-danger"
+              size="sm"
+              onClick={() => setShowDeleteProfile(true)}
+            >
+              <TbTrash size={13} className="me-1" />
+              Delete
+            </Button>
+          </div>
+        </div>
       </Container>
+
+      {/* Rename profile modal */}
+      <Modal
+        show={showRenameProfile}
+        onHide={() => setShowRenameProfile(false)}
+        centered
+        size="sm"
+      >
+        <Form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const newName = renameProfileName.trim();
+            if (!newName) return;
+            setShowRenameProfile(false);
+            await handleRenameProfile(activeProfileId, newName);
+          }}
+        >
+          <Modal.Header closeButton>
+            <Modal.Title className="h6">Rename profile</Modal.Title>
+          </Modal.Header>
+          <Modal.Body>
+            <Form.Group>
+              <Form.Label className="small fw-semibold">New name</Form.Label>
+              <Form.Control
+                size="sm"
+                value={renameProfileName}
+                onChange={(e) => setRenameProfileName(e.target.value)}
+                pattern="^[a-z0-9_-]+$"
+                title="Lowercase letters, digits, hyphens, underscores"
+                autoFocus
+                required
+              />
+              <Form.Text className="text-body-secondary">
+                Lowercase alphanumeric, hyphens, underscores.
+              </Form.Text>
+            </Form.Group>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setShowRenameProfile(false)}
+            >
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" type="submit">
+              Save
+            </Button>
+          </Modal.Footer>
+        </Form>
+      </Modal>
+
+      {/* Delete profile modal */}
+      <Modal
+        show={showDeleteProfile}
+        onHide={() => setShowDeleteProfile(false)}
+        centered
+        size="sm"
+      >
+        <Modal.Header closeButton>
+          <Modal.Title className="h6">Delete profile</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <p className="mb-0">
+            Delete <strong>{activeProfileId}</strong>? All users and servers in
+            this profile will be permanently removed.
+          </p>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setShowDeleteProfile(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={async () => {
+              setShowDeleteProfile(false);
+              await handleDeleteProfile(activeProfileId);
+            }}
+          >
+            Delete
+          </Button>
+        </Modal.Footer>
+      </Modal>
     </>
   );
 }
