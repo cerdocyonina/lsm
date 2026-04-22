@@ -105,7 +105,7 @@ export default function App() {
 
         setSession(currentSession);
         const loadedProfiles = await loadProfiles();
-        const initialProfile = loadedProfiles[0]?.id ?? "main";
+        const initialProfile = loadedProfiles[0]?.name ?? "main";
         setActiveProfileId(initialProfile);
         await loadDashboard(initialProfile);
       } catch {
@@ -170,7 +170,7 @@ export default function App() {
       });
       setSession(currentSession);
       const loadedProfiles = await loadProfiles();
-      const initialProfile = loadedProfiles[0]?.id ?? "main";
+      const initialProfile = loadedProfiles[0]?.name ?? "main";
       setActiveProfileId(initialProfile);
       await loadDashboard(initialProfile);
     } catch (error) {
@@ -191,11 +191,11 @@ export default function App() {
     setDashboardError(null);
   }
 
-  async function handleCreateProfile(id: string, name: string) {
+  async function handleCreateProfile(name: string) {
     try {
       const payload = await api<{ profiles: ProfileRecord[] }>("/profiles", {
         method: "POST",
-        body: JSON.stringify({ id, name }),
+        body: JSON.stringify({ name }),
       });
       setProfiles(payload.profiles);
       toast.success(`Profile "${name}" created`);
@@ -204,27 +204,28 @@ export default function App() {
     }
   }
 
-  async function handleRenameProfile(id: string, newName: string) {
+  async function handleRenameProfile(name: string, newName: string) {
     try {
       const payload = await api<{ profiles: ProfileRecord[] }>(
-        `/profiles/${encodeURIComponent(id)}`,
+        `/profiles/${encodeURIComponent(name)}`,
         { method: "PATCH", body: JSON.stringify({ name: newName }) },
       );
       setProfiles(payload.profiles);
+      if (activeProfileId === name) setActiveProfileId(newName);
       toast.success("Profile renamed");
     } catch (error) {
       setDashboardError(error instanceof Error ? error.message : "Failed to rename profile.");
     }
   }
 
-  async function handleDeleteProfile(id: string) {
+  async function handleDeleteProfile(name: string) {
     try {
-      await api(`/profiles/${encodeURIComponent(id)}`, { method: "DELETE" });
-      const remaining = profiles.filter((p) => p.id !== id);
+      await api(`/profiles/${encodeURIComponent(name)}`, { method: "DELETE" });
+      const remaining = profiles.filter((p) => p.name !== name);
       setProfiles(remaining);
       toast.success("Profile deleted");
-      if (activeProfileId === id && remaining.length > 0) {
-        switchProfile(remaining[0]!.id);
+      if (activeProfileId === name && remaining.length > 0) {
+        switchProfile(remaining[0]!.name);
       }
     } catch (error) {
       setDashboardError(error instanceof Error ? error.message : "Failed to delete profile.");
@@ -476,7 +477,7 @@ export default function App() {
 
       <ProfileTabs
         profiles={profiles}
-        activeProfileId={activeProfileId}
+        activeProfileName={activeProfileId}
         onSelect={switchProfile}
         onCreateProfile={handleCreateProfile}
         onRenameProfile={handleRenameProfile}

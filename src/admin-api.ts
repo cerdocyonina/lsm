@@ -16,8 +16,7 @@ const loginSchema = z.object({
 });
 
 const createProfileSchema = z.object({
-  id: z.string().min(1).regex(/^[a-z0-9_-]+$/, "Profile ID must be lowercase alphanumeric, hyphens, or underscores"),
-  name: z.string().min(1),
+  name: z.string().min(1).regex(/^[a-z0-9_-]+$/, "Profile name must be lowercase alphanumeric, hyphens, or underscores"),
 });
 
 const updateProfileSchema = z.object({
@@ -277,7 +276,7 @@ export async function handleAdminApiRequest(
     }
 
     try {
-      storage.createProfile(parsed.id, parsed.name, Date.now());
+      storage.createProfile(parsed.name, Date.now());
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to create profile.";
       return adminErrorResponse(400, message);

@@ -207,7 +207,7 @@ async function bootstrap() {
 
         withStorage((storage) => {
           if (!storage.getProfile(profileId)) {
-            storage.createProfile(profileId, profileId, Date.now());
+            storage.createProfile(profileId, Date.now());
             logger.info(`created profile "${profileId}"`);
           }
 
@@ -262,8 +262,8 @@ async function bootstrap() {
     .action(
       withErrorHandling(() => {
         const id = readCurrentProfile();
+        const profile = withStorage((storage) => storage.getProfile(id));
         if (program.opts().verbose) {
-          const profile = withStorage((storage) => storage.getProfile(id));
           if (!profile) {
             logger.info(`current profile: "${id}" (not found in database)`);
           } else {
@@ -272,7 +272,6 @@ async function bootstrap() {
             logger.info(`created at: ${new Date(profile.createdAt).toISOString()}`);
           }
         } else {
-          const profile = withStorage((storage) => storage.getProfile(id));
           logger.info(profile?.name ?? id);
         }
       }),
@@ -288,9 +287,9 @@ async function bootstrap() {
         printTable(
           ["ID", "Name", "Default", "Created At"],
           profiles.map(({ id, name, createdAt }) => [
-            id,
+            String(id),
             name,
-            id === current ? "*" : "",
+            name === current ? "*" : "",
             new Date(createdAt).toISOString(),
           ]),
         );
@@ -298,27 +297,31 @@ async function bootstrap() {
     );
 
   profileCmd
-    .command("create <id> [name]")
-    .description("Create a new profile (ID must be lowercase alphanumeric, hyphens, or underscores)")
+    .command("create <name>")
+    .description("Create a new profile (name must be lowercase alphanumeric, hyphens, or underscores)")
     .action(
-      withErrorHandling((id, nameArg) => {
-        if (!/^[a-z0-9_-]+$/.test(id)) {
-          throw new Error("Profile ID must be lowercase alphanumeric, hyphens, or underscores");
+      withErrorHandling((name) => {
+        if (!/^[a-z0-9_-]+$/.test(name)) {
+          throw new Error("Profile name must be lowercase alphanumeric, hyphens, or underscores");
         }
-        const name = nameArg ?? id;
-        withStorage((storage) => storage.createProfile(id, name, Date.now()));
-        logger.info(`created profile "${id}"`);
+        withStorage((storage) => storage.createProfile(name, Date.now()));
+        logger.info(`created profile "${name}"`);
       }),
     );
 
   profileCmd
-    .command("rename <id> <newName>")
-    .description("Rename a profile (changes display name, not the ID)")
+    .command("rename <nameOrId> <newName>")
+    .description("Rename a profile (accepts numeric id or name; numeric id takes priority)")
     .action(
-      withErrorHandling((id, newName) => {
-        const ok = withStorage((storage) => storage.renameProfile(id, newName));
-        if (!ok) throw new Error(`Unknown profile: ${id}`);
-        logger.info(`renamed profile "${id}" to "${newName}"`);
+      withErrorHandling((nameOrId, newName) => {
+        const numericId = Number(nameOrId);
+        const ok = withStorage((storage) =>
+          Number.isInteger(numericId) && !Number.isNaN(numericId) && String(numericId) === nameOrId
+            ? storage.renameProfileById(numericId, newName)
+            : storage.renameProfile(nameOrId, newName),
+        );
+        if (!ok) throw new Error(`Unknown profile: ${nameOrId}`);
+        logger.info(`renamed profile "${nameOrId}" to "${newName}"`);
       }),
     );
 

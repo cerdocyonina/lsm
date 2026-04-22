@@ -77,7 +77,7 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     }
 
-    const servers = storage.listServers(userRecord.profileId);
+    const servers = storage.listServers(userRecord.profileName);
     const configs = servers.map((serverTemplate) =>
       serverTemplate.replace("DUMMY", userRecord.userUuid),
     );

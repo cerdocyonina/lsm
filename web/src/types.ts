@@ -3,7 +3,7 @@ export type Session = {
 };
 
 export type ProfileRecord = {
-  id: string;
+  id: number;
   name: string;
   createdAt: number;
 };

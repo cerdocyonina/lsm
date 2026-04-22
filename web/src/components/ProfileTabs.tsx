@@ -5,23 +5,22 @@ import type { ProfileRecord } from "../types";
 
 type ProfileTabsProps = {
   profiles: ProfileRecord[];
-  activeProfileId: string;
-  onSelect: (id: string) => void;
-  onCreateProfile: (id: string, name: string) => void;
-  onRenameProfile: (id: string, newName: string) => void;
-  onDeleteProfile: (id: string) => void;
+  activeProfileName: string;
+  onSelect: (name: string) => void;
+  onCreateProfile: (name: string) => void;
+  onRenameProfile: (name: string, newName: string) => void;
+  onDeleteProfile: (name: string) => void;
 };
 
 export function ProfileTabs({
   profiles,
-  activeProfileId,
+  activeProfileName,
   onSelect,
   onCreateProfile,
   onRenameProfile,
   onDeleteProfile,
 }: ProfileTabsProps) {
   const [showCreate, setShowCreate] = useState(false);
-  const [createId, setCreateId] = useState("");
   const [createName, setCreateName] = useState("");
 
   const [renameTarget, setRenameTarget] = useState<ProfileRecord | null>(null);
@@ -29,13 +28,12 @@ export function ProfileTabs({
 
   const [deleteTarget, setDeleteTarget] = useState<ProfileRecord | null>(null);
 
-  const createIdRef = useRef<HTMLInputElement>(null);
+  const createNameRef = useRef<HTMLInputElement>(null);
 
   function handleCreateSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!createId.trim() || !createName.trim()) return;
-    onCreateProfile(createId.trim(), createName.trim());
-    setCreateId("");
+    if (!createName.trim()) return;
+    onCreateProfile(createName.trim());
     setCreateName("");
     setShowCreate(false);
   }
@@ -43,7 +41,7 @@ export function ProfileTabs({
   function handleRenameSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!renameTarget || !renameName.trim()) return;
-    onRenameProfile(renameTarget.id, renameName.trim());
+    onRenameProfile(renameTarget.name, renameName.trim());
     setRenameTarget(null);
     setRenameName("");
   }
@@ -61,7 +59,7 @@ export function ProfileTabs({
 
   function confirmDelete() {
     if (!deleteTarget) return;
-    onDeleteProfile(deleteTarget.id);
+    onDeleteProfile(deleteTarget.name);
     setDeleteTarget(null);
   }
 
@@ -73,8 +71,8 @@ export function ProfileTabs({
             {profiles.map((profile) => (
               <Nav.Item key={profile.id} className="d-flex align-items-center">
                 <Nav.Link
-                  active={profile.id === activeProfileId}
-                  onClick={() => onSelect(profile.id)}
+                  active={profile.name === activeProfileName}
+                  onClick={() => onSelect(profile.name)}
                   className="d-flex align-items-center gap-1 pe-2 user-select-none"
                   style={{ cursor: "pointer", whiteSpace: "nowrap" }}
                 >
@@ -107,7 +105,7 @@ export function ProfileTabs({
               <Nav.Link
                 onClick={() => {
                   setShowCreate(true);
-                  setTimeout(() => createIdRef.current?.focus(), 50);
+                  setTimeout(() => createNameRef.current?.focus(), 50);
                 }}
                 className="text-body-secondary d-flex align-items-center gap-1"
                 style={{ cursor: "pointer" }}
@@ -126,30 +124,20 @@ export function ProfileTabs({
           <Modal.Header closeButton>
             <Modal.Title className="h6">New profile</Modal.Title>
           </Modal.Header>
-          <Modal.Body className="d-flex flex-column gap-3">
+          <Modal.Body>
             <Form.Group>
-              <Form.Label className="small fw-semibold">ID</Form.Label>
+              <Form.Label className="small fw-semibold">Name</Form.Label>
               <Form.Control
-                ref={createIdRef}
+                ref={createNameRef}
                 size="sm"
-                value={createId}
-                onChange={(e) => setCreateId(e.target.value)}
+                value={createName}
+                onChange={(e) => setCreateName(e.target.value)}
                 placeholder="e.g. work"
                 pattern="^[a-z0-9_-]+$"
                 title="Lowercase letters, digits, hyphens, underscores"
                 required
               />
-              <Form.Text className="text-body-secondary">Lowercase alphanumeric, hyphens, underscores. Cannot be changed.</Form.Text>
-            </Form.Group>
-            <Form.Group>
-              <Form.Label className="small fw-semibold">Display name</Form.Label>
-              <Form.Control
-                size="sm"
-                value={createName}
-                onChange={(e) => setCreateName(e.target.value)}
-                placeholder="e.g. Work"
-                required
-              />
+              <Form.Text className="text-body-secondary">Lowercase alphanumeric, hyphens, underscores.</Form.Text>
             </Form.Group>
           </Modal.Body>
           <Modal.Footer>
@@ -167,14 +155,17 @@ export function ProfileTabs({
           </Modal.Header>
           <Modal.Body>
             <Form.Group>
-              <Form.Label className="small fw-semibold">Display name</Form.Label>
+              <Form.Label className="small fw-semibold">New name</Form.Label>
               <Form.Control
                 size="sm"
                 value={renameName}
                 onChange={(e) => setRenameName(e.target.value)}
+                pattern="^[a-z0-9_-]+$"
+                title="Lowercase letters, digits, hyphens, underscores"
                 autoFocus
                 required
               />
+              <Form.Text className="text-body-secondary">Lowercase alphanumeric, hyphens, underscores.</Form.Text>
             </Form.Group>
           </Modal.Body>
           <Modal.Footer>
