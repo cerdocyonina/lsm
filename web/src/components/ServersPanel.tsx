@@ -15,6 +15,8 @@ import {
   TbEdit as EditIcon,
   TbWifi as PingIcon,
   TbListCheck as SelectionIcon,
+  TbArrowDown,
+  TbArrowUp,
   TbGripVertical,
 } from "react-icons/tb";
 import Editor from "react-simple-code-editor";
@@ -228,6 +230,15 @@ export function ServersPanel({
     setDragOverIdx(null);
   }
 
+  function moveServer(fromIdx: number, toIdx: number) {
+    const reordered = [...servers];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    onReorder(reordered.map((s) => s.name));
+  }
+
+  const showReorderColumn = isDraggable && servers.length > 1;
+
   // derive server name order from httpResults (consistent with server list)
   const httpServerNames =
     httpResults.length > 0
@@ -358,8 +369,6 @@ export function ServersPanel({
             <ListGroup.Item
               className={`px-0 py-3${dragOverIdx === index ? " bg-body-secondary" : ""}`}
               key={server.name}
-              draggable={isDraggable}
-              onDragStart={() => handleDragStart(index)}
               onDragOver={(e) => handleDragOver(e, index)}
               onDragLeave={() => setDragOverIdx(null)}
               onDrop={(e) => handleDrop(e, index)}
@@ -368,9 +377,9 @@ export function ServersPanel({
               <div
                 className="admin-list-item"
                 style={
-                  isDraggable && pingSelectionMode
+                  showReorderColumn && pingSelectionMode
                     ? { gridTemplateColumns: "auto auto minmax(0,1fr) auto" }
-                    : pingSelectionMode || isDraggable
+                    : pingSelectionMode || showReorderColumn
                       ? { gridTemplateColumns: "auto minmax(0,1fr) auto" }
                       : undefined
                 }
@@ -386,12 +395,46 @@ export function ServersPanel({
                     title="Select / deselect server for ping"
                   />
                 )}
-                {isDraggable && (
+                {showReorderColumn && (
                   <div
-                    className="text-body-tertiary d-flex align-items-center"
-                    style={{ cursor: "grab", touchAction: "none" }}
+                    className="text-body-tertiary d-flex flex-column align-items-center"
+                    style={{ touchAction: "none" }}
                   >
-                    <TbGripVertical size={18} />
+                    <div
+                      draggable
+                      style={{ cursor: "grab" }}
+                      onDragStart={(e) => {
+                        const row = e.currentTarget.closest(
+                          ".list-group-item",
+                        ) as HTMLElement | null;
+                        if (row) e.dataTransfer.setDragImage(row, 0, 20);
+                        handleDragStart(index);
+                      }}
+                    >
+                      <TbGripVertical size={18} />
+                    </div>
+
+                    <button
+                      type="button"
+                      className="btn btn-link p-0 text-body-tertiary"
+                      style={{ lineHeight: 1 }}
+                      onClick={() => moveServer(index, index - 1)}
+                      title="Move up"
+                      disabled={index === 0}
+                    >
+                      <TbArrowUp size={14} />
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btn-link p-0 text-body-tertiary"
+                      style={{ lineHeight: 1 }}
+                      onClick={() => moveServer(index, index + 1)}
+                      title="Move down"
+                      disabled={index === filteredServers.length - 1}
+                    >
+                      <TbArrowDown size={14} />
+                    </button>
                   </div>
                 )}
                 <div className="admin-list-copy">
