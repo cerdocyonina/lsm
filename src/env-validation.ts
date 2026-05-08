@@ -26,7 +26,7 @@ export const envSchema = z.object({
   ADMIN_USERNAME: z.string().min(1),
   ADMIN_PASSWORD: z.string().min(8),
   ADMIN_SESSION_SECRET: z.string().min(16),
-  FALLBACK_URL: z.url().default("https://en.wikipedia.org/wiki/Main_Page"),
+  FALLBACK_URL: z.url().nullable().default(null), // if null - return 404
   XUI_HOST: z.url().optional(),
   XUI_USER: z.string().optional(),
   XUI_PASSWORD: z.string().optional(),

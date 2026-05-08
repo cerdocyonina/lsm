@@ -71,9 +71,13 @@ async function handleRequest(req: Request): Promise<Response> {
     const userRecord = storage.getUserBySubscriptionToken(clientToken);
     if (!userRecord) {
       logger.warn(`invalid token attempt: ${req.method} ${pathname}`);
+      const fallbackUrl = config.get("FALLBACK_URL");
+      if (!fallbackUrl) {
+        return emptyNotFound();
+      }
       return new Response(null, {
         status: 302,
-        headers: { Location: config.get("FALLBACK_URL") },
+        headers: { Location: fallbackUrl },
       });
     }
 
