@@ -9,6 +9,7 @@ export interface XUIConfig {
 export class XUIService {
   private baseUrl: string;
   private cookie: string | null = null;
+  private csrfToken: string | null = null;
 
   constructor(private config: XUIConfig) {
     this.baseUrl = config.host.replace(/\/+$/, "");
@@ -18,21 +19,29 @@ export class XUIService {
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
     const url = `${this.baseUrl}${normalizedPath}`;
 
-    const headers = {
+    const method = ((options.method as string) ?? "GET").toUpperCase();
+    const isStateChanging = !["GET", "HEAD", "OPTIONS", "TRACE"].includes(method);
+
+    const headers: Record<string, string> = {
       ...(this.cookie ? { Cookie: this.cookie } : {}),
       "X-Requested-With": "XMLHttpRequest",
       Accept: "application/json",
-      ...((options.headers as any) || {}),
+      // Attach stored CSRF token to every state-changing request automatically.
+      // The login call overrides this via options.headers when it has a
+      // fresh pre-login token that differs from the stored one.
+      ...(isStateChanging && this.csrfToken
+        ? { "X-CSRF-Token": this.csrfToken }
+        : {}),
+      ...((options.headers as Record<string, string>) || {}),
     };
 
     const response = await fetch(url, {
       ...options,
       tls: { rejectUnauthorized: false },
-      redirect: path === "/login" ? "manual" : "follow",
-      headers: headers,
+      headers,
     });
 
-    if (!response.ok && response.status !== 302) {
+    if (!response.ok) {
       throw new Error(
         `Request to ${path} failed with status: ${response.status}`,
       );
@@ -41,19 +50,44 @@ export class XUIService {
     return response;
   }
 
+  /**
+   * Fetches (or creates) the CSRF token for the current session via the
+   * dedicated /csrf-token endpoint.  Also captures the Set-Cookie header so
+   * the session cookie is stored for the next request.
+   */
+  private async fetchCsrfToken(): Promise<string> {
+    const response = await this.request("/csrf-token");
+
+    // The endpoint calls EnsureCSRFToken which may create a new session —
+    // grab the session cookie so the subsequent login POST shares it.
+    const setCookie = response.headers.get("set-cookie");
+    if (setCookie) {
+      this.cookie = setCookie.split(";")[0]!;
+    }
+
+    const data = (await response.json()) as any;
+    if (!data.success || typeof data.obj !== "string") {
+      throw new Error("Failed to obtain CSRF token from 3x-ui");
+    }
+    return data.obj;
+  }
+
   async login(): Promise<void> {
+    // Step 1 — get a pre-login session + matching CSRF token.
+    const preCsrf = await this.fetchCsrfToken();
+
     const params = new URLSearchParams();
     params.append("username", this.config.user);
     params.append("password", this.config.password);
 
+    logger.debug(params);
+
+    // Step 2 — POST credentials; override the auto-CSRF with the pre-login token.
     const response = await this.request("/login", {
       method: "POST",
       body: params,
+      headers: { "X-CSRF-Token": preCsrf },
     });
-
-    if (!response.ok) {
-      throw new Error(`Login failed with status: ${response.status}`);
-    }
 
     const result = (await response.json()) as any;
     if (!result.success) {
@@ -62,39 +96,47 @@ export class XUIService {
       );
     }
 
+    // Step 3 — capture the new authenticated session cookie.
     const setCookie = response.headers.get("set-cookie");
     if (!setCookie) {
       throw new Error("No cookie received from 3x-ui");
     }
-
     this.cookie = setCookie.split(";")[0]!;
+
+    // Step 4 — refresh CSRF token for the authenticated session.
+    // The pre-login token is bound to the anonymous session and is no longer
+    // valid now that the session cookie changed.
+    this.csrfToken = await this.fetchCsrfToken();
+
     console.log("Successfully logged in to 3x-ui");
   }
 
-  private async getInboundIdByName(name: string): Promise<number> {
-    const response = await this.request("/panel/api/inbounds/list");
+  // ---------------------------------------------------------------------------
+  // Client helpers (new /panel/api/clients/* API)
+  // ---------------------------------------------------------------------------
 
-    const data = (await response.json()) as any;
-    if (!data.success) {
-      throw new Error("Failed to fetch inbounds list");
+  private async clientExists(email: string): Promise<boolean> {
+    try {
+      const response = await this.request(
+        `/panel/api/clients/get/${encodeURIComponent(email)}`,
+      );
+      const data = (await response.json()) as any;
+      return data.success && data.obj != null;
+    } catch {
+      return false;
     }
-
-    const inbound = data.obj.find((i: any) => i.remark === name);
-    if (!inbound) {
-      throw new Error(`Inbound with name "${name}" not found`);
-    }
-
-    return inbound.id;
   }
 
-  async getInboundClients(inboundId: number): Promise<any[]> {
-    const response = await this.request(`/panel/api/inbounds/get/${inboundId}`);
+  private async getAllClientEmails(): Promise<Set<string>> {
+    const response = await this.request("/panel/api/clients/list");
     const data = (await response.json()) as any;
-    if (!data.success) return [];
-
-    const settings = JSON.parse(data.obj.settings);
-    return settings.clients || [];
+    if (!data.success || !Array.isArray(data.obj)) return new Set();
+    return new Set(data.obj.map((c: any) => c.email as string));
   }
+
+  // ---------------------------------------------------------------------------
+  // syncUser
+  // ---------------------------------------------------------------------------
 
   async syncUser(
     inboundId: number,
@@ -104,23 +146,20 @@ export class XUIService {
   ): Promise<"added" | "overwritten" | "skipped" | "kept-both" | "failed"> {
     if (!this.cookie) await this.login();
 
-    const clients = await this.getInboundClients(inboundId);
-    const existingClient = clients.find((c) => c.email === email);
+    const exists = await this.clientExists(email);
 
-    if (existingClient) {
+    if (exists) {
       if (onConflict === "skip") {
         logger.warn(`User "${email}" already exists. Skipping...`);
         return "skipped";
       }
 
       if (onConflict === "overwrite") {
-        return await this.updateUser(inboundId, existingClient.id, email, uuid);
+        return await this.updateUser(inboundId, email, uuid);
       }
 
       // keep-both: find an available suffixed name
-      const existingEmails = new Set(
-        clients.map((c: any) => c.email as string),
-      );
+      const existingEmails = await this.getAllClientEmails();
       let suffix = 1;
       let candidate = `${email}_${suffix}`;
       while (existingEmails.has(candidate)) {
@@ -145,28 +184,22 @@ export class XUIService {
     email: string,
     uuid: string,
   ): Promise<"added" | "failed"> {
-    const clientSettings = {
-      clients: [
-        {
+    const response = await this.request("/panel/api/clients/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client: {
           id: uuid,
           flow: "xtls-rprx-vision",
-          email: email,
+          email,
           limitIp: 0,
           totalGB: 0,
           expiryTime: 0,
           enable: true,
-          tgId: "",
+          tgId: 0, // int64 in the new model, not a string
           subId: "",
         },
-      ],
-    };
-
-    const response = await this.request("/panel/api/inbounds/addClient", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: inboundId,
-        settings: JSON.stringify(clientSettings),
+        inboundIds: [inboundId],
       }),
     });
 
@@ -181,34 +214,29 @@ export class XUIService {
 
   private async updateUser(
     inboundId: number,
-    oldUuid: string,
     email: string,
     newUuid: string,
   ): Promise<"overwritten" | "failed"> {
-    const clientSettings = {
-      clients: [
-        {
-          id: newUuid,
-          flow: "xtls-rprx-vision",
-          email: email,
-          limitIp: 0,
-          totalGB: 0,
-          expiryTime: 0,
-          enable: true,
-          tgId: "",
-          subId: "",
-        },
-      ],
-    };
+    // New API: keyed on email in the URL, flat model.Client body.
+    // inboundId is unused here — the server looks up existing inbound
+    // attachments and keeps them; pass it only for future-proofing if needed.
+    void inboundId;
 
     const response = await this.request(
-      `/panel/api/inbounds/updateClient/${oldUuid}`,
+      `/panel/api/clients/update/${encodeURIComponent(email)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: inboundId,
-          settings: JSON.stringify(clientSettings),
+          id: newUuid,
+          flow: "xtls-rprx-vision",
+          email,
+          limitIp: 0,
+          totalGB: 0,
+          expiryTime: 0,
+          enable: true,
+          tgId: 0,
+          subId: "",
         }),
       },
     );
@@ -226,10 +254,8 @@ export class XUIService {
     if (!this.cookie) return;
 
     try {
-      const response = await this.request("/logout", {
-        method: "GET",
-      });
-
+      // logout is now POST (with CSRF), not GET
+      const response = await this.request("/logout", { method: "POST" });
       if (response.ok) {
         console.log("Successfully logged out from 3x-ui");
       }
@@ -237,6 +263,7 @@ export class XUIService {
       console.error("Logout error (non-critical):", e);
     } finally {
       this.cookie = null;
+      this.csrfToken = null;
     }
   }
 }
