@@ -44,6 +44,34 @@ cd lsmnode
 bun run start
 ```
 
+### systemd
+
+пример `/etc/systemd/system/lsm-node.service`:
+
+```ini
+[Unit]
+Description=lsm-node
+After=network.target
+
+[Service]
+Type=simple
+User=username
+WorkingDirectory=/home/username/lsm/lsmnode
+EnvironmentFile=/home/username/lsm/lsmnode/.env
+ExecStart=/home/username/.bun/bin/bun run /home/username/lsm/lsmnode/src/index.ts
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl enable --now lsm-node
+```
+
 ## Конфигурация `.env`
 
 | Переменная | Описание | По умолчанию |
