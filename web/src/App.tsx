@@ -584,7 +584,15 @@ export default function App() {
       <Navbar bg="white" expand="lg" className="border-bottom shadow-sm">
         <Container>
           <Navbar.Brand className="fw-semibold">LSM Admin</Navbar.Brand>
-          <div className="d-flex align-items-center gap-3 ms-auto">
+          <Nav className="me-auto ms-3">
+            <Nav.Link active={activePage === "main"} onClick={() => setActivePage("main")}>
+              Users &amp; Servers
+            </Nav.Link>
+            <Nav.Link active={activePage === "nodes"} onClick={() => setActivePage("nodes")}>
+              Nodes
+            </Nav.Link>
+          </Nav>
+          <div className="d-flex align-items-center gap-3">
             <span className="text-body-secondary small">
               Signed in as <strong>{session.username}</strong>
             </span>
@@ -599,13 +607,16 @@ export default function App() {
         </Container>
       </Navbar>
 
-      <ProfileTabs
-        profiles={profiles}
-        activeProfileName={activeProfileId}
-        onSelect={switchProfile}
-        onCreateProfile={handleCreateProfile}
-      />
+      {activePage === "main" && (
+        <ProfileTabs
+          profiles={profiles}
+          activeProfileName={activeProfileId}
+          onSelect={switchProfile}
+          onCreateProfile={handleCreateProfile}
+        />
+      )}
 
+      {activePage === "main" && (
       <Container fluid="lg" className="pt-3 pb-1">
         <div className="d-flex align-items-center gap-2 flex-wrap">
           <span className="text-body-secondary small me-1">
@@ -634,21 +645,7 @@ export default function App() {
           </div>
         </div>
       </Container>
-
-      <Container fluid="lg" className="py-0">
-        <Nav variant="underline" className="border-bottom">
-          <Nav.Item>
-            <Nav.Link active={activePage === "main"} onClick={() => setActivePage("main")}>
-              Users &amp; Servers
-            </Nav.Link>
-          </Nav.Item>
-          <Nav.Item>
-            <Nav.Link active={activePage === "nodes"} onClick={() => setActivePage("nodes")}>
-              Nodes
-            </Nav.Link>
-          </Nav.Item>
-        </Nav>
-      </Container>
+      )}
 
       <Container fluid="lg" className="py-4">
         {dashboardError ? (
