@@ -4,10 +4,11 @@ import {
   TbClipboard,
   TbQrcode,
   TbRefresh,
+  TbReload,
   TbTrash,
   TbUserEdit,
 } from "react-icons/tb";
-import type { UserFormState, UserRecord } from "../types";
+import type { SyncResult, UserFormState, UserRecord } from "../types";
 import { ActionIconButton } from "./ActionIconButton";
 import QRModal from "./QRModal";
 
@@ -17,6 +18,7 @@ type UsersPanelProps = {
   onCopyLink: (value: string) => void;
   onDeleteUser: (clientName: string) => void;
   onEditUser: (user: UserRecord) => void;
+  onResyncUser: (clientName: string) => Promise<SyncResult[]>;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   savingUser: boolean;
   userForm: UserFormState;
@@ -34,6 +36,7 @@ export function UsersPanel({
   onCopyLink,
   onDeleteUser,
   onEditUser,
+  onResyncUser,
   onSubmit,
   savingUser,
   userForm,
@@ -47,6 +50,7 @@ export function UsersPanel({
   const [qrModalShown, setQrModalShown] = useState(false);
   const [qrSelectedUser, setQrSelectedUser] = useState<UserRecord | null>(null);
   const [search, setSearch] = useState("");
+  const [syncingUser, setSyncingUser] = useState<string | null>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
   const UUID_PATTERN =
@@ -260,6 +264,18 @@ export function UsersPanel({
                       onClick={() => {
                         setQrSelectedUser(user);
                         setQrModalShown(true);
+                      }}
+                      variant="outline-secondary"
+                    />
+                    <ActionIconButton
+                      size="sm"
+                      icon={syncingUser === user.clientName ? <TbReload className="spin" /> : <TbReload />}
+                      label="Force resync to nodes"
+                      disabled={syncingUser === user.clientName}
+                      onClick={async () => {
+                        setSyncingUser(user.clientName);
+                        await onResyncUser(user.clientName);
+                        setSyncingUser(null);
                       }}
                       variant="outline-secondary"
                     />

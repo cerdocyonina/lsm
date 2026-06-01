@@ -184,7 +184,12 @@ function mapNodes(storage: Storage) {
   }));
 }
 
-async function syncUserToNodes(nodes: NodeRecord[], email: string, uuid: string) {
+async function syncUserToNodes(
+  nodes: NodeRecord[],
+  email: string,
+  uuid: string,
+  onConflict: "skip" | "overwrite" | "keep-both" = "skip",
+) {
   return Promise.allSettled(
     nodes.map(async (node) => {
       try {
@@ -194,7 +199,7 @@ async function syncUserToNodes(nodes: NodeRecord[], email: string, uuid: string)
             "Content-Type": "application/json",
             Authorization: `Bearer ${node.secret}`,
           },
-          body: JSON.stringify({ email, uuid, inboundId: node.inboundId, onConflict: "skip" }),
+          body: JSON.stringify({ email, uuid, inboundId: node.inboundId, onConflict }),
           tls: { rejectUnauthorized: false },
         } as RequestInit);
         const data = (await res.json()) as { result: string; msg?: string };
@@ -483,6 +488,25 @@ export async function handleAdminApiRequest(
     return noStoreResponse(
       jsonResponse({ users: mapUsers(storage, profileId, baseUrl), syncResults }, { status: 201 }),
     );
+  }
+
+  const userSyncMatch = subPath.match(/^\/users\/([^/]+)\/sync$/);
+  if (userSyncMatch && req.method === "POST") {
+    const clientName = decodeURIComponent(userSyncMatch[1]!);
+    const users = storage.listUsers(profileId);
+    const user = users.find((u) => u.clientName === clientName);
+    if (!user) return adminErrorResponse(404, `Unknown client: ${clientName}`);
+
+    const nodes = storage.listNodesForProfile(profileId);
+    if (nodes.length === 0) {
+      return noStoreResponse(jsonResponse({ syncResults: [] }));
+    }
+
+    const syncSettled = await syncUserToNodes(nodes, user.clientName, user.userUuid, "overwrite");
+    const syncResults = syncSettled.map((r) =>
+      r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
+    );
+    return noStoreResponse(jsonResponse({ syncResults }));
   }
 
   const userPathName = getUserSubPath(subPath);

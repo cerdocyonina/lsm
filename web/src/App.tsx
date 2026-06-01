@@ -372,6 +372,27 @@ export default function App() {
     }
   }
 
+  async function handleResyncUser(clientName: string): Promise<SyncResult[]> {
+    try {
+      const payload = await api<{ syncResults: SyncResult[] }>(
+        profilePath(activeProfileId, `/users/${encodeURIComponent(clientName)}/sync`),
+        { method: "POST" },
+      );
+      const failures = payload.syncResults.filter((r) => r.result === "failed");
+      if (failures.length > 0) {
+        toast.error(`Sync failed on: ${failures.map((f) => f.nodeName ?? f.nodeId).join(", ")}`);
+      } else if (payload.syncResults.length === 0) {
+        toast("No nodes configured", { icon: "ℹ️" });
+      } else {
+        toast.success(`"${clientName}" resynced to ${payload.syncResults.length} node(s)`);
+      }
+      return payload.syncResults;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Resync failed.");
+      return [];
+    }
+  }
+
   async function handleAddNode(form: NodeFormState) {
     await api<{ nodes: NodeRecord[] }>("/nodes", {
       method: "POST",
@@ -607,6 +628,7 @@ export default function App() {
               }}
               onCopyLink={copyText}
               onDeleteUser={deleteUser}
+              onResyncUser={handleResyncUser}
               onEditUser={(user) => {
                 setEditingUser(user);
                 setUserForm({
