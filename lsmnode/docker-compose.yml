@@ -1,0 +1,11 @@
+services:
+  lsm-node:
+    build:
+      context: ..
+      dockerfile: lsmnode/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${PORT:-9000}:${PORT:-9000}"
+    env_file: .env
+    # Рекомендуется закрыть порт файрволом от всех, кроме IP LSM-мастера:
+    # ufw allow from <LSM_MASTER_IP> to any port 9000

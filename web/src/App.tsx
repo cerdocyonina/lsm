@@ -14,17 +14,21 @@ import toast from "react-hot-toast";
 import { TbPencil, TbTrash } from "react-icons/tb";
 import { api, profilePath } from "./api";
 import { LoginPage } from "./components/LoginPage";
+import { NodesPanel } from "./components/NodesPanel";
 import { ProfileTabs } from "./components/ProfileTabs";
 import { ServersPanel } from "./components/ServersPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import type {
   ClientHttpPingResult,
+  NodeFormState,
+  NodeRecord,
   PingResponse,
   ProfileRecord,
   ServerFormState,
   ServerIcmpResult,
   ServerRecord,
   Session,
+  SyncResult,
   UserFormState,
   UserRecord,
 } from "./types";
@@ -34,7 +38,7 @@ function emptyUserForm(): UserFormState {
 }
 
 function emptyServerForm(): ServerFormState {
-  return { name: "", template: "" };
+  return { name: "", template: "", nodeId: null };
 }
 
 export default function App() {
@@ -46,6 +50,7 @@ export default function App() {
   const [activeProfileId, setActiveProfileId] = useState<string>("main");
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [servers, setServers] = useState<ServerRecord[]>([]);
+  const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [loginPending, setLoginPending] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
   const [savingServer, setSavingServer] = useState(false);
@@ -72,6 +77,11 @@ export default function App() {
     const payload = await api<{ profiles: ProfileRecord[] }>("/profiles");
     setProfiles(payload.profiles);
     return payload.profiles;
+  }
+
+  async function loadNodes() {
+    const payload = await api<{ nodes: NodeRecord[] }>("/nodes");
+    setNodes(payload.nodes);
   }
 
   async function loadDashboard(profileId: string) {
@@ -111,7 +121,7 @@ export default function App() {
         if (cancelled) return;
 
         setSession(currentSession);
-        const loadedProfiles = await loadProfiles();
+        const [loadedProfiles] = await Promise.all([loadProfiles(), loadNodes()]);
         const initialProfile = loadedProfiles[0]?.name ?? "main";
         setActiveProfileId(initialProfile);
         await loadDashboard(initialProfile);
@@ -180,7 +190,7 @@ export default function App() {
         body: JSON.stringify(loginForm),
       });
       setSession(currentSession);
-      const loadedProfiles = await loadProfiles();
+      const [loadedProfiles] = await Promise.all([loadProfiles(), loadNodes()]);
       const initialProfile = loadedProfiles[0]?.name ?? "main";
       setActiveProfileId(initialProfile);
       await loadDashboard(initialProfile);
@@ -268,10 +278,23 @@ export default function App() {
           },
         );
       } else {
-        await api(profilePath(activeProfileId, "/users"), {
-          method: "POST",
-          body: JSON.stringify(userForm),
-        });
+        const payload = await api<{ users: UserRecord[]; syncResults?: SyncResult[] }>(
+          profilePath(activeProfileId, "/users"),
+          { method: "POST", body: JSON.stringify(userForm) },
+        );
+        if (payload.syncResults && payload.syncResults.length > 0) {
+          const failures = payload.syncResults.filter((r) => r.result === "failed");
+          if (failures.length > 0) {
+            toast.error(`User added, but sync failed on: ${failures.map((f) => f.nodeName ?? f.nodeId).join(", ")}`);
+          } else {
+            toast.success(`User added & synced to ${payload.syncResults.length} node(s)`);
+          }
+          setUserForm(emptyUserForm());
+          setEditingUser(null);
+          await refreshAfterMutation();
+          setSavingUser(false);
+          return;
+        }
       }
 
       setUserForm(emptyUserForm());
@@ -347,6 +370,44 @@ export default function App() {
         error instanceof Error ? error.message : "Failed to delete user.",
       );
     }
+  }
+
+  async function handleAddNode(form: NodeFormState) {
+    await api<{ nodes: NodeRecord[] }>("/nodes", {
+      method: "POST",
+      body: JSON.stringify({
+        name: form.name,
+        url: form.url,
+        secret: form.secret,
+        inboundId: parseInt(form.inboundId, 10),
+      }),
+    });
+    await loadNodes();
+    toast.success(`Node "${form.name}" added`);
+  }
+
+  async function handleUpdateNode(id: number, form: NodeFormState) {
+    const body: Record<string, unknown> = {
+      name: form.name,
+      url: form.url,
+      inboundId: parseInt(form.inboundId, 10),
+    };
+    if (form.secret) body.secret = form.secret;
+    await api<{ nodes: NodeRecord[] }>(`/nodes/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+    await loadNodes();
+    toast.success("Node updated");
+  }
+
+  async function handleDeleteNode(id: number, name: string) {
+    if (!window.confirm(`Remove node "${name}"?`)) return;
+    await api(`/nodes/${id}`, { method: "DELETE" });
+    await loadNodes();
+    toast.success("Node deleted");
+  }
+
+  async function handleTestNode(id: number): Promise<boolean> {
+    const result = await api<{ ok: boolean; error?: string }>(`/nodes/${id}/test`, { method: "POST" });
+    return result.ok;
   }
 
   async function reorderServers(names: string[]) {
@@ -566,6 +627,7 @@ export default function App() {
           </Col>
           <Col xl={6}>
             <ServersPanel
+              nodes={nodes}
               editingServer={editingServer}
               onCancelEdit={() => {
                 setEditingServer(null);
@@ -577,6 +639,7 @@ export default function App() {
                 setServerForm({
                   name: server.name,
                   template: server.template,
+                  nodeId: server.nodeId,
                 });
               }}
               httpResults={httpResults}
@@ -598,7 +661,15 @@ export default function App() {
           </Col>
         </Row>
 
-        <div className="pt-3 border-top d-flex align-items-center gap-2">
+        <NodesPanel
+          nodes={nodes}
+          onAddNode={handleAddNode}
+          onUpdateNode={handleUpdateNode}
+          onDeleteNode={handleDeleteNode}
+          onTestNode={handleTestNode}
+        />
+
+        <div className="pt-3 border-top d-flex align-items-center gap-2 mt-4">
           <span className="text-body-secondary small me-1">
             Profile: <strong>{activeProfileId}</strong>
           </span>

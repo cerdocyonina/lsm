@@ -22,6 +22,7 @@ import {
 import Editor from "react-simple-code-editor";
 import type {
   ClientHttpPingResult,
+  NodeRecord,
   PingResult,
   ServerFormState,
   ServerIcmpResult,
@@ -77,6 +78,7 @@ type ServersPanelProps = {
   editingServer: ServerRecord | null;
   httpResults: ClientHttpPingResult[];
   icmpResults: ServerIcmpResult[];
+  nodes: NodeRecord[];
   onCancelEdit: () => void;
   onDeleteServer: (name: string) => void;
   onEditServer: (server: ServerRecord) => void;
@@ -154,6 +156,7 @@ export function ServersPanel({
   editingServer,
   httpResults,
   icmpResults,
+  nodes,
   onCancelEdit,
   onDeleteServer,
   onEditServer,
@@ -316,6 +319,31 @@ export function ServersPanel({
               )}
           </Form.Group>
 
+          {nodes.length > 0 && (
+            <Form.Group className="mb-3" controlId="server-node">
+              <Form.Label>Node (auto-sync)</Form.Label>
+              <Form.Select
+                value={serverForm.nodeId ?? ""}
+                onChange={(e) =>
+                  setServerForm({
+                    ...serverForm,
+                    nodeId: e.target.value ? parseInt(e.target.value, 10) : null,
+                  })
+                }
+              >
+                <option value="">— none —</option>
+                {nodes.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.name} (inbound #{n.inboundId})
+                  </option>
+                ))}
+              </Form.Select>
+              <Form.Text className="text-muted">
+                When set, new users are automatically synced to this node.
+              </Form.Text>
+            </Form.Group>
+          )}
+
           <div className="d-flex gap-2">
             <Button type="submit" disabled={savingServer}>
               {savingServer
@@ -441,6 +469,14 @@ export function ServersPanel({
                   <div className="d-flex align-items-center gap-2 flex-wrap">
                     <span className="fw-semibold">{server.name}</span>
                     <PingBadge result={icmpByName[server.name]} label="ICMP" />
+                    {server.nodeId !== null && (() => {
+                      const node = nodes.find((n) => n.id === server.nodeId);
+                      return node ? (
+                        <span className="badge bg-info-subtle text-info-emphasis border border-info-subtle">
+                          {node.name}
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
                   <div className="admin-code-wrap">
                     <code>{server.template}</code>

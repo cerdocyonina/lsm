@@ -1,0 +1,94 @@
+# lsm-node
+
+агент-сервис, устанавливаемый на каждый VPN-узел (рядом с 3x-ui).
+
+получает команды от LSM-мастера и выполняет их локально, обращаясь к 3x-ui по `localhost` - без необходимости открывать порт панели наружу.
+
+```
+LSM-мастер ──HTTP──▶ lsm-node :9000 ──HTTP──> 3x-ui :2053 (localhost)
+```
+
+- порт 3x-ui остаётся закрытым для внешнего мира
+- lsm-node принимает команды только с авторизацией по `SHARED_SECRET`
+- рекомендуется закрыть порт lsm-node файрволом от всех, кроме IP LSM-мастера
+
+## Установка (Docker)
+
+1. клонировать репозиторий lsm на сервер-узел (или скопировать папку `lsmnode/` и файлы `src/3x-ui.ts`, `src/logger.ts`, `package.json`, `bun.lockb`)
+
+2. настроить `.env`:
+    ```bash
+    cp lsmnode/.env.example lsmnode/.env
+    ```
+
+3. запустить:
+    ```bash
+    cd lsmnode
+    docker compose up -d
+    ```
+
+4. закрыть порт файрволом:
+    ```bash
+    # разрешить только с IP LSM-мастера
+    ufw allow from <LSM_MASTER_IP> to any port 9000
+    ```
+
+## Установка (Bun, без Docker)
+
+```bash
+# из корня репозитория lsm
+bun install
+cp lsmnode/.env.example lsmnode/.env
+# отредактировать lsmnode/.env
+cd lsmnode
+bun run start
+```
+
+## Конфигурация `.env`
+
+| Переменная | Описание | По умолчанию |
+|---|---|---|
+| `PORT` | Порт lsm-node | `9000` |
+| `SHARED_SECRET` | Токен авторизации (должен совпадать с LSM-мастером) | - |
+| `XUI_HOST` | URL 3x-ui панели (обычно `http://127.0.0.1:2053`) | - |
+| `XUI_USER` | Логин 3x-ui | - |
+| `XUI_PASSWORD` | Пароль 3x-ui | - |
+
+## API
+
+Все эндпоинты требуют заголовок:
+```
+Authorization: Bearer <SHARED_SECRET>
+```
+
+### `GET /health`
+
+Проверка доступности. Возвращает `{ "ok": true }`.
+
+### `POST /sync-user`
+
+Добавить пользователя в 3x-ui inbound.
+
+Тело запроса:
+```json
+{
+  "email": "username",
+  "uuid": "550e8400-e29b-41d4-a716-446655440000",
+  "inboundId": 1,
+  "onConflict": "skip"
+}
+```
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `email` | string | Имя клиента в 3x-ui |
+| `uuid` | string | UUID пользователя |
+| `inboundId` | number | ID inbound в 3x-ui |
+| `onConflict` | `"skip"` \| `"overwrite"` \| `"keep-both"` | Действие при конфликте (по умолчанию `"skip"`) |
+
+Ответ:
+```json
+{ "result": "added" }
+```
+
+Возможные значения `result`: `added`, `skipped`, `overwritten`, `kept-both`, `failed`.

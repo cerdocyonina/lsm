@@ -21,6 +21,16 @@ export type ServerRecord = {
   sortOrder: number;
   template: string;
   createdAt: number;
+  nodeId: number | null;
+};
+
+export type NodeRecord = {
+  id: number;
+  name: string;
+  url: string;
+  secret: string;
+  inboundId: number;
+  createdAt: number;
 };
 
 export interface Storage {
@@ -42,11 +52,19 @@ export interface Storage {
   listServers(profileName: string): string[];
   listServerRecords(profileName: string): ServerRecord[];
   getServerUrl(profileName: string, name: string): string | null;
-  addServer(profileName: string, name: string, template: string, createdAt: number): void;
+  addServer(profileName: string, name: string, template: string, createdAt: number, nodeId?: number | null): void;
   renameServer(profileName: string, oldName: string, newName: string): boolean;
   setServerUrl(profileName: string, name: string, template: string): boolean;
+  setServerNode(profileName: string, name: string, nodeId: number | null): boolean;
   removeServer(profileName: string, name: string): boolean;
   reorderServers(profileName: string, names: string[]): void;
+
+  listNodes(): NodeRecord[];
+  getNode(id: number): NodeRecord | null;
+  addNode(name: string, url: string, secret: string, inboundId: number, createdAt: number): NodeRecord;
+  updateNode(id: number, updates: Partial<Pick<NodeRecord, "name" | "url" | "secret" | "inboundId">>): boolean;
+  removeNode(id: number): boolean;
+  listNodesForProfile(profileName: string): NodeRecord[];
 
   replaceProfileFromFullDump(profileName: string, dump: ProfileDump): void;
   mergeProfileFromFullDump(profileName: string, dump: ProfileDump): void;
@@ -88,7 +106,23 @@ export class SqliteStorage implements Storage {
         created_at INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (profile_id, name)
       );
+      CREATE TABLE IF NOT EXISTS nodes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        url TEXT NOT NULL,
+        secret TEXT NOT NULL,
+        inbound_id INTEGER NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT 0
+      );
     `);
+
+    // Migration: add node_id to servers if not present
+    const serverCols = this.db.query("PRAGMA table_info(servers)").all() as { name: string }[];
+    if (!serverCols.some((c) => c.name === "node_id")) {
+      this.db.exec(
+        "ALTER TABLE servers ADD COLUMN node_id INTEGER REFERENCES nodes(id) ON DELETE SET NULL",
+      );
+    }
     const mainExists = this.db
       .query("SELECT 1 FROM profiles WHERE name = 'main' LIMIT 1")
       .get();
@@ -244,7 +278,7 @@ export class SqliteStorage implements Storage {
   public listServerRecords(profileName: string): ServerRecord[] {
     return this.db
       .query(
-        `SELECT s.name, s.sort_order AS sortOrder, s.template, s.created_at AS createdAt
+        `SELECT s.name, s.sort_order AS sortOrder, s.template, s.created_at AS createdAt, s.node_id AS nodeId
          FROM servers s JOIN profiles p ON p.id = s.profile_id
          WHERE p.name = ?1 ORDER BY s.sort_order, s.rowid`,
       )
@@ -261,7 +295,7 @@ export class SqliteStorage implements Storage {
     return row?.template ?? null;
   }
 
-  public addServer(profileName: string, name: string, template: string, createdAt: number): void {
+  public addServer(profileName: string, name: string, template: string, createdAt: number, nodeId: number | null = null): void {
     const row = this.db
       .query(
         `SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder
@@ -271,16 +305,26 @@ export class SqliteStorage implements Storage {
     try {
       this.db
         .query(
-          `INSERT INTO servers (profile_id, name, sort_order, template, created_at)
-           VALUES ((SELECT id FROM profiles WHERE name = ?1), ?2, ?3, ?4, ?5)`,
+          `INSERT INTO servers (profile_id, name, sort_order, template, created_at, node_id)
+           VALUES ((SELECT id FROM profiles WHERE name = ?1), ?2, ?3, ?4, ?5, ?6)`,
         )
-        .run(profileName, name, row.nextSortOrder, template, createdAt);
+        .run(profileName, name, row.nextSortOrder, template, createdAt, nodeId);
     } catch (err) {
       if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
         throw new Error(`Server "${name}" already exists.`);
       }
       throw err;
     }
+  }
+
+  public setServerNode(profileName: string, name: string, nodeId: number | null): boolean {
+    const result = this.db
+      .query(
+        `UPDATE servers SET node_id = ?1
+         WHERE profile_id = (SELECT id FROM profiles WHERE name = ?2) AND name = ?3`,
+      )
+      .run(nodeId, profileName, name);
+    return result.changes > 0;
   }
 
   public renameServer(profileName: string, oldName: string, newName: string): boolean {
@@ -491,6 +535,75 @@ export class SqliteStorage implements Storage {
       }
     });
     tx(dump);
+  }
+
+  // Node methods
+
+  public listNodes(): NodeRecord[] {
+    return this.db
+      .query("SELECT id, name, url, secret, inbound_id AS inboundId, created_at AS createdAt FROM nodes ORDER BY created_at, id")
+      .all() as NodeRecord[];
+  }
+
+  public getNode(id: number): NodeRecord | null {
+    return (
+      (this.db
+        .query("SELECT id, name, url, secret, inbound_id AS inboundId, created_at AS createdAt FROM nodes WHERE id = ?1")
+        .get(id) as NodeRecord | null) ?? null
+    );
+  }
+
+  public addNode(name: string, url: string, secret: string, inboundId: number, createdAt: number): NodeRecord {
+    try {
+      this.db
+        .query("INSERT INTO nodes (name, url, secret, inbound_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+        .run(name, url, secret, inboundId, createdAt);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+        throw new Error(`Node "${name}" already exists.`);
+      }
+      throw err;
+    }
+    return this.db
+      .query("SELECT id, name, url, secret, inbound_id AS inboundId, created_at AS createdAt FROM nodes WHERE name = ?1")
+      .get(name) as NodeRecord;
+  }
+
+  public updateNode(id: number, updates: Partial<Pick<NodeRecord, "name" | "url" | "secret" | "inboundId">>): boolean {
+    const tx = this.db.transaction(() => {
+      let changed = false;
+      if (updates.name !== undefined) {
+        if (this.db.query("UPDATE nodes SET name = ?1 WHERE id = ?2").run(updates.name, id).changes > 0) changed = true;
+      }
+      if (updates.url !== undefined) {
+        if (this.db.query("UPDATE nodes SET url = ?1 WHERE id = ?2").run(updates.url, id).changes > 0) changed = true;
+      }
+      if (updates.secret !== undefined) {
+        if (this.db.query("UPDATE nodes SET secret = ?1 WHERE id = ?2").run(updates.secret, id).changes > 0) changed = true;
+      }
+      if (updates.inboundId !== undefined) {
+        if (this.db.query("UPDATE nodes SET inbound_id = ?1 WHERE id = ?2").run(updates.inboundId, id).changes > 0) changed = true;
+      }
+      return changed;
+    });
+    return tx() as boolean;
+  }
+
+  public removeNode(id: number): boolean {
+    const result = this.db.query("DELETE FROM nodes WHERE id = ?1").run(id);
+    return result.changes > 0;
+  }
+
+  public listNodesForProfile(profileName: string): NodeRecord[] {
+    return this.db
+      .query(
+        `SELECT DISTINCT n.id, n.name, n.url, n.secret, n.inbound_id AS inboundId, n.created_at AS createdAt
+         FROM nodes n
+         JOIN servers s ON s.node_id = n.id
+         JOIN profiles p ON p.id = s.profile_id
+         WHERE p.name = ?1`,
+      )
+      .all(profileName) as NodeRecord[];
   }
 
   public close(): void {

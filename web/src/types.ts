@@ -21,6 +21,15 @@ export type ServerRecord = {
   sortOrder: number;
   template: string;
   createdAt: number;
+  nodeId: number | null;
+};
+
+export type NodeRecord = {
+  id: number;
+  name: string;
+  url: string;
+  inboundId: number;
+  createdAt: number;
 };
 
 export type UserFormState = {
@@ -31,6 +40,21 @@ export type UserFormState = {
 export type ServerFormState = {
   name: string;
   template: string;
+  nodeId: number | null;
+};
+
+export type NodeFormState = {
+  name: string;
+  url: string;
+  secret: string;
+  inboundId: string;
+};
+
+export type SyncResult = {
+  nodeId?: number;
+  nodeName?: string;
+  result: string;
+  msg?: string;
 };
 
 export type PingResult = {

@@ -8,7 +8,7 @@ import {
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
-import type { ProfileRecord, Storage } from "./storage";
+import type { NodeRecord, ProfileRecord, Storage } from "./storage";
 
 const loginSchema = z.object({
   username: z.string().min(1),
@@ -41,6 +41,7 @@ const updateUserSchema = z
 const createServerSchema = z.object({
   name: z.string().min(1),
   template: z.string().min(1),
+  nodeId: z.number().int().positive().nullable().optional(),
 });
 
 const reorderServersSchema = z.object({
@@ -59,10 +60,35 @@ const updateServerSchema = z
   .object({
     name: z.string().min(1).optional(),
     template: z.string().min(1).optional(),
+    nodeId: z.number().int().positive().nullable().optional(),
   })
-  .refine((input) => input.name !== undefined || input.template !== undefined, {
-    message: "Provide at least one server field to update.",
-  });
+  .refine(
+    (input) => input.name !== undefined || input.template !== undefined || input.nodeId !== undefined,
+    { message: "Provide at least one server field to update." },
+  );
+
+const createNodeSchema = z.object({
+  name: z.string().min(1),
+  url: z.string().url(),
+  secret: z.string().min(1),
+  inboundId: z.number().int().positive(),
+});
+
+const updateNodeSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    url: z.string().url().optional(),
+    secret: z.string().min(1).optional(),
+    inboundId: z.number().int().positive().optional(),
+  })
+  .refine(
+    (input) =>
+      input.name !== undefined ||
+      input.url !== undefined ||
+      input.secret !== undefined ||
+      input.inboundId !== undefined,
+    { message: "Provide at least one node field to update." },
+  );
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return Response.json(body, init);
@@ -143,7 +169,42 @@ function mapServers(storage: Storage, profileId: string) {
     sortOrder: server.sortOrder,
     template: server.template,
     createdAt: server.createdAt,
+    nodeId: server.nodeId,
   }));
+}
+
+function mapNodes(storage: Storage) {
+  return storage.listNodes().map((n) => ({
+    id: n.id,
+    name: n.name,
+    url: n.url,
+    inboundId: n.inboundId,
+    createdAt: n.createdAt,
+    // secret intentionally omitted from list response
+  }));
+}
+
+async function syncUserToNodes(nodes: NodeRecord[], email: string, uuid: string) {
+  return Promise.allSettled(
+    nodes.map(async (node) => {
+      try {
+        const res = await fetch(`${node.url}/sync-user`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${node.secret}`,
+          },
+          body: JSON.stringify({ email, uuid, inboundId: node.inboundId, onConflict: "skip" }),
+          tls: { rejectUnauthorized: false },
+        } as RequestInit);
+        const data = (await res.json()) as { result: string; msg?: string };
+        return { nodeId: node.id, nodeName: node.name, result: data.result, msg: data.msg };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { nodeId: node.id, nodeName: node.name, result: "failed", msg };
+      }
+    }),
+  );
 }
 
 // Extracts profileId and the sub-path under /profiles/:profileId
@@ -287,6 +348,66 @@ export async function handleAdminApiRequest(
     );
   }
 
+  // Node routes (global, not per-profile)
+  if (adminPathname === "/nodes" && req.method === "GET") {
+    return noStoreResponse(jsonResponse({ nodes: mapNodes(storage) }));
+  }
+
+  if (adminPathname === "/nodes" && req.method === "POST") {
+    const parsed = await parseJson(req, createNodeSchema);
+    if (parsed instanceof Response) return noStoreResponse(parsed);
+
+    let node;
+    try {
+      node = storage.addNode(parsed.name, parsed.url, parsed.secret, parsed.inboundId, Date.now());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to add node.";
+      return adminErrorResponse(400, message);
+    }
+
+    return noStoreResponse(jsonResponse({ nodes: mapNodes(storage), node: { id: node.id } }, { status: 201 }));
+  }
+
+  const nodeMatch = adminPathname.match(/^\/nodes\/(\d+)(\/.*)?$/);
+  if (nodeMatch) {
+    const nodeId = parseInt(nodeMatch[1]!, 10);
+    const nodeSubPath = nodeMatch[2] ?? "/";
+
+    if (nodeSubPath === "/" && req.method === "PATCH") {
+      const parsed = await parseJson(req, updateNodeSchema);
+      if (parsed instanceof Response) return noStoreResponse(parsed);
+
+      const updated = storage.updateNode(nodeId, parsed);
+      if (!updated) return adminErrorResponse(404, `Unknown node: ${nodeId}`);
+
+      return noStoreResponse(jsonResponse({ nodes: mapNodes(storage) }));
+    }
+
+    if (nodeSubPath === "/" && req.method === "DELETE") {
+      const removed = storage.removeNode(nodeId);
+      if (!removed) return adminErrorResponse(404, `Unknown node: ${nodeId}`);
+
+      return noStoreResponse(new Response(null, { status: 204 }));
+    }
+
+    if (nodeSubPath === "/test" && req.method === "POST") {
+      const node = storage.getNode(nodeId);
+      if (!node) return adminErrorResponse(404, `Unknown node: ${nodeId}`);
+
+      try {
+        const res = await fetch(`${node.url}/health`, {
+          headers: { Authorization: `Bearer ${node.secret}` },
+          tls: { rejectUnauthorized: false },
+        } as RequestInit);
+        const data = (await res.json()) as { ok: boolean };
+        return noStoreResponse(jsonResponse({ ok: data.ok === true }));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return noStoreResponse(jsonResponse({ ok: false, error: msg }));
+      }
+    }
+  }
+
   // Profile-scoped routes: /profiles/:profileId/...
   const profileRoute = extractProfileRoute(adminPathname);
   if (!profileRoute) {
@@ -353,8 +474,14 @@ export async function handleAdminApiRequest(
       return adminErrorResponse(400, message);
     }
 
+    const nodes = storage.listNodesForProfile(profileId);
+    const syncSettled = await syncUserToNodes(nodes, parsed.clientName, parsed.userUuid);
+    const syncResults = syncSettled.map((r) =>
+      r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
+    );
+
     return noStoreResponse(
-      jsonResponse({ users: mapUsers(storage, profileId, baseUrl) }, { status: 201 }),
+      jsonResponse({ users: mapUsers(storage, profileId, baseUrl), syncResults }, { status: 201 }),
     );
   }
 
@@ -410,7 +537,7 @@ export async function handleAdminApiRequest(
     }
 
     try {
-      storage.addServer(profileId, parsed.name, parsed.template, Date.now());
+      storage.addServer(profileId, parsed.name, parsed.template, Date.now(), parsed.nodeId ?? null);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to add server.";
@@ -486,6 +613,14 @@ export async function handleAdminApiRequest(
       if (parsed.template !== undefined) {
         const targetName = parsed.name ?? serverPathName;
         const updated = storage.setServerUrl(profileId, targetName, parsed.template);
+        if (!updated) {
+          return adminErrorResponse(404, `Unknown server name: ${targetName}`);
+        }
+      }
+
+      if (parsed.nodeId !== undefined) {
+        const targetName = parsed.name ?? serverPathName;
+        const updated = storage.setServerNode(profileId, targetName, parsed.nodeId);
         if (!updated) {
           return adminErrorResponse(404, `Unknown server name: ${targetName}`);
         }
