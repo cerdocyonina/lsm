@@ -6,6 +6,7 @@ import {
   Container,
   Form,
   Modal,
+  Nav,
   Navbar,
   Row,
   Spinner,
@@ -72,6 +73,7 @@ export default function App() {
   const [showRenameProfile, setShowRenameProfile] = useState(false);
   const [renameProfileName, setRenameProfileName] = useState("");
   const [showDeleteProfile, setShowDeleteProfile] = useState(false);
+  const [activePage, setActivePage] = useState<"main" | "nodes">("main");
 
   async function loadProfiles(): Promise<ProfileRecord[]> {
     const payload = await api<{ profiles: ProfileRecord[] }>("/profiles");
@@ -604,20 +606,66 @@ export default function App() {
         onCreateProfile={handleCreateProfile}
       />
 
-      <Container fluid="lg" className="py-4">
-        <div className="mb-4">
-          <h1 className="h3 mb-1">Admin panel</h1>
-          <p className="text-body-secondary mb-0">
-            Manage subscription users and server templates.
-          </p>
+      <Container fluid="lg" className="pt-3 pb-1">
+        <div className="d-flex align-items-center gap-2 flex-wrap">
+          <span className="text-body-secondary small me-1">
+            Profile: <strong>{activeProfileId}</strong>
+          </span>
+          <div className="d-flex gap-1">
+            <Button
+              variant="outline-secondary"
+              size="sm"
+              onClick={() => {
+                setRenameProfileName(activeProfileId);
+                setShowRenameProfile(true);
+              }}
+            >
+              <TbPencil size={13} className="me-1" />
+              Rename
+            </Button>
+            <Button
+              variant="outline-danger"
+              size="sm"
+              onClick={() => setShowDeleteProfile(true)}
+            >
+              <TbTrash size={13} className="me-1" />
+              Delete
+            </Button>
+          </div>
         </div>
+      </Container>
 
+      <Container fluid="lg" className="py-0">
+        <Nav variant="underline" className="border-bottom">
+          <Nav.Item>
+            <Nav.Link active={activePage === "main"} onClick={() => setActivePage("main")}>
+              Users &amp; Servers
+            </Nav.Link>
+          </Nav.Item>
+          <Nav.Item>
+            <Nav.Link active={activePage === "nodes"} onClick={() => setActivePage("nodes")}>
+              Nodes
+            </Nav.Link>
+          </Nav.Item>
+        </Nav>
+      </Container>
+
+      <Container fluid="lg" className="py-4">
         {dashboardError ? (
           <Alert variant="danger" className="mb-4">
             {dashboardError}
           </Alert>
         ) : null}
 
+        {activePage === "nodes" ? (
+          <NodesPanel
+            nodes={nodes}
+            onAddNode={handleAddNode}
+            onUpdateNode={handleUpdateNode}
+            onDeleteNode={handleDeleteNode}
+            onTestNode={handleTestNode}
+          />
+        ) : (
         <Row className="g-4 mb-4">
           <Col xl={6}>
             <UsersPanel
@@ -682,41 +730,7 @@ export default function App() {
             />
           </Col>
         </Row>
-
-        <NodesPanel
-          nodes={nodes}
-          onAddNode={handleAddNode}
-          onUpdateNode={handleUpdateNode}
-          onDeleteNode={handleDeleteNode}
-          onTestNode={handleTestNode}
-        />
-
-        <div className="pt-3 border-top d-flex align-items-center gap-2 mt-4">
-          <span className="text-body-secondary small me-1">
-            Profile: <strong>{activeProfileId}</strong>
-          </span>
-          <div className="d-flex gap-1">
-            <Button
-              variant="outline-secondary"
-              size="sm"
-              onClick={() => {
-                setRenameProfileName(activeProfileId);
-                setShowRenameProfile(true);
-              }}
-            >
-              <TbPencil size={13} className="me-1" />
-              Rename
-            </Button>
-            <Button
-              variant="outline-danger"
-              size="sm"
-              onClick={() => setShowDeleteProfile(true)}
-            >
-              <TbTrash size={13} className="me-1" />
-              Delete
-            </Button>
-          </div>
-        </div>
+        )}
       </Container>
 
       {/* Rename profile modal */}

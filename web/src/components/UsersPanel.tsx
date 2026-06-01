@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Button, Card, Form, InputGroup, ListGroup } from "react-bootstrap";
+import { Paginator } from "./Paginator";
 import {
   TbClipboard,
   TbQrcode,
@@ -51,6 +52,8 @@ export function UsersPanel({
   const [qrSelectedUser, setQrSelectedUser] = useState<UserRecord | null>(null);
   const [search, setSearch] = useState("");
   const [syncingUser, setSyncingUser] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
   const UUID_PATTERN =
@@ -64,6 +67,14 @@ export function UsersPanel({
           u.userUuid.toLowerCase().includes(search.toLowerCase()),
       )
     : sortedUsers;
+
+  // Reset to page 1 when search or page size changes
+  useEffect(() => { setPage(1); }, [search, pageSize]);
+
+  const paginatedUsers =
+    pageSize === 0
+      ? filteredUsers
+      : filteredUsers.slice((page - 1) * pageSize, page * pageSize);
 
   const allFilteredSelected =
     filteredUsers.length > 0 && filteredUsers.every((u) => selectedUsers.has(u.clientName));
@@ -182,7 +193,7 @@ export function UsersPanel({
           </div>
 
           <ListGroup variant="flush">
-            {filteredUsers.map((user) => (
+            {paginatedUsers.map((user) => (
               <ListGroup.Item
                 className="px-0 py-3"
                 key={user.subscriptionToken}
@@ -284,6 +295,14 @@ export function UsersPanel({
               </ListGroup.Item>
             ))}
           </ListGroup>
+
+          <Paginator
+            page={page}
+            setPage={setPage}
+            pageSize={pageSize}
+            onPageSizeChange={setPageSize}
+            totalCount={filteredUsers.length}
+          />
         </Card.Body>
       </Card>
       <QRModal

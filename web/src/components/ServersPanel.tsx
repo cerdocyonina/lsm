@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { Paginator } from "./Paginator";
 
 import {
   Alert,
@@ -175,6 +176,8 @@ export function ServersPanel({
   onTogglePingSelection,
 }: ServersPanelProps) {
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const dragSrcIdx = useRef<number | null>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
@@ -191,12 +194,20 @@ export function ServersPanel({
       )
     : servers;
 
-  const isDraggable = !search.trim();
+  // Reset to page 1 when search or page size changes
+  useEffect(() => { setPage(1); }, [search, pageSize]);
+
+  const paginatedServers =
+    pageSize === 0
+      ? filteredServers
+      : filteredServers.slice((page - 1) * pageSize, page * pageSize);
+
+  const isDraggable = !search.trim() && pageSize === 0;
 
   const allFilteredSelected =
-    filteredServers.length > 0 &&
-    filteredServers.every((s) => selectedServers.has(s.name));
-  const someFilteredSelected = filteredServers.some((s) =>
+    paginatedServers.length > 0 &&
+    paginatedServers.every((s) => selectedServers.has(s.name));
+  const someFilteredSelected = paginatedServers.some((s) =>
     selectedServers.has(s.name),
   );
 
@@ -383,7 +394,7 @@ export function ServersPanel({
               label="All"
               checked={allFilteredSelected}
               onChange={() =>
-                onToggleAllServers(filteredServers.map((s) => s.name))
+                onToggleAllServers(paginatedServers.map((s) => s.name))
               }
               disabled={filteredServers.length === 0}
               title="Select / deselect all visible servers for ping"
@@ -393,7 +404,7 @@ export function ServersPanel({
         </div>
 
         <ListGroup variant="flush">
-          {filteredServers.map((server, index) => (
+          {paginatedServers.map((server, index) => (
             <ListGroup.Item
               className={`px-0 py-3${dragOverIdx === index ? " bg-body-secondary" : ""}`}
               key={server.name}
@@ -459,7 +470,7 @@ export function ServersPanel({
                       style={{ lineHeight: 1 }}
                       onClick={() => moveServer(index, index + 1)}
                       title="Move down"
-                      disabled={index === filteredServers.length - 1}
+                      disabled={index === paginatedServers.length - 1}
                     >
                       <TbArrowDown size={14} />
                     </button>
@@ -515,6 +526,14 @@ export function ServersPanel({
             </ListGroup.Item>
           ))}
         </ListGroup>
+
+        <Paginator
+          page={page}
+          setPage={setPage}
+          pageSize={pageSize}
+          onPageSizeChange={setPageSize}
+          totalCount={filteredServers.length}
+        />
 
         {httpResults.length > 0 && (
           <>
