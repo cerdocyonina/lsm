@@ -340,7 +340,11 @@ export class SqliteStorage implements Storage {
       }
       throw err;
     }
-    return this.getAdminUserByUsername(username)!;
+    const newUser = this.getAdminUserByUsername(username)!;
+    this.db
+      .query("INSERT INTO profiles (owner_id, name, created_at) VALUES (?1, 'main', ?2)")
+      .run(newUser.id, createdAt);
+    return newUser;
   }
 
   public deleteAdminUser(id: number): boolean {
