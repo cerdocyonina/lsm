@@ -73,6 +73,10 @@ export default function App() {
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
   const [pingSelectionMode, setPingSelectionMode] = useState(false);
 
+  const [showDeleteUserModal, setShowDeleteUserModal] = useState(false);
+  const [deletingUserName, setDeletingUserName] = useState<string | null>(null);
+  const [deleteNodeIds, setDeleteNodeIds] = useState<Set<number>>(new Set());
+  const [deletingUser, setDeletingUser] = useState(false);
   const [showRenameProfile, setShowRenameProfile] = useState(false);
   const [renameProfileName, setRenameProfileName] = useState("");
   const [showDeleteProfile, setShowDeleteProfile] = useState(false);
@@ -446,27 +450,51 @@ export default function App() {
     }
   }
 
-  async function deleteUser(clientName: string) {
-    if (!window.confirm(`Remove user "${clientName}"?`)) {
-      return;
-    }
-
+  async function performDeleteUser(clientName: string, nodeIds: number[]) {
+    setDeletingUser(true);
     try {
-      await api(
-        profilePath(
-          activeProfileId,
-          `/users/${encodeURIComponent(clientName)}`,
-        ),
-        {
+      if (nodeIds.length > 0) {
+        const payload = await api<{ syncResults: SyncResult[] }>(
+          profilePath(activeProfileId, `/users/${encodeURIComponent(clientName)}`),
+          { method: "DELETE", body: JSON.stringify({ nodeIds }) },
+        );
+        const failures = payload.syncResults.filter((r) => r.result === "failed");
+        if (failures.length > 0) {
+          toast.error(
+            `User deleted, but removal failed on: ${failures.map((f) => f.nodeName ?? f.nodeId).join(", ")}`,
+          );
+        } else {
+          toast.success(`User deleted and removed from ${payload.syncResults.length} node(s)`);
+        }
+      } else {
+        await api(profilePath(activeProfileId, `/users/${encodeURIComponent(clientName)}`), {
           method: "DELETE",
-        },
-      );
+        });
+        toast.success("User deleted");
+      }
       await refreshAfterMutation();
-      toast.success("User deleted");
     } catch (error) {
-      setDashboardError(
-        error instanceof Error ? error.message : "Failed to delete user.",
-      );
+      setDashboardError(error instanceof Error ? error.message : "Failed to delete user.");
+    } finally {
+      setDeletingUser(false);
+      setShowDeleteUserModal(false);
+      setDeletingUserName(null);
+    }
+  }
+
+  async function deleteUser(clientName: string) {
+    const profileNodeIds = new Set(
+      servers.filter((s) => s.nodeId !== null).map((s) => s.nodeId!),
+    );
+    const relevantNodes = nodes.filter((n) => profileNodeIds.has(n.id));
+
+    if (relevantNodes.length === 0) {
+      if (!window.confirm(`Remove user "${clientName}"?`)) return;
+      await performDeleteUser(clientName, []);
+    } else {
+      setDeletingUserName(clientName);
+      setDeleteNodeIds(new Set(relevantNodes.map((n) => n.id)));
+      setShowDeleteUserModal(true);
     }
   }
 
@@ -909,6 +937,61 @@ export default function App() {
             </Button>
           </Modal.Footer>
         </Form>
+      </Modal>
+
+      {/* Delete user modal (shown when profile has nodes) */}
+      <Modal
+        show={showDeleteUserModal}
+        onHide={() => setShowDeleteUserModal(false)}
+        centered
+        size="sm"
+      >
+        <Modal.Header closeButton>
+          <Modal.Title className="h6">Delete &ldquo;{deletingUserName}&rdquo;</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <p className="mb-2 fw-semibold">Sync deletion to nodes?</p>
+          {nodes
+            .filter((n) => servers.some((s) => s.nodeId === n.id))
+            .map((n) => (
+              <Form.Check
+                key={n.id}
+                type="checkbox"
+                id={`del-node-${n.id}`}
+                label={n.name}
+                checked={deleteNodeIds.has(n.id)}
+                onChange={() =>
+                  setDeleteNodeIds((prev) => {
+                    const next = new Set(prev);
+                    next.has(n.id) ? next.delete(n.id) : next.add(n.id);
+                    return next;
+                  })
+                }
+              />
+            ))}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={deletingUser}
+            onClick={() => {
+              if (deletingUserName) void performDeleteUser(deletingUserName, []);
+            }}
+          >
+            No
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={deletingUser || deleteNodeIds.size === 0}
+            onClick={() => {
+              if (deletingUserName) void performDeleteUser(deletingUserName, [...deleteNodeIds]);
+            }}
+          >
+            {deletingUser ? "Deleting…" : "Yes"}
+          </Button>
+        </Modal.Footer>
       </Modal>
 
       {/* Import modal */}

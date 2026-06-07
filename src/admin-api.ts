@@ -235,6 +235,29 @@ async function syncUserToNodes(
   );
 }
 
+async function deleteUserFromNodes(nodes: NodeRecord[], email: string) {
+  return Promise.allSettled(
+    nodes.map(async (node) => {
+      try {
+        const res = await fetch(`${node.url}/delete-user`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${node.secret}`,
+          },
+          body: JSON.stringify({ email }),
+          tls: { rejectUnauthorized: false },
+        } as RequestInit);
+        const data = (await res.json()) as { result: string; msg?: string };
+        return { nodeId: node.id, nodeName: node.name, result: data.result, msg: data.msg };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { nodeId: node.id, nodeName: node.name, result: "failed", msg };
+      }
+    }),
+  );
+}
+
 // Extracts profileId and the sub-path under /profiles/:profileId
 function extractProfileRoute(pathname: string): { profileId: string; subPath: string } | null {
   const match = pathname.match(/^\/profiles\/([^/]+)(\/.*)?$/);
@@ -694,9 +717,30 @@ export async function handleAdminApiRequest(
   }
 
   if (userPathName && req.method === "DELETE") {
+    let nodeIds: number[] | null = null;
+    const ct = req.headers.get("content-type") ?? "";
+    if (ct.includes("application/json")) {
+      try {
+        const body = (await req.json()) as { nodeIds?: unknown };
+        if (Array.isArray(body.nodeIds)) {
+          nodeIds = body.nodeIds.filter((n): n is number => typeof n === "number");
+        }
+      } catch {}
+    }
+
     const removed = storage.removeUser(profileId, userPathName, adminUserId);
     if (!removed) {
       return adminErrorResponse(404, `Unknown client: ${userPathName}`);
+    }
+
+    if (nodeIds && nodeIds.length > 0) {
+      const profileNodes = storage.listNodesForProfile(profileId, adminUserId);
+      const selectedNodes = profileNodes.filter((n) => nodeIds!.includes(n.id));
+      const settled = await deleteUserFromNodes(selectedNodes, userPathName);
+      const syncResults = settled.map((r) =>
+        r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
+      );
+      return noStoreResponse(jsonResponse({ syncResults }));
     }
 
     return noStoreResponse(new Response(null, { status: 204 }));

@@ -13,7 +13,7 @@ if (!XUI_PASSWORD) throw new Error("XUI_PASSWORD is required");
 
 const xui = new XUIService({ host: XUI_HOST, user: XUI_USER, password: XUI_PASSWORD });
 
-type SyncResult = "added" | "skipped" | "overwritten" | "kept-both" | "failed";
+type SyncResult = "added" | "skipped" | "overwritten" | "kept-both" | "deleted" | "not_found" | "failed";
 type OnConflict = "skip" | "overwrite" | "keep-both";
 
 function unauthorized(): Response {
@@ -75,6 +75,34 @@ const server = Bun.serve({
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`sync-user failed for ${email}:`, msg);
+        return Response.json({ result: "failed", msg }, { status: 500 });
+      }
+    }
+
+    if (url.pathname === "/delete-user" && req.method === "POST") {
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "Invalid JSON" }, { status: 400 });
+      }
+
+      if (typeof body !== "object" || body === null) {
+        return Response.json({ error: "Invalid body" }, { status: 400 });
+      }
+
+      const { email } = body as Record<string, unknown>;
+
+      if (typeof email !== "string" || !email) {
+        return Response.json({ error: "email is required" }, { status: 400 });
+      }
+
+      try {
+        const result: SyncResult = await xui.deleteUser(email);
+        return Response.json({ result });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`delete-user failed for ${email}:`, msg);
         return Response.json({ result: "failed", msg }, { status: 500 });
       }
     }

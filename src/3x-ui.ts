@@ -250,6 +250,28 @@ export class XUIService {
     return "failed";
   }
 
+  async deleteUser(email: string): Promise<"deleted" | "not_found" | "failed"> {
+    if (!this.cookie) await this.login();
+
+    const exists = await this.clientExists(email);
+    if (!exists) {
+      logger.warn(`User "${email}" not found in 3x-ui.`);
+      return "not_found";
+    }
+
+    const response = await this.request(
+      `/panel/api/clients/delete/${encodeURIComponent(email)}`,
+      { method: "POST" },
+    );
+    const result = (await response.json()) as any;
+    if (result.success) {
+      logger.info(`User "${email}" deleted successfully.`);
+      return "deleted";
+    }
+    logger.error(`Failed to delete "${email}": ${result.msg}`);
+    return "failed";
+  }
+
   async logout(): Promise<void> {
     if (!this.cookie) return;
 
