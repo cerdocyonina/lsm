@@ -260,7 +260,7 @@ export class XUIService {
     }
 
     const response = await this.request(
-      `/panel/api/clients/delete/${encodeURIComponent(email)}`,
+      `/panel/api/clients/del/${encodeURIComponent(email)}`,
       { method: "POST" },
     );
     const result = (await response.json()) as any;
