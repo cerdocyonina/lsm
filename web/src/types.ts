@@ -42,6 +42,7 @@ export type NodeRecord = {
 
 export type NodeTestResult = {
   ok: boolean;
+  version?: string;
   commit?: string;
   date?: string;
   error?: string;

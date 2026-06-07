@@ -169,6 +169,11 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                             <span className="text-success small d-flex align-items-center gap-1 flex-wrap">
                               <TbCircleCheck size={14} />
                               <span>OK</span>
+                              {testResult.version && (
+                                <Badge bg="success" className="fw-normal" style={{ fontSize: "0.7em" }}>
+                                  v{testResult.version}
+                                </Badge>
+                              )}
                               {testResult.commit && (
                                 <code className="text-success" style={{ fontSize: "0.75em" }}>{testResult.commit}</code>
                               )}
