@@ -40,6 +40,13 @@ export type NodeRecord = {
   createdAt: number;
 };
 
+export type NodeTestResult = {
+  ok: boolean;
+  commit?: string;
+  date?: string;
+  error?: string;
+};
+
 export type UserFormState = {
   clientName: string;
   userUuid: string;

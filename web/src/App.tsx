@@ -25,6 +25,7 @@ import type {
   ClientHttpPingResult,
   NodeFormState,
   NodeRecord,
+  NodeTestResult,
   PingResponse,
   ProfileRecord,
   ServerFormState,
@@ -551,9 +552,8 @@ export default function App() {
     toast.success("Node deleted");
   }
 
-  async function handleTestNode(id: number): Promise<boolean> {
-    const result = await api<{ ok: boolean; error?: string }>(`/nodes/${id}/test`, { method: "POST" });
-    return result.ok;
+  async function handleTestNode(id: number): Promise<NodeTestResult> {
+    return api<NodeTestResult>(`/nodes/${id}/test`, { method: "POST" });
   }
 
   async function reorderServers(names: string[]) {

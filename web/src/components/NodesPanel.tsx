@@ -10,7 +10,7 @@ import {
   Spinner,
 } from "react-bootstrap";
 import { TbCircleCheck, TbCircleX, TbEdit, TbTrash, TbWifi } from "react-icons/tb";
-import type { NodeFormState, NodeRecord } from "../types";
+import type { NodeFormState, NodeRecord, NodeTestResult } from "../types";
 import { ActionIconButton } from "./ActionIconButton";
 
 type NodesPanelProps = {
@@ -18,7 +18,7 @@ type NodesPanelProps = {
   onAddNode: (form: NodeFormState) => Promise<void>;
   onUpdateNode: (id: number, form: NodeFormState) => Promise<void>;
   onDeleteNode: (id: number, name: string) => Promise<void>;
-  onTestNode: (id: number) => Promise<boolean>;
+  onTestNode: (id: number) => Promise<NodeTestResult>;
 };
 
 function emptyForm(): NodeFormState {
@@ -31,7 +31,7 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
-  const [testResults, setTestResults] = useState<Record<number, boolean | null>>({});
+  const [testResults, setTestResults] = useState<Record<number, NodeTestResult | null>>({});
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -55,10 +55,10 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
   async function handleTest(id: number) {
     setTestingId(id);
     try {
-      const ok = await onTestNode(id);
-      setTestResults((prev) => ({ ...prev, [id]: ok }));
+      const result = await onTestNode(id);
+      setTestResults((prev) => ({ ...prev, [id]: result }));
     } catch {
-      setTestResults((prev) => ({ ...prev, [id]: false }));
+      setTestResults((prev) => ({ ...prev, [id]: { ok: false } }));
     } finally {
       setTestingId(null);
     }
@@ -165,12 +165,19 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                           <Badge bg="secondary" className="font-monospace fw-normal">
                             inbound #{node.inboundId}
                           </Badge>
-                          {testResult === true && (
-                            <span className="text-success small d-flex align-items-center gap-1">
-                              <TbCircleCheck size={14} /> OK
+                          {testResult?.ok === true && (
+                            <span className="text-success small d-flex align-items-center gap-1 flex-wrap">
+                              <TbCircleCheck size={14} />
+                              <span>OK</span>
+                              {testResult.commit && (
+                                <code className="text-success" style={{ fontSize: "0.75em" }}>{testResult.commit}</code>
+                              )}
+                              {testResult.date && (
+                                <span className="text-body-secondary" style={{ fontSize: "0.75em" }}>{testResult.date}</span>
+                              )}
                             </span>
                           )}
-                          {testResult === false && (
+                          {testResult?.ok === false && (
                             <span className="text-danger small d-flex align-items-center gap-1">
                               <TbCircleX size={14} /> unreachable
                             </span>

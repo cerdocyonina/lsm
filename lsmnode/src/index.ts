@@ -1,5 +1,23 @@
 import { XUIService } from "../../src/3x-ui";
 
+const REPO_DIR = new URL("../..", import.meta.url).pathname;
+
+function getVersionInfo(): { commit: string; date: string } | null {
+  try {
+    const commit = Bun.spawnSync(["git", "rev-parse", "--short", "HEAD"], { cwd: REPO_DIR });
+    const date = Bun.spawnSync(["git", "log", "-1", "--format=%cd", "--date=short"], { cwd: REPO_DIR });
+    if (commit.exitCode !== 0 || date.exitCode !== 0) return null;
+    return {
+      commit: new TextDecoder().decode(commit.stdout).trim(),
+      date: new TextDecoder().decode(date.stdout).trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const version = getVersionInfo();
+
 const PORT = parseInt(process.env.PORT ?? "9000", 10);
 const SHARED_SECRET = process.env.SHARED_SECRET;
 const XUI_HOST = process.env.XUI_HOST;
@@ -34,7 +52,7 @@ const server = Bun.serve({
     const url = new URL(req.url);
 
     if (url.pathname === "/health" && req.method === "GET") {
-      return Response.json({ ok: true });
+      return Response.json({ ok: true, ...version });
     }
 
     if (url.pathname === "/sync-user" && req.method === "POST") {
