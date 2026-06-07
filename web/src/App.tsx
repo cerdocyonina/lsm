@@ -13,13 +13,15 @@ import {
 } from "react-bootstrap";
 import toast from "react-hot-toast";
 import { TbPencil, TbTrash } from "react-icons/tb";
-import { api, profilePath } from "./api";
+import { api, createAdminUser, deleteAdminUser, fetchAdminUsers, profilePath } from "./api";
+import { AdminUsersPanel } from "./components/AdminUsersPanel";
 import { LoginPage } from "./components/LoginPage";
 import { NodesPanel } from "./components/NodesPanel";
 import { ProfileTabs } from "./components/ProfileTabs";
 import { ServersPanel } from "./components/ServersPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import type {
+  AdminUserRecord,
   ClientHttpPingResult,
   NodeFormState,
   NodeRecord,
@@ -52,6 +54,7 @@ export default function App() {
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUserRecord[]>([]);
   const [loginPending, setLoginPending] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
   const [savingServer, setSavingServer] = useState(false);
@@ -73,7 +76,7 @@ export default function App() {
   const [showRenameProfile, setShowRenameProfile] = useState(false);
   const [renameProfileName, setRenameProfileName] = useState("");
   const [showDeleteProfile, setShowDeleteProfile] = useState(false);
-  const [activePage, setActivePage] = useState<"main" | "nodes">("main");
+  const [activePage, setActivePage] = useState<"main" | "nodes" | "admin-users">("main");
 
   async function loadProfiles(): Promise<ProfileRecord[]> {
     const payload = await api<{ profiles: ProfileRecord[] }>("/profiles");
@@ -84,6 +87,11 @@ export default function App() {
   async function loadNodes() {
     const payload = await api<{ nodes: NodeRecord[] }>("/nodes");
     setNodes(payload.nodes);
+  }
+
+  async function loadAdminUsers() {
+    const payload = await fetchAdminUsers();
+    setAdminUsers(payload.adminUsers);
   }
 
   async function loadDashboard(profileId: string) {
@@ -123,7 +131,9 @@ export default function App() {
         if (cancelled) return;
 
         setSession(currentSession);
-        const [loadedProfiles] = await Promise.all([loadProfiles(), loadNodes()]);
+        const loaders: Promise<unknown>[] = [loadProfiles(), loadNodes()];
+        if (currentSession.isPrimary) loaders.push(loadAdminUsers());
+        const [loadedProfiles] = await Promise.all(loaders) as [ProfileRecord[], ...unknown[]];
         const initialProfile = loadedProfiles[0]?.name ?? "main";
         setActiveProfileId(initialProfile);
         await loadDashboard(initialProfile);
@@ -192,8 +202,10 @@ export default function App() {
         body: JSON.stringify(loginForm),
       });
       setSession(currentSession);
-      const [loadedProfiles] = await Promise.all([loadProfiles(), loadNodes()]);
-      const initialProfile = loadedProfiles[0]?.name ?? "main";
+      const loaders2: Promise<unknown>[] = [loadProfiles(), loadNodes()];
+      if (currentSession.isPrimary) loaders2.push(loadAdminUsers());
+      const [loadedProfiles2] = await Promise.all(loaders2) as [ProfileRecord[], ...unknown[]];
+      const initialProfile = loadedProfiles2[0]?.name ?? "main";
       setActiveProfileId(initialProfile);
       await loadDashboard(initialProfile);
     } catch (error) {
@@ -209,9 +221,23 @@ export default function App() {
     setProfiles([]);
     setUsers([]);
     setServers([]);
+    setAdminUsers([]);
     setEditingUser(null);
     setEditingServer(null);
     setDashboardError(null);
+  }
+
+  async function handleCreateAdminUser(username: string, password: string) {
+    const payload = await createAdminUser(username, password);
+    setAdminUsers(payload.adminUsers);
+    toast.success(`Panel user "${username}" created`);
+  }
+
+  async function handleDeleteAdminUser(id: number, username: string) {
+    if (!window.confirm(`Delete panel user "${username}" and all their data?`)) return;
+    await deleteAdminUser(id);
+    setAdminUsers((prev) => prev.filter((u) => u.id !== id));
+    toast.success(`Panel user "${username}" deleted`);
   }
 
   async function handleCreateProfile(name: string) {
@@ -591,6 +617,11 @@ export default function App() {
             <Nav.Link active={activePage === "nodes"} onClick={() => setActivePage("nodes")}>
               Nodes
             </Nav.Link>
+            {session.isPrimary && (
+              <Nav.Link active={activePage === "admin-users"} onClick={() => setActivePage("admin-users")}>
+                Panel Users
+              </Nav.Link>
+            )}
           </Nav>
           <div className="d-flex align-items-center gap-3">
             <span className="text-body-secondary small">
@@ -654,7 +685,14 @@ export default function App() {
           </Alert>
         ) : null}
 
-        {activePage === "nodes" ? (
+        {activePage === "admin-users" && session.isPrimary ? (
+          <AdminUsersPanel
+            session={session}
+            adminUsers={adminUsers}
+            onCreateAdminUser={handleCreateAdminUser}
+            onDeleteAdminUser={handleDeleteAdminUser}
+          />
+        ) : activePage === "nodes" ? (
           <NodesPanel
             nodes={nodes}
             onAddNode={handleAddNode}

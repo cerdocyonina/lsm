@@ -5,6 +5,21 @@ export function profilePath(profileId: string, subPath: string): string {
   return `/profiles/${encodeURIComponent(profileId)}${subPath}`;
 }
 
+export async function fetchAdminUsers() {
+  return api<{ adminUsers: import("./types").AdminUserRecord[] }>("/admin-users");
+}
+
+export async function createAdminUser(username: string, password: string) {
+  return api<{ adminUsers: import("./types").AdminUserRecord[] }>("/admin-users", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function deleteAdminUser(id: number) {
+  return api<void>(`/admin-users/${id}`, { method: "DELETE" });
+}
+
 export async function api<T>(input: string, init?: RequestInit): Promise<T> {
   const normalizedPath = input.startsWith("/") ? input : `/${input}`;
   const response = await fetch(`${apiBasePath}${normalizedPath}`, {

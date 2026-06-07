@@ -59,6 +59,44 @@ async function confirm(message: string): Promise<boolean> {
   });
 }
 
+async function promptPassword(prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    process.stdout.write(prompt);
+    process.stdin.setRawMode?.(true);
+
+    let password = "";
+    process.stdin.resume();
+    process.stdin.setEncoding("utf8");
+
+    const onData = (ch: string) => {
+      if (ch === "\n" || ch === "\r" || ch === "") {
+        process.stdin.setRawMode?.(false);
+        process.stdin.pause();
+        process.stdin.removeListener("data", onData);
+        process.stdout.write("\n");
+        rl.close();
+        resolve(password);
+      } else if (ch === "") {
+        process.stdin.setRawMode?.(false);
+        process.stdin.pause();
+        process.stdin.removeListener("data", onData);
+        process.stdout.write("\n");
+        rl.close();
+        process.exit(1);
+      } else if (ch === "" || ch === "\b") {
+        if (password.length > 0) {
+          password = password.slice(0, -1);
+        }
+      } else {
+        password += ch;
+      }
+    };
+
+    process.stdin.on("data", onData);
+  });
+}
+
 // progress bar
 class ProgressBar {
   private done = 0;
@@ -118,12 +156,20 @@ function assertUuid(val: string) {
 
 function withStorage<T>(action: (storage: SqliteStorage) => T): T {
   const databasePath = config.get("DATABASE_PATH");
-  const storage = new SqliteStorage(databasePath);
+  const primaryAdminUsername = config.get("ADMIN_USERNAME");
+  const storage = new SqliteStorage(databasePath, primaryAdminUsername);
   try {
     return action(storage);
   } finally {
     storage.close();
   }
+}
+
+function withStorageAsAdmin<T>(action: (storage: SqliteStorage, ownerId: number) => T): T {
+  return withStorage((storage) => {
+    const primaryAdmin = storage.getPrimaryAdmin();
+    return action(storage, primaryAdmin.id);
+  });
 }
 
 function withErrorHandling(action: (...args: any[]) => Promise<void> | void) {
@@ -193,8 +239,8 @@ async function bootstrap() {
           if (options.profile ?? program.opts().profile) {
             throw new Error("--profile cannot be combined with a multi-profile dump; omit --profile to import all profiles");
           }
-          withStorage((storage) => {
-            storage.mergeAllFromMultiProfileDump(parsed.data);
+          withStorageAsAdmin((storage, ownerId) => {
+            storage.mergeAllFromMultiProfileDump(parsed.data, ownerId);
           });
           const profileCount = Object.keys(parsed.data.profiles).length;
           logger.info(`imported ${profileCount} profile(s) from ${path} into ${databasePath}`);
@@ -205,9 +251,9 @@ async function bootstrap() {
         let userCount: number;
         let serverCount: number;
 
-        withStorage((storage) => {
-          if (!storage.getProfile(profileId)) {
-            storage.createProfile(profileId, Date.now());
+        withStorageAsAdmin((storage, ownerId) => {
+          if (!storage.getProfile(profileId, ownerId)) {
+            storage.createProfile(profileId, ownerId, Date.now());
             logger.info(`created profile "${profileId}"`);
           }
 
@@ -216,7 +262,7 @@ async function bootstrap() {
               USERS: parsed.data.USERS.filter((u) => keepUser(u.clientName)),
               SERVERS: parsed.data.SERVERS.filter((s) => keepServer(s.name)),
             };
-            storage.mergeProfileFromFullDump(profileId, filtered);
+            storage.mergeProfileFromFullDump(profileId, filtered, ownerId);
             userCount = filtered.USERS.length;
             serverCount = filtered.SERVERS.length;
           } else {
@@ -227,7 +273,7 @@ async function bootstrap() {
             const filteredServers = legacy.SERVERS.filter((tpl) => keepServer(tpl));
             const filteredLegacy = { USERS: filteredUsers, SERVERS: filteredServers };
             const subLinkSecret = config.get("SUB_LINK_SECRET");
-            storage.mergeProfileFromLegacyConfig(profileId, filteredLegacy, subLinkSecret);
+            storage.mergeProfileFromLegacyConfig(profileId, filteredLegacy, subLinkSecret, ownerId);
             userCount = Object.keys(filteredUsers).length;
             serverCount = filteredServers.length;
           }
@@ -245,11 +291,11 @@ async function bootstrap() {
     .action(
       withErrorHandling(() => {
         const profileOpt = program.opts().profile as string | undefined;
-        const dump = withStorage((storage) => {
+        const dump = withStorageAsAdmin((storage, ownerId) => {
           if (profileOpt) {
-            return buildProfileDump(storage, profileOpt);
+            return buildProfileDump(storage, profileOpt, ownerId);
           }
-          return buildMultiProfileDump(storage);
+          return buildMultiProfileDump(storage, ownerId);
         });
         console.log(JSON.stringify(dump, null, 2));
       }),
@@ -262,7 +308,7 @@ async function bootstrap() {
     .action(
       withErrorHandling(() => {
         const id = readCurrentProfile();
-        const profile = withStorage((storage) => storage.getProfile(id));
+        const profile = withStorageAsAdmin((storage, ownerId) => storage.getProfile(id, ownerId));
         if (program.opts().verbose) {
           if (!profile) {
             logger.info(`current profile: "${id}" (not found in database)`);
@@ -282,7 +328,7 @@ async function bootstrap() {
     .description("List all profiles")
     .action(
       withErrorHandling(() => {
-        const profiles = withStorage((storage) => storage.listProfiles());
+        const profiles = withStorageAsAdmin((storage, ownerId) => storage.listProfiles(ownerId));
         const current = readCurrentProfile();
         printTable(
           ["ID", "Name", "Default", "Created At"],
@@ -304,7 +350,7 @@ async function bootstrap() {
         if (!/^[a-z0-9_-]+$/.test(name)) {
           throw new Error("Profile name must be lowercase alphanumeric, hyphens, or underscores");
         }
-        withStorage((storage) => storage.createProfile(name, Date.now()));
+        withStorageAsAdmin((storage, ownerId) => storage.createProfile(name, ownerId, Date.now()));
         logger.info(`created profile "${name}"`);
       }),
     );
@@ -315,10 +361,10 @@ async function bootstrap() {
     .action(
       withErrorHandling((nameOrId, newName) => {
         const numericId = Number(nameOrId);
-        const ok = withStorage((storage) =>
+        const ok = withStorageAsAdmin((storage, ownerId) =>
           Number.isInteger(numericId) && !Number.isNaN(numericId) && String(numericId) === nameOrId
-            ? storage.renameProfileById(numericId, newName)
-            : storage.renameProfile(nameOrId, newName),
+            ? storage.renameProfileById(numericId, newName, ownerId)
+            : storage.renameProfile(nameOrId, newName, ownerId),
         );
         if (!ok) throw new Error(`Unknown profile: ${nameOrId}`);
         logger.info(`renamed profile "${nameOrId}" to "${newName}"`);
@@ -334,15 +380,15 @@ async function bootstrap() {
         const numericId = Number(nameOrId);
         const isNumeric = Number.isInteger(numericId) && !Number.isNaN(numericId) && String(numericId) === nameOrId;
 
-        const resolved = withStorage((storage) => {
+        const resolved = withStorageAsAdmin((storage, ownerId) => {
           const profile = isNumeric
-            ? storage.getProfileById(numericId)
-            : storage.getProfile(nameOrId);
+            ? storage.getProfileById(numericId, ownerId)
+            : storage.getProfile(nameOrId, ownerId);
           if (!profile) return null;
           return {
             profile,
-            userCount: storage.listUsers(profile.name).length,
-            serverCount: storage.listServerRecords(profile.name).length,
+            userCount: storage.listUsers(profile.name, ownerId).length,
+            serverCount: storage.listServerRecords(profile.name, ownerId).length,
           };
         });
 
@@ -360,7 +406,7 @@ async function bootstrap() {
           }
         }
 
-        withStorage((storage) => storage.deleteProfile(profile.name));
+        withStorageAsAdmin((storage, ownerId) => storage.deleteProfile(profile.name, ownerId));
         logger.info(`deleted profile "${profile.name}"`);
       }),
     );
@@ -370,8 +416,8 @@ async function bootstrap() {
     .description("Set the default profile for CLI commands")
     .action(
       withErrorHandling((id) => {
-        withStorage((storage) => {
-          if (!storage.getProfile(id)) throw new Error(`Unknown profile: ${id}`);
+        withStorageAsAdmin((storage, ownerId) => {
+          if (!storage.getProfile(id, ownerId)) throw new Error(`Unknown profile: ${id}`);
         });
         writeCurrentProfile(id);
         logger.info(`default profile set to "${id}"`);
@@ -434,13 +480,14 @@ async function bootstrap() {
         assertUuid(resolvedUuid);
         const subLinkSecret = config.get("SUB_LINK_SECRET");
 
-        withStorage((storage) => {
+        withStorageAsAdmin((storage, ownerId) => {
           storage.addUser(
             profileId,
             clientName,
             createSubscriptionToken(profileId, clientName, subLinkSecret),
             resolvedUuid,
             Date.now(),
+            ownerId,
           );
         });
         logger.info(`stored user "${clientName}" with uuid ${resolvedUuid} in profile "${profileId}"`);
@@ -453,8 +500,8 @@ async function bootstrap() {
     .action(
       withErrorHandling((oldName, newName) => {
         const profileId = resolveProfile(program);
-        const renamed = withStorage((storage) =>
-          storage.renameUser(profileId, oldName, newName),
+        const renamed = withStorageAsAdmin((storage, ownerId) =>
+          storage.renameUser(profileId, oldName, newName, ownerId),
         );
         if (!renamed) throw new Error(`Unknown client: ${oldName}`);
         logger.info(`renamed user "${oldName}" to "${newName}"`);
@@ -468,8 +515,8 @@ async function bootstrap() {
       withErrorHandling((name, newUuid) => {
         const profileId = resolveProfile(program);
         assertUuid(newUuid);
-        const updated = withStorage((storage) =>
-          storage.setUserUuid(profileId, name, newUuid),
+        const updated = withStorageAsAdmin((storage, ownerId) =>
+          storage.setUserUuid(profileId, name, newUuid, ownerId),
         );
         if (!updated) throw new Error(`Unknown client: ${name}`);
         logger.info(`updated uuid for user "${name}"`);
@@ -482,8 +529,8 @@ async function bootstrap() {
     .action(
       withErrorHandling((clientName) => {
         const profileId = resolveProfile(program);
-        const removed = withStorage((storage) =>
-          storage.removeUser(profileId, clientName),
+        const removed = withStorageAsAdmin((storage, ownerId) =>
+          storage.removeUser(profileId, clientName, ownerId),
         );
         if (!removed) throw new Error(`Unknown client: ${clientName}`);
         logger.info(`removed user "${clientName}"`);
@@ -501,8 +548,8 @@ async function bootstrap() {
     .action(
       withErrorHandling((options) => {
         const profileId = resolveProfile(program);
-        const serverRecords = withStorage((storage) =>
-          storage.listServerRecords(profileId),
+        const serverRecords = withStorageAsAdmin((storage, ownerId) =>
+          storage.listServerRecords(profileId, ownerId),
         );
 
         if (options.json) {
@@ -534,7 +581,9 @@ async function bootstrap() {
     .action(
       withErrorHandling((name, template) => {
         const profileId = resolveProfile(program);
-        withStorage((storage) => storage.addServer(profileId, name, template, Date.now()));
+        withStorageAsAdmin((storage, ownerId) =>
+          storage.addServer(profileId, name, template, Date.now(), ownerId),
+        );
         logger.info(`stored server "${name}" in profile "${profileId}"`);
       }),
     );
@@ -545,7 +594,9 @@ async function bootstrap() {
     .action(
       withErrorHandling((name) => {
         const profileId = resolveProfile(program);
-        const template = withStorage((storage) => storage.getServerUrl(profileId, name));
+        const template = withStorageAsAdmin((storage, ownerId) =>
+          storage.getServerUrl(profileId, name, ownerId),
+        );
         if (!template) throw new Error(`Unknown server name: ${name}`);
         console.log(template);
       }),
@@ -557,8 +608,8 @@ async function bootstrap() {
     .action(
       withErrorHandling((oldName, newName) => {
         const profileId = resolveProfile(program);
-        const renamed = withStorage((storage) =>
-          storage.renameServer(profileId, oldName, newName),
+        const renamed = withStorageAsAdmin((storage, ownerId) =>
+          storage.renameServer(profileId, oldName, newName, ownerId),
         );
         if (!renamed) throw new Error(`Unknown server name: ${oldName}`);
         logger.info(`renamed server "${oldName}" to "${newName}"`);
@@ -571,8 +622,8 @@ async function bootstrap() {
     .action(
       withErrorHandling((name, newUrl) => {
         const profileId = resolveProfile(program);
-        const updated = withStorage((storage) =>
-          storage.setServerUrl(profileId, name, newUrl),
+        const updated = withStorageAsAdmin((storage, ownerId) =>
+          storage.setServerUrl(profileId, name, newUrl, ownerId),
         );
         if (!updated) throw new Error(`Unknown server name: ${name}`);
         logger.info(`updated url for server "${name}"`);
@@ -585,7 +636,9 @@ async function bootstrap() {
     .action(
       withErrorHandling((name) => {
         const profileId = resolveProfile(program);
-        const removed = withStorage((storage) => storage.removeServer(profileId, name));
+        const removed = withStorageAsAdmin((storage, ownerId) =>
+          storage.removeServer(profileId, name, ownerId),
+        );
         if (!removed) throw new Error(`Unknown server name: ${name}`);
         logger.info(`removed server "${name}"`);
       }),
@@ -638,15 +691,15 @@ async function bootstrap() {
           usersOnly ? usersOnly.has(name) : usersExcept ? !usersExcept.has(name) : true;
 
         const profileId = resolveProfile(program);
-        const { serverRecords, users } = withStorage((storage) => {
-          let records = storage.listServerRecords(profileId);
+        const { serverRecords, users } = withStorageAsAdmin((storage, ownerId) => {
+          let records = storage.listServerRecords(profileId, ownerId);
           if (nameArg) {
             records = records.filter((s) => s.name === nameArg);
             if (records.length === 0) throw new Error(`Unknown server name: ${nameArg}`);
           } else {
             records = records.filter((s) => keepServer(s.name));
           }
-          const allUsers = storage.listUsers(profileId).filter((u) => keepUser(u.clientName));
+          const allUsers = storage.listUsers(profileId, ownerId).filter((u) => keepUser(u.clientName));
           return { serverRecords: records, users: allUsers };
         });
 
@@ -755,7 +808,9 @@ async function bootstrap() {
         }
 
         const profileId = resolveProfile(program);
-        const users = withStorage((storage) => storage.listUsers(profileId));
+        const users = withStorageAsAdmin((storage, ownerId) =>
+          storage.listUsers(profileId, ownerId),
+        );
         const xuiService = new XUIService({ host, user, password });
 
         logger.debug("logging into 3x-ui...");
@@ -798,6 +853,79 @@ async function bootstrap() {
             );
           }
         }
+      }),
+    );
+
+  // admin-users commands
+  const adminUsersCmd = program.command("admin-users").description("Manage panel admin accounts");
+
+  adminUsersCmd
+    .command("list")
+    .description("List all panel admin accounts")
+    .action(
+      withErrorHandling(() => {
+        const admins = withStorage((storage) => storage.listAdminUsers());
+        printTable(
+          ["ID", "Username", "Primary", "Created At"],
+          admins.map(({ id, username, isPrimary, createdAt }) => [
+            String(id),
+            username,
+            isPrimary ? "yes" : "",
+            new Date(createdAt).toISOString(),
+          ]),
+        );
+      }),
+    );
+
+  adminUsersCmd
+    .command("create <username>")
+    .description("Create a new panel admin account")
+    .action(
+      withErrorHandling(async (username: string) => {
+        if (!/^[a-z0-9_-]+$/.test(username)) {
+          throw new Error("Username must be lowercase alphanumeric, hyphens, or underscores");
+        }
+
+        const password = await promptPassword("Password: ");
+        if (password.length < 8) {
+          throw new Error("Password must be at least 8 characters");
+        }
+        const confirm2 = await promptPassword("Confirm password: ");
+        if (password !== confirm2) {
+          throw new Error("Passwords do not match");
+        }
+
+        const passwordHash = await Bun.password.hash(password);
+        withStorage((storage) => {
+          storage.createAdminUser(username, passwordHash, Date.now());
+        });
+        logger.info(`created admin user "${username}"`);
+      }),
+    );
+
+  adminUsersCmd
+    .command("delete <username>")
+    .description("Delete a panel admin account and all their data")
+    .option("--force", "skip confirmation prompt")
+    .action(
+      withErrorHandling(async (username: string, options) => {
+        const adminUser = withStorage((storage) => storage.getAdminUserByUsername(username));
+        if (!adminUser) throw new Error(`Unknown admin user: ${username}`);
+        if (adminUser.isPrimary) throw new Error("Cannot delete the primary admin account");
+
+        if (!options.force) {
+          const ok = await confirm(
+            `Delete admin user "${username}" and ALL their profiles, servers, users, and nodes?`,
+          );
+          if (!ok) {
+            logger.info("aborted");
+            return;
+          }
+        }
+
+        const deleted = withStorage((storage) => storage.deleteAdminUser(adminUser.id));
+        if (!deleted) throw new Error(`Failed to delete admin user "${username}"`);
+        logger.info(`deleted admin user "${username}"`);
       }),
     );
 

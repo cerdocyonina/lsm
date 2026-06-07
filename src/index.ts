@@ -81,7 +81,7 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     }
 
-    const servers = storage.listServers(userRecord.profileName);
+    const servers = storage.listServers(userRecord.profileName, userRecord.ownerId);
     const configs = servers.map((serverTemplate) =>
       serverTemplate.replace("DUMMY", userRecord.userUuid),
     );
@@ -115,7 +115,7 @@ function main(): boolean {
 
   const port = config.get("PORT");
   const databasePath = config.get("DATABASE_PATH");
-  storage = new SqliteStorage(databasePath);
+  storage = new SqliteStorage(databasePath, config.get("ADMIN_USERNAME"));
 
   server = Bun.serve({
     port,

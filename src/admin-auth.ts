@@ -1,11 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { config } from "./env-validation";
+import type { Storage } from "./storage";
 
 const SESSION_COOKIE_NAME = "lsm_admin_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 
 type SessionPayload = {
-  username: string;
+  adminUserId: number;
   expiresAt: number;
 };
 
@@ -14,14 +15,14 @@ type SessionCookieOptions = {
   secure: boolean;
 };
 
-function createSignature(username: string, expiresAt: number): string {
+function createSignature(adminUserId: number, expiresAt: number): string {
   return createHmac("sha256", config.get("ADMIN_SESSION_SECRET"))
-    .update(`${username}:${expiresAt}`)
+    .update(`${adminUserId}:${expiresAt}`)
     .digest("base64url");
 }
 
-function serializeSession(username: string, expiresAt: number): string {
-  return `${username}.${expiresAt}.${createSignature(username, expiresAt)}`;
+function serializeSession(adminUserId: number, expiresAt: number): string {
+  return `${adminUserId}.${expiresAt}.${createSignature(adminUserId, expiresAt)}`;
 }
 
 function parseCookies(headerValue: string | null): Map<string, string> {
@@ -59,14 +60,23 @@ function safeCompare(left: string, right: string): boolean {
   return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-export function verifyAdminCredentials(
+export async function verifyAdminCredentials(
   username: string,
   password: string,
-): boolean {
-  return (
-    safeCompare(username, config.get("ADMIN_USERNAME")) &&
-    safeCompare(password, config.get("ADMIN_PASSWORD"))
-  );
+  storage: Storage,
+): Promise<number | null> {
+  const adminUser = storage.getAdminUserByUsername(username);
+  if (!adminUser) return null;
+
+  if (adminUser.isPrimary) {
+    const usernameMatch = safeCompare(username, config.get("ADMIN_USERNAME"));
+    const passwordMatch = safeCompare(password, config.get("ADMIN_PASSWORD"));
+    if (usernameMatch && passwordMatch) return adminUser.id;
+    return null;
+  }
+
+  const passwordMatch = await Bun.password.verify(password, adminUser.passwordHash);
+  return passwordMatch ? adminUser.id : null;
 }
 
 function getSessionCookieOptions(): SessionCookieOptions {
@@ -92,10 +102,9 @@ function serializeCookieAttributes({
     .join("; ");
 }
 
-export function createSessionCookie(): string {
-  const username = config.get("ADMIN_USERNAME");
+export function createSessionCookie(adminUserId: number): string {
   const expiresAt = Date.now() + SESSION_TTL_MS;
-  const token = encodeURIComponent(serializeSession(username, expiresAt));
+  const token = encodeURIComponent(serializeSession(adminUserId, expiresAt));
   const cookieAttributes = serializeCookieAttributes({
     ...getSessionCookieOptions(),
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
@@ -120,8 +129,18 @@ export function readSession(req: Request): SessionPayload | null {
     return null;
   }
 
-  const [username, expiresAtRaw, signature] = rawSession.split(".");
-  if (!username || !expiresAtRaw || !signature) {
+  const parts = rawSession.split(".");
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  const [adminUserIdRaw, expiresAtRaw, signature] = parts;
+  if (!adminUserIdRaw || !expiresAtRaw || !signature) {
+    return null;
+  }
+
+  const adminUserId = Number(adminUserIdRaw);
+  if (!Number.isInteger(adminUserId) || adminUserId <= 0) {
     return null;
   }
 
@@ -130,13 +149,13 @@ export function readSession(req: Request): SessionPayload | null {
     return null;
   }
 
-  if (!safeCompare(signature, createSignature(username, expiresAt))) {
+  if (!safeCompare(signature, createSignature(adminUserId, expiresAt))) {
     return null;
   }
 
-  return { username, expiresAt };
+  return { adminUserId, expiresAt };
 }
 
-export function isAdminAuthenticated(req: Request): boolean {
-  return readSession(req)?.username === config.get("ADMIN_USERNAME");
+export function getSessionAdminUserId(req: Request): number | null {
+  return readSession(req)?.adminUserId ?? null;
 }

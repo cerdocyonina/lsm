@@ -1,5 +1,13 @@
 export type Session = {
   username: string;
+  isPrimary: boolean;
+};
+
+export type AdminUserRecord = {
+  id: number;
+  username: string;
+  isPrimary: boolean;
+  createdAt: number;
 };
 
 export type ProfileRecord = {

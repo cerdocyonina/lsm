@@ -26,10 +26,11 @@ export function loadAppContext(profileId: string): AppContext {
   const port = config.get("PORT");
   const baseUrl = config.get("BASE_URL");
   const databasePath = config.get("DATABASE_PATH");
-  const subLinkSecret = config.get("SUB_LINK_SECRET");
-  const storage = new SqliteStorage(databasePath);
-  const userRecords = storage.listUsers(profileId);
-  const servers = storage.listServers(profileId);
+  const primaryAdminUsername = config.get("ADMIN_USERNAME");
+  const storage = new SqliteStorage(databasePath, primaryAdminUsername);
+  const primaryAdmin = storage.getPrimaryAdmin();
+  const userRecords = storage.listUsers(profileId, primaryAdmin.id);
+  const servers = storage.listServers(profileId, primaryAdmin.id);
   storage.close();
 
   const users = Object.fromEntries(

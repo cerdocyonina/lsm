@@ -126,7 +126,7 @@ function main(): boolean {
 
   const adminPort = config.get("ADMIN_PORT");
   const databasePath = config.get("DATABASE_PATH");
-  storage = new SqliteStorage(databasePath);
+  storage = new SqliteStorage(databasePath, config.get("ADMIN_USERNAME"));
 
   server = Bun.serve({
     hostname: "127.0.0.1",
