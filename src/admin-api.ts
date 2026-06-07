@@ -6,7 +6,9 @@ import {
   verifyAdminCredentials,
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
+import { parseDumpOrThrow } from "./app-config";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
+import { buildMultiProfileDump, buildProfileDump } from "./storage";
 import type { NodeRecord, ProfileRecord, Storage } from "./storage";
 
 const loginSchema = z.object({
@@ -262,6 +264,7 @@ export async function handleAdminApiRequest(
   baseUrl: string,
   loginRateLimiter: LoginRateLimiter,
   clientIp: string,
+  subLinkSecret: string,
 ): Promise<Response | null> {
   const expectedPrefix = `${adminBasePath}/api`;
   const adminPathname = pathname.startsWith(expectedPrefix)
@@ -311,9 +314,10 @@ export async function handleAdminApiRequest(
 
     loginRateLimiter.reset(clientIp, parsed.username);
 
+    const adminUserRecord = storage.getAdminUserById(adminUserId)!;
     return noStoreResponse(
       jsonResponse(
-        { ok: true, username: parsed.username },
+        { ok: true, username: adminUserRecord.username, isPrimary: adminUserRecord.isPrimary },
         {
           headers: {
             "Set-Cookie": createSessionCookie(adminUserId),
@@ -486,6 +490,39 @@ export async function handleAdminApiRequest(
     }
   }
 
+  // Export all profiles
+  if (adminPathname === "/export" && req.method === "GET") {
+    const dump = buildMultiProfileDump(storage, adminUserId);
+    return noStoreResponse(jsonResponse(dump));
+  }
+
+  // Import (multi-profile format only at this endpoint)
+  if (adminPathname === "/import" && req.method === "POST") {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return adminErrorResponse(400, "Request body must be valid JSON.");
+    }
+
+    let parsed;
+    try {
+      parsed = parseDumpOrThrow(body);
+    } catch (error) {
+      return adminErrorResponse(400, error instanceof Error ? error.message : "Invalid format.");
+    }
+
+    if (parsed.kind !== "multi-profile") {
+      return adminErrorResponse(
+        400,
+        "Expected a multi-profile dump. Use /profiles/:profileId/import for single-profile or legacy imports.",
+      );
+    }
+
+    storage.mergeAllFromMultiProfileDump(parsed.data, adminUserId);
+    return noStoreResponse(new Response(null, { status: 204 }));
+  }
+
   // Profile-scoped routes: /profiles/:profileId/...
   const profileRoute = extractProfileRoute(adminPathname);
   if (!profileRoute) {
@@ -526,6 +563,41 @@ export async function handleAdminApiRequest(
   const profileOrError = requireProfile(storage, profileId, adminUserId);
   if (profileOrError instanceof Response) {
     return profileOrError;
+  }
+
+  // Export single profile
+  if (subPath === "/export" && req.method === "GET") {
+    const dump = buildProfileDump(storage, profileId, adminUserId);
+    return noStoreResponse(jsonResponse(dump));
+  }
+
+  // Import into a specific profile (single-profile or legacy format)
+  if (subPath === "/import" && req.method === "POST") {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return adminErrorResponse(400, "Request body must be valid JSON.");
+    }
+
+    let parsed;
+    try {
+      parsed = parseDumpOrThrow(body);
+    } catch (error) {
+      return adminErrorResponse(400, error instanceof Error ? error.message : "Invalid format.");
+    }
+
+    if (parsed.kind === "multi-profile") {
+      return adminErrorResponse(400, "Multi-profile dumps must be imported via POST /import.");
+    }
+
+    if (parsed.kind === "single-profile") {
+      storage.mergeProfileFromFullDump(profileId, parsed.data, adminUserId);
+    } else {
+      storage.mergeProfileFromLegacyConfig(profileId, parsed.data, subLinkSecret, adminUserId);
+    }
+
+    return noStoreResponse(new Response(null, { status: 204 }));
   }
 
   // Users

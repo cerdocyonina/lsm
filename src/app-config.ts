@@ -68,6 +68,48 @@ function readAndParseJsonFile(path: string): unknown {
   }
 }
 
+export function parseDumpOrThrow(data: unknown): ParsedDump {
+  if (data !== null && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+
+    if (
+      "profiles" in obj &&
+      obj.profiles !== null &&
+      typeof obj.profiles === "object" &&
+      !Array.isArray(obj.profiles)
+    ) {
+      try {
+        return { kind: "multi-profile", data: multiProfileDumpSchema.parse(data) };
+      } catch (error) {
+        if (error instanceof z.ZodError) {
+          throw new Error(`Invalid multi-profile dump format: ${z.prettifyError(error)}`);
+        }
+        throw error;
+      }
+    }
+
+    if (Array.isArray(obj.USERS)) {
+      try {
+        return { kind: "single-profile", data: profileDumpSchema.parse(data) };
+      } catch (error) {
+        if (error instanceof z.ZodError) {
+          throw new Error(`Invalid single-profile dump format: ${z.prettifyError(error)}`);
+        }
+        throw error;
+      }
+    }
+  }
+
+  try {
+    return { kind: "legacy", data: legacyConfigSchema.parse(data) };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new Error(`Unrecognized or invalid import format: ${z.prettifyError(error)}`);
+    }
+    throw error;
+  }
+}
+
 export function loadDumpOrThrow(path: string): ParsedDump {
   const parsedJson = readAndParseJsonFile(path);
 

@@ -105,6 +105,7 @@ async function handleRequest(req: Request): Promise<Response> {
     config.get("BASE_URL"),
     loginRateLimiter,
     getClientIp(req, server),
+    config.get("SUB_LINK_SECRET"),
   );
   if (adminApiResponse) {
     logger.info(`admin request: ${req.method} [admin-api]`);

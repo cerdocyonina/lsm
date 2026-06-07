@@ -12,8 +12,8 @@ import {
   Spinner,
 } from "react-bootstrap";
 import toast from "react-hot-toast";
-import { TbPencil, TbTrash } from "react-icons/tb";
-import { api, createAdminUser, deleteAdminUser, fetchAdminUsers, profilePath } from "./api";
+import { TbDownload, TbPencil, TbTrash, TbUpload } from "react-icons/tb";
+import { api, createAdminUser, deleteAdminUser, exportAll, exportProfile, fetchAdminUsers, importAll, importProfile, profilePath } from "./api";
 import { AdminUsersPanel } from "./components/AdminUsersPanel";
 import { LoginPage } from "./components/LoginPage";
 import { NodesPanel } from "./components/NodesPanel";
@@ -76,6 +76,10 @@ export default function App() {
   const [showRenameProfile, setShowRenameProfile] = useState(false);
   const [renameProfileName, setRenameProfileName] = useState("");
   const [showDeleteProfile, setShowDeleteProfile] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
   const [activePage, setActivePage] = useState<"main" | "nodes" | "admin-users">("main");
 
   async function loadProfiles(): Promise<ProfileRecord[]> {
@@ -238,6 +242,72 @@ export default function App() {
     await deleteAdminUser(id);
     setAdminUsers((prev) => prev.filter((u) => u.id !== id));
     toast.success(`Panel user "${username}" deleted`);
+  }
+
+  function downloadJson(data: unknown, filename: string) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleExportProfile() {
+    try {
+      const data = await exportProfile(activeProfileId);
+      downloadJson(data, `${activeProfileId}.json`);
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : "Export failed.");
+    }
+  }
+
+  async function handleExportAll() {
+    try {
+      const data = await exportAll();
+      downloadJson(data, "lsm-export.json");
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : "Export failed.");
+    }
+  }
+
+  async function handleImport(file: File) {
+    setImporting(true);
+    setImportError(null);
+    try {
+      let data: unknown;
+      try {
+        data = JSON.parse(await file.text());
+      } catch {
+        setImportError("Invalid JSON file.");
+        return;
+      }
+
+      const isMultiProfile =
+        data !== null &&
+        typeof data === "object" &&
+        "profiles" in (data as Record<string, unknown>) &&
+        !Array.isArray((data as Record<string, unknown>).profiles);
+
+      if (isMultiProfile) {
+        await importAll(data);
+        await Promise.all([loadProfiles(), refreshAfterMutation()]);
+        toast.success("All profiles imported");
+      } else {
+        await importProfile(activeProfileId, data);
+        await refreshAfterMutation();
+        toast.success("Import successful");
+      }
+      setShowImportModal(false);
+      setImportFile(null);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "Import failed.");
+    } finally {
+      setImporting(false);
+    }
   }
 
   async function handleCreateProfile(name: string) {
@@ -627,6 +697,10 @@ export default function App() {
             <span className="text-body-secondary small">
               Signed in as <strong>{session.username}</strong>
             </span>
+            <Button variant="outline-secondary" size="sm" onClick={handleExportAll}>
+              <TbDownload size={13} className="me-1" />
+              Export all
+            </Button>
             <Button
               variant="outline-secondary"
               type="button"
@@ -672,6 +746,24 @@ export default function App() {
             >
               <TbTrash size={13} className="me-1" />
               Delete
+            </Button>
+          </div>
+          <div className="d-flex gap-1 ms-2 border-start ps-2">
+            <Button variant="outline-secondary" size="sm" onClick={handleExportProfile}>
+              <TbDownload size={13} className="me-1" />
+              Export
+            </Button>
+            <Button
+              variant="outline-secondary"
+              size="sm"
+              onClick={() => {
+                setImportFile(null);
+                setImportError(null);
+                setShowImportModal(true);
+              }}
+            >
+              <TbUpload size={13} className="me-1" />
+              Import
             </Button>
           </div>
         </div>
@@ -817,6 +909,51 @@ export default function App() {
             </Button>
           </Modal.Footer>
         </Form>
+      </Modal>
+
+      {/* Import modal */}
+      <Modal
+        show={showImportModal}
+        onHide={() => setShowImportModal(false)}
+        centered
+        size="sm"
+      >
+        <Modal.Header closeButton>
+          <Modal.Title className="h6">Import into &ldquo;{activeProfileId}&rdquo;</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          {importError && (
+            <Alert variant="danger" dismissible onClose={() => setImportError(null)}>
+              {importError}
+            </Alert>
+          )}
+          <Form.Group>
+            <Form.Label className="small fw-semibold">JSON file</Form.Label>
+            <Form.Control
+              type="file"
+              accept=".json,application/json"
+              size="sm"
+              onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+            />
+            <Form.Text className="text-body-secondary">
+              Single-profile exports and legacy configs are merged into the current profile.
+              Multi-profile dumps restore all profiles.
+            </Form.Text>
+          </Form.Group>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" size="sm" onClick={() => setShowImportModal(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!importFile || importing}
+            onClick={() => { if (importFile) void handleImport(importFile); }}
+          >
+            {importing ? "Importing…" : "Import"}
+          </Button>
+        </Modal.Footer>
       </Modal>
 
       {/* Delete profile modal */}

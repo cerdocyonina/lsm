@@ -20,6 +20,28 @@ export async function deleteAdminUser(id: number) {
   return api<void>(`/admin-users/${id}`, { method: "DELETE" });
 }
 
+export async function exportProfile(profileId: string) {
+  return api<unknown>(profilePath(profileId, "/export"));
+}
+
+export async function exportAll() {
+  return api<unknown>("/export");
+}
+
+export async function importProfile(profileId: string, data: unknown) {
+  return api<void>(profilePath(profileId, "/import"), {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function importAll(data: unknown) {
+  return api<void>("/import", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
 export async function api<T>(input: string, init?: RequestInit): Promise<T> {
   const normalizedPath = input.startsWith("/") ? input : `/${input}`;
   const response = await fetch(`${apiBasePath}${normalizedPath}`, {
