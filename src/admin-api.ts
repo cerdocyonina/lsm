@@ -717,13 +717,16 @@ export async function handleAdminApiRequest(
   }
 
   if (userPathName && req.method === "DELETE") {
-    // nodeIds are passed as query params (?nodeId=1&nodeId=2) rather than a
-    // request body, since DELETE bodies are routinely stripped by reverse proxies.
-    const reqUrl = new URL(req.url);
-    const nodeIds = reqUrl.searchParams
-      .getAll("nodeId")
-      .map(Number)
-      .filter((n) => Number.isInteger(n) && n > 0);
+    let nodeIds: number[] = [];
+    const ct = req.headers.get("content-type") ?? "";
+    if (ct.includes("application/json")) {
+      try {
+        const body = (await req.json()) as { nodeIds?: unknown };
+        if (Array.isArray(body.nodeIds)) {
+          nodeIds = body.nodeIds.filter((n): n is number => typeof n === "number" && Number.isInteger(n) && n > 0);
+        }
+      } catch {}
+    }
 
     const removed = storage.removeUser(profileId, userPathName, adminUserId);
     if (!removed) {
