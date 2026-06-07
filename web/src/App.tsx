@@ -453,10 +453,12 @@ export default function App() {
   async function performDeleteUser(clientName: string, nodeIds: number[]) {
     setDeletingUser(true);
     try {
+      const base = profilePath(activeProfileId, `/users/${encodeURIComponent(clientName)}`);
       if (nodeIds.length > 0) {
+        const qs = nodeIds.map((id) => `nodeId=${id}`).join("&");
         const payload = await api<{ syncResults: SyncResult[] }>(
-          profilePath(activeProfileId, `/users/${encodeURIComponent(clientName)}`),
-          { method: "DELETE", body: JSON.stringify({ nodeIds }) },
+          `${base}?${qs}`,
+          { method: "DELETE" },
         );
         const failures = payload.syncResults.filter((r) => r.result === "failed");
         if (failures.length > 0) {
@@ -467,9 +469,7 @@ export default function App() {
           toast.success(`User deleted and removed from ${payload.syncResults.length} node(s)`);
         }
       } else {
-        await api(profilePath(activeProfileId, `/users/${encodeURIComponent(clientName)}`), {
-          method: "DELETE",
-        });
+        await api(base, { method: "DELETE" });
         toast.success("User deleted");
       }
       await refreshAfterMutation();

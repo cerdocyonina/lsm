@@ -259,17 +259,23 @@ export class XUIService {
       return "not_found";
     }
 
-    const response = await this.request(
-      `/panel/api/clients/del/${encodeURIComponent(email)}`,
-      { method: "POST" },
-    );
-    const result = (await response.json()) as any;
-    if (result.success) {
-      logger.info(`User "${email}" deleted successfully.`);
-      return "deleted";
+    try {
+      const response = await this.request(
+        `/panel/api/clients/del/${encodeURIComponent(email)}`,
+        { method: "POST" },
+      );
+      const result = (await response.json()) as any;
+      if (result.success) {
+        logger.info(`User "${email}" deleted successfully.`);
+        return "deleted";
+      }
+      logger.error(`Failed to delete "${email}": ${result.msg}`);
+      return "failed";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`Error calling del for "${email}": ${msg}`);
+      return "failed";
     }
-    logger.error(`Failed to delete "${email}": ${result.msg}`);
-    return "failed";
   }
 
   async logout(): Promise<void> {
