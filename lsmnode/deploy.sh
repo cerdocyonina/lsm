@@ -66,10 +66,10 @@ ask_secret() {
   existing="$(get_existing "$key")"
 
   if [[ -n "$existing" ]]; then
-    read -rsp "${label} (press Enter to keep existing): " val; echo ""
+    read -rsp "${label} (press Enter to keep existing): " val; echo "" >&2
     echo "${val:-$existing}"
   else
-    read -rsp "${label}: " val; echo ""
+    read -rsp "${label}: " val; echo "" >&2
     echo "$val"
   fi
 }
