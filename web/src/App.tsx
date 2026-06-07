@@ -950,7 +950,7 @@ export default function App() {
           <Modal.Title className="h6">Delete &ldquo;{deletingUserName}&rdquo;</Modal.Title>
         </Modal.Header>
         <Modal.Body>
-          <p className="mb-2 fw-semibold">Sync deletion to nodes?</p>
+          <p className="mb-1">Also remove from nodes:</p>
           {nodes
             .filter((n) => servers.some((s) => s.nodeId === n.id))
             .map((n) => (
@@ -972,14 +972,22 @@ export default function App() {
         </Modal.Body>
         <Modal.Footer>
           <Button
-            variant="secondary"
+            variant="outline-secondary"
+            size="sm"
+            disabled={deletingUser}
+            onClick={() => setShowDeleteUserModal(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="outline-danger"
             size="sm"
             disabled={deletingUser}
             onClick={() => {
               if (deletingUserName) void performDeleteUser(deletingUserName, []);
             }}
           >
-            No
+            LSM only
           </Button>
           <Button
             variant="danger"
@@ -989,7 +997,7 @@ export default function App() {
               if (deletingUserName) void performDeleteUser(deletingUserName, [...deleteNodeIds]);
             }}
           >
-            {deletingUser ? "Deleting…" : "Yes"}
+            {deletingUser ? "Deleting…" : "LSM + nodes"}
           </Button>
         </Modal.Footer>
       </Modal>
