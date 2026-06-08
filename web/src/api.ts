@@ -42,6 +42,10 @@ export async function importAll(data: unknown) {
   });
 }
 
+export async function updateAccount(data: { username?: string; currentPassword?: string; newPassword?: string }) {
+  return api<void>("/account", { method: "PATCH", body: JSON.stringify(data) });
+}
+
 export async function api<T>(input: string, init?: RequestInit): Promise<T> {
   const normalizedPath = input.startsWith("/") ? input : `/${input}`;
   const response = await fetch(`${apiBasePath}${normalizedPath}`, {

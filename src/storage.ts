@@ -49,6 +49,7 @@ export interface Storage {
   getAdminUserById(id: number): AdminUserRecord | null;
   listAdminUsers(): Omit<AdminUserRecord, "passwordHash">[];
   createAdminUser(username: string, passwordHash: string, createdAt: number): AdminUserRecord;
+  updateAdminUser(id: number, updates: { username?: string; passwordHash?: string }): boolean;
   deleteAdminUser(id: number): boolean;
 
   // Profile methods (all scoped by ownerId)
@@ -345,6 +346,33 @@ export class SqliteStorage implements Storage {
       .query("INSERT INTO profiles (owner_id, name, created_at) VALUES (?1, 'main', ?2)")
       .run(newUser.id, createdAt);
     return newUser;
+  }
+
+  public updateAdminUser(id: number, updates: { username?: string; passwordHash?: string }): boolean {
+    const tx = this.db.transaction(() => {
+      let changed = false;
+      if (updates.username !== undefined) {
+        try {
+          const result = this.db
+            .query("UPDATE admin_users SET username = ?1 WHERE id = ?2 AND is_primary = 0")
+            .run(updates.username, id);
+          if (result.changes > 0) changed = true;
+        } catch (err) {
+          if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+            throw new Error(`Username "${updates.username}" is already taken.`);
+          }
+          throw err;
+        }
+      }
+      if (updates.passwordHash !== undefined) {
+        const result = this.db
+          .query("UPDATE admin_users SET password_hash = ?1 WHERE id = ?2 AND is_primary = 0")
+          .run(updates.passwordHash, id);
+        if (result.changes > 0) changed = true;
+      }
+      return changed;
+    });
+    return tx() as boolean;
   }
 
   public deleteAdminUser(id: number): boolean {

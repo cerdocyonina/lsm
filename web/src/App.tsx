@@ -14,6 +14,7 @@ import {
 import toast from "react-hot-toast";
 import { TbDownload, TbPencil, TbTrash, TbUpload } from "react-icons/tb";
 import { api, createAdminUser, deleteAdminUser, exportAll, exportProfile, fetchAdminUsers, importAll, importProfile, profilePath } from "./api";
+import { AccountPanel } from "./components/AccountPanel";
 import { AdminUsersPanel } from "./components/AdminUsersPanel";
 import { LoginPage } from "./components/LoginPage";
 import { NodesPanel } from "./components/NodesPanel";
@@ -85,7 +86,7 @@ export default function App() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
-  const [activePage, setActivePage] = useState<"main" | "nodes" | "admin-users">("main");
+  const [activePage, setActivePage] = useState<"main" | "nodes" | "admin-users" | "account">("main");
 
   async function loadProfiles(): Promise<ProfileRecord[]> {
     const payload = await api<{ profiles: ProfileRecord[] }>("/profiles");
@@ -240,6 +241,11 @@ export default function App() {
     const payload = await createAdminUser(username, password);
     setAdminUsers(payload.adminUsers);
     toast.success(`Panel user "${username}" created`);
+  }
+
+  function handleUsernameChanged(newUsername: string) {
+    setSession((prev) => (prev ? { ...prev, username: newUsername } : prev));
+    toast.success("Username updated");
   }
 
   async function handleDeleteAdminUser(id: number, username: string) {
@@ -719,6 +725,11 @@ export default function App() {
                 Panel Users
               </Nav.Link>
             )}
+            {!session.isPrimary && (
+              <Nav.Link active={activePage === "account"} onClick={() => setActivePage("account")}>
+                My Account
+              </Nav.Link>
+            )}
           </Nav>
           <div className="d-flex align-items-center gap-3">
             <span className="text-body-secondary small">
@@ -804,7 +815,9 @@ export default function App() {
           </Alert>
         ) : null}
 
-        {activePage === "admin-users" && session.isPrimary ? (
+        {activePage === "account" && !session.isPrimary ? (
+          <AccountPanel session={session} onUsernameChanged={handleUsernameChanged} />
+        ) : activePage === "admin-users" && session.isPrimary ? (
           <AdminUsersPanel
             session={session}
             adminUsers={adminUsers}

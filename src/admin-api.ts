@@ -99,6 +99,23 @@ const createAdminUserSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters"),
 });
 
+const updateAccountSchema = z
+  .object({
+    username: z
+      .string()
+      .min(1)
+      .regex(/^[a-z0-9_-]+$/, "Username must be lowercase alphanumeric, hyphens, or underscores")
+      .optional(),
+    currentPassword: z.string().min(1).optional(),
+    newPassword: z.string().min(8, "Password must be at least 8 characters").optional(),
+  })
+  .refine((d) => d.username !== undefined || d.newPassword !== undefined, {
+    message: "Provide at least one field to update.",
+  })
+  .refine((d) => !d.newPassword || d.currentPassword !== undefined, {
+    message: "Current password is required to set a new password.",
+  });
+
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return Response.json(body, init);
 }
@@ -425,6 +442,36 @@ export async function handleAdminApiRequest(
     }
 
     storage.deleteAdminUser(targetId);
+    return noStoreResponse(new Response(null, { status: 204 }));
+  }
+
+  // Account self-service (subadmins only)
+  if (adminPathname === "/account" && req.method === "PATCH") {
+    const adminUser = storage.getAdminUserById(adminUserId);
+    if (!adminUser) return adminErrorResponse(401, "Unauthorized.");
+    if (adminUser.isPrimary) {
+      return adminErrorResponse(403, "Primary admin credentials are managed via environment variables.");
+    }
+
+    const parsed = await parseJson(req, updateAccountSchema);
+    if (parsed instanceof Response) return noStoreResponse(parsed);
+
+    if (parsed.newPassword !== undefined) {
+      const match = await Bun.password.verify(parsed.currentPassword!, adminUser.passwordHash);
+      if (!match) return adminErrorResponse(400, "Current password is incorrect.");
+    }
+
+    const updates: { username?: string; passwordHash?: string } = {};
+    if (parsed.username !== undefined) updates.username = parsed.username;
+    if (parsed.newPassword !== undefined) updates.passwordHash = await Bun.password.hash(parsed.newPassword);
+
+    try {
+      storage.updateAdminUser(adminUserId, updates);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update account.";
+      return adminErrorResponse(400, message);
+    }
+
     return noStoreResponse(new Response(null, { status: 204 }));
   }
 
