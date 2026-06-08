@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import {
   Alert,
+  Badge,
   Button,
   Col,
   Container,
@@ -735,6 +736,9 @@ export default function App() {
             <span className="text-body-secondary small">
               Signed in as <strong>{session.username}</strong>
             </span>
+            <Badge bg="secondary" className="fw-normal" style={{ fontSize: "0.75em" }}>
+              v{__APP_VERSION__}
+            </Badge>
             <Button variant="outline-secondary" size="sm" onClick={handleExportAll}>
               <TbDownload size={13} className="me-1" />
               Export all
