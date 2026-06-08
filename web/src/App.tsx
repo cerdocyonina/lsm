@@ -713,7 +713,12 @@ export default function App() {
     <>
       <Navbar bg="white" expand="lg" className="border-bottom shadow-sm">
         <Container>
-          <Navbar.Brand className="fw-semibold">LSM Admin</Navbar.Brand>
+          <Navbar.Brand className="fw-semibold">
+            LSM Admin
+            <Badge bg="secondary" className="fw-normal ms-2" style={{ fontSize: "0.65em", verticalAlign: "middle" }}>
+              v{__APP_VERSION__}
+            </Badge>
+          </Navbar.Brand>
           <Nav className="me-auto ms-3">
             <Nav.Link active={activePage === "main"} onClick={() => setActivePage("main")}>
               Users &amp; Servers
@@ -736,9 +741,6 @@ export default function App() {
             <span className="text-body-secondary small">
               Signed in as <strong>{session.username}</strong>
             </span>
-            <Badge bg="secondary" className="fw-normal" style={{ fontSize: "0.75em" }}>
-              v{__APP_VERSION__}
-            </Badge>
             <Button variant="outline-secondary" size="sm" onClick={handleExportAll}>
               <TbDownload size={13} className="me-1" />
               Export all
