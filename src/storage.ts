@@ -87,6 +87,7 @@ export interface Storage {
   updateNode(id: number, ownerId: number, updates: Partial<Pick<NodeRecord, "name" | "url" | "secret" | "inboundId">>): boolean;
   removeNode(id: number, ownerId: number): boolean;
   listNodesForProfile(profileName: string, ownerId: number): NodeRecord[];
+  listUsersForNode(nodeId: number, ownerId: number): UserRecord[];
 
   // Import/export
   replaceProfileFromFullDump(profileName: string, dump: ProfileDump, ownerId: number): void;
@@ -904,6 +905,20 @@ export class SqliteStorage implements Storage {
       .query("DELETE FROM nodes WHERE id = ?1 AND owner_id = ?2")
       .run(id, ownerId);
     return result.changes > 0;
+  }
+
+  public listUsersForNode(nodeId: number, ownerId: number): UserRecord[] {
+    return this.db
+      .query(
+        `SELECT DISTINCT u.client_name AS clientName, u.user_uuid AS userUuid,
+                u.subscription_token AS subscriptionToken, u.created_at AS createdAt,
+                p.name AS profileName, p.owner_id AS ownerId
+         FROM users u
+         JOIN profiles p ON p.id = u.profile_id
+         JOIN servers s ON s.profile_id = p.id
+         WHERE s.node_id = ?1 AND p.owner_id = ?2`,
+      )
+      .all(nodeId, ownerId) as UserRecord[];
   }
 
   public listNodesForProfile(profileName: string, ownerId: number): NodeRecord[] {

@@ -91,6 +91,10 @@ const updateNodeSchema = z
     { message: "Provide at least one node field to update." },
   );
 
+const syncUsersSchema = z.object({
+  onConflict: z.enum(["skip", "overwrite", "keep-both", "safe"]).default("overwrite"),
+});
+
 const createAdminUserSchema = z.object({
   username: z
     .string()
@@ -557,6 +561,63 @@ export async function handleAdminApiRequest(
         const msg = err instanceof Error ? err.message : String(err);
         return noStoreResponse(jsonResponse({ ok: false, error: msg }));
       }
+    }
+
+    if (nodeSubPath === "/sync-users" && req.method === "POST") {
+      const node = storage.getNode(nodeId, adminUserId);
+      if (!node) return adminErrorResponse(404, `Unknown node: ${nodeId}`);
+
+      const parsed = await parseJson(req, syncUsersSchema);
+      if (parsed instanceof Response) return noStoreResponse(parsed);
+
+      const users = storage.listUsersForNode(nodeId, adminUserId);
+
+      if (parsed.onConflict === "safe") {
+        try {
+          const checkRes = await fetch(`${node.url}/check-conflicts`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${node.secret}` },
+            body: JSON.stringify({ emails: users.map((u) => u.clientName) }),
+            tls: { rejectUnauthorized: false },
+          } as RequestInit);
+          const checkData = (await checkRes.json()) as { conflicts?: string[]; error?: string };
+          if (!checkRes.ok) {
+            return adminErrorResponse(502, checkData.error ?? "Failed to check conflicts on node");
+          }
+          const conflicts = checkData.conflicts ?? [];
+          if (conflicts.length > 0) {
+            return noStoreResponse(jsonResponse({ conflicts }));
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return adminErrorResponse(502, `Failed to reach node for conflict check: ${msg}`);
+        }
+      }
+
+      const strategy = parsed.onConflict === "safe" ? "skip" : parsed.onConflict;
+      const settled = await Promise.allSettled(
+        users.map((u) => syncUserToNodes([node], u.clientName, u.userUuid, strategy)),
+      );
+
+      const results: { clientName: string; result: string; msg?: string }[] = [];
+      let synced = 0;
+      let failed = 0;
+      for (let i = 0; i < settled.length; i++) {
+        const user = users[i]!;
+        const s = settled[i]!;
+        if (s.status === "fulfilled") {
+          const nodeResult = s.value[0];
+          const r = nodeResult?.status === "fulfilled" ? nodeResult.value : { result: "failed", msg: "unexpected" };
+          const isFailed = r.result === "failed";
+          if (isFailed) failed++; else synced++;
+          results.push({ clientName: user.clientName, result: r.result, msg: r.msg });
+        } else {
+          failed++;
+          results.push({ clientName: user.clientName, result: "failed", msg: s.reason instanceof Error ? s.reason.message : String(s.reason) });
+        }
+      }
+
+      return noStoreResponse(jsonResponse({ synced, failed, results }));
     }
   }
 

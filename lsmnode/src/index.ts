@@ -99,6 +99,34 @@ const server = Bun.serve({
       }
     }
 
+    if (url.pathname === "/check-conflicts" && req.method === "POST") {
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "Invalid JSON" }, { status: 400 });
+      }
+
+      if (typeof body !== "object" || body === null) {
+        return Response.json({ error: "Invalid body" }, { status: 400 });
+      }
+
+      const { emails } = body as Record<string, unknown>;
+
+      if (!Array.isArray(emails) || emails.some((e) => typeof e !== "string")) {
+        return Response.json({ error: "emails must be an array of strings" }, { status: 400 });
+      }
+
+      try {
+        const conflicts = await xui.checkConflicts(emails as string[]);
+        return Response.json({ conflicts });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("check-conflicts failed:", msg);
+        return Response.json({ error: msg }, { status: 500 });
+      }
+    }
+
     if (url.pathname === "/delete-user" && req.method === "POST") {
       let body: unknown;
       try {

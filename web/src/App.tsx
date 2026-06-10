@@ -27,6 +27,7 @@ import type {
   ClientHttpPingResult,
   NodeFormState,
   NodeRecord,
+  NodeSyncUsersResult,
   NodeTestResult,
   PingResponse,
   ProfileRecord,
@@ -34,6 +35,7 @@ import type {
   ServerIcmpResult,
   ServerRecord,
   Session,
+  SyncConflictStrategy,
   SyncResult,
   UserFormState,
   UserRecord,
@@ -563,6 +565,13 @@ export default function App() {
     return api<NodeTestResult>(`/nodes/${id}/test`, { method: "POST" });
   }
 
+  async function handleSyncUsersToNode(id: number, strategy: SyncConflictStrategy): Promise<NodeSyncUsersResult> {
+    return api<NodeSyncUsersResult>(`/nodes/${id}/sync-users`, {
+      method: "POST",
+      body: JSON.stringify({ onConflict: strategy }),
+    });
+  }
+
   async function reorderServers(names: string[]) {
     const nameToRecord = new Map(servers.map((s) => [s.name, s]));
     setServers(
@@ -837,6 +846,7 @@ export default function App() {
             onUpdateNode={handleUpdateNode}
             onDeleteNode={handleDeleteNode}
             onTestNode={handleTestNode}
+            onSyncUsersToNode={handleSyncUsersToNode}
           />
         ) : (
         <Row className="g-4 mb-4">

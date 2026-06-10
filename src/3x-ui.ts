@@ -250,6 +250,12 @@ export class XUIService {
     return "failed";
   }
 
+  async checkConflicts(emails: string[]): Promise<string[]> {
+    if (!this.cookie) await this.login();
+    const existing = await this.getAllClientEmails();
+    return emails.filter((e) => existing.has(e));
+  }
+
   async deleteUser(email: string): Promise<"deleted" | "not_found" | "failed"> {
     if (!this.cookie) await this.login();
 

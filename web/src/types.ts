@@ -73,6 +73,12 @@ export type SyncResult = {
   msg?: string;
 };
 
+export type SyncConflictStrategy = "overwrite" | "skip" | "keep-both" | "safe";
+
+export type NodeSyncUsersResult =
+  | { conflicts: string[] }
+  | { synced: number; failed: number; results: { clientName: string; result: string; msg?: string }[] };
+
 export type PingResult = {
   ok: boolean;
   latencyMs: number | null;

@@ -4,13 +4,15 @@ import {
   Badge,
   Button,
   Card,
+  Dropdown,
   Form,
   InputGroup,
   ListGroup,
   Spinner,
+  SplitButton,
 } from "react-bootstrap";
-import { TbCircleCheck, TbCircleX, TbEdit, TbTrash, TbWifi } from "react-icons/tb";
-import type { NodeFormState, NodeRecord, NodeTestResult } from "../types";
+import { TbCircleCheck, TbCircleX, TbCloudUpload, TbEdit, TbTrash, TbWifi } from "react-icons/tb";
+import type { NodeFormState, NodeRecord, NodeSyncUsersResult, NodeTestResult, SyncConflictStrategy } from "../types";
 import { ActionIconButton } from "./ActionIconButton";
 
 type NodesPanelProps = {
@@ -19,19 +21,30 @@ type NodesPanelProps = {
   onUpdateNode: (id: number, form: NodeFormState) => Promise<void>;
   onDeleteNode: (id: number, name: string) => Promise<void>;
   onTestNode: (id: number) => Promise<NodeTestResult>;
+  onSyncUsersToNode: (id: number, strategy: SyncConflictStrategy) => Promise<NodeSyncUsersResult>;
+};
+
+const STRATEGY_LABELS: Record<SyncConflictStrategy, string> = {
+  overwrite: "Overwrite",
+  skip: "Skip existing",
+  "keep-both": "Keep both",
+  safe: "Safe (check first)",
 };
 
 function emptyForm(): NodeFormState {
   return { name: "", url: "", secret: "", inboundId: "" };
 }
 
-export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTestNode }: NodesPanelProps) {
+export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTestNode, onSyncUsersToNode }: NodesPanelProps) {
   const [form, setForm] = useState<NodeFormState>(emptyForm());
   const [editingNode, setEditingNode] = useState<NodeRecord | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
   const [testResults, setTestResults] = useState<Record<number, NodeTestResult | null>>({});
+  const [syncStrategy, setSyncStrategy] = useState<SyncConflictStrategy>("overwrite");
+  const [syncingId, setSyncingId] = useState<number | null>(null);
+  const [syncResults, setSyncResults] = useState<Record<number, NodeSyncUsersResult | null>>({});
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -61,6 +74,18 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
       setTestResults((prev) => ({ ...prev, [id]: { ok: false } }));
     } finally {
       setTestingId(null);
+    }
+  }
+
+  async function handleSyncUsers(id: number) {
+    setSyncingId(id);
+    try {
+      const result = await onSyncUsersToNode(id, syncStrategy);
+      setSyncResults((prev) => ({ ...prev, [id]: result }));
+    } catch {
+      setSyncResults((prev) => ({ ...prev, [id]: null }));
+    } finally {
+      setSyncingId(null);
     }
   }
 
@@ -156,6 +181,8 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
             <ListGroup variant="flush">
               {nodes.map((node) => {
                 const testResult = testResults[node.id];
+                const syncResult = syncResults[node.id];
+                const isSyncing = syncingId === node.id;
                 return (
                   <ListGroup.Item className="px-0 py-3" key={node.id}>
                     <div className="d-flex align-items-start gap-2">
@@ -191,6 +218,26 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                         <div className="text-body-secondary small">
                           <code>{node.url}</code>
                         </div>
+                        {syncResult !== undefined && syncResult !== null && (
+                          <div className="mt-1 small">
+                            {"conflicts" in syncResult ? (
+                              <span className="text-danger d-flex align-items-center gap-1">
+                                <TbCircleX size={13} />
+                                Conflicts: {syncResult.conflicts.join(", ")}
+                              </span>
+                            ) : syncResult.failed > 0 ? (
+                              <span className="text-warning d-flex align-items-center gap-1">
+                                <TbCircleCheck size={13} />
+                                {syncResult.synced} synced, {syncResult.failed} failed
+                              </span>
+                            ) : (
+                              <span className="text-success d-flex align-items-center gap-1">
+                                <TbCircleCheck size={13} />
+                                {syncResult.synced} synced
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <div className="d-flex gap-1 flex-shrink-0">
                         <Button
@@ -202,6 +249,20 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                         >
                           {testingId === node.id ? <Spinner size="sm" /> : <TbWifi size={14} />}
                         </Button>
+                        <SplitButton
+                          title={isSyncing ? <Spinner size="sm" /> : <><TbCloudUpload size={14} className="me-1" />Sync users</>}
+                          onClick={() => handleSyncUsers(node.id)}
+                          variant="outline-secondary"
+                          size="sm"
+                          disabled={isSyncing}
+                          id={`sync-users-${node.id}`}
+                        >
+                          {(Object.keys(STRATEGY_LABELS) as SyncConflictStrategy[]).map((s) => (
+                            <Dropdown.Item key={s} active={syncStrategy === s} onClick={() => setSyncStrategy(s)}>
+                              {STRATEGY_LABELS[s]}
+                            </Dropdown.Item>
+                          ))}
+                        </SplitButton>
                         <ActionIconButton
                           size="sm"
                           icon={<TbEdit />}
