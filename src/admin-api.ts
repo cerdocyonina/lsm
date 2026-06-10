@@ -555,8 +555,8 @@ export async function handleAdminApiRequest(
           headers: { Authorization: `Bearer ${node.secret}` },
           tls: { rejectUnauthorized: false },
         } as RequestInit);
-        const data = (await res.json()) as { ok: boolean; version?: string; commit?: string; date?: string };
-        return noStoreResponse(jsonResponse({ ok: data.ok === true, version: data.version, commit: data.commit, date: data.date }));
+        const data = (await res.json()) as { ok: boolean; version?: string; commit?: string; date?: string; xui?: { ok: boolean; error?: string } };
+        return noStoreResponse(jsonResponse({ ok: data.ok === true, version: data.version, commit: data.commit, date: data.date, xui: data.xui }));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return noStoreResponse(jsonResponse({ ok: false, error: msg }));

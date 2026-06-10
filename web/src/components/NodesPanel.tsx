@@ -9,7 +9,7 @@ import {
   ListGroup,
   Spinner,
 } from "react-bootstrap";
-import { TbCircleCheck, TbCircleX, TbEdit, TbTrash, TbWifi } from "react-icons/tb";
+import { TbCircleCheck, TbCircleX, TbEdit, TbExclamationCircle, TbTrash, TbWifi } from "react-icons/tb";
 import type { NodeFormState, NodeRecord, NodeTestResult } from "../types";
 import { ActionIconButton } from "./ActionIconButton";
 
@@ -166,19 +166,30 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                             inbound #{node.inboundId}
                           </Badge>
                           {testResult?.ok === true && (
-                            <span className="text-success small d-flex align-items-center gap-1 flex-wrap">
-                              <TbCircleCheck size={14} />
-                              <span>OK</span>
-                              {testResult.version && (
-                                <Badge bg="success" className="fw-normal" style={{ fontSize: "0.7em" }}>
-                                  v{testResult.version}
-                                </Badge>
-                              )}
-                              {testResult.commit && (
-                                <code className="text-success" style={{ fontSize: "0.75em" }}>{testResult.commit}</code>
-                              )}
-                              {testResult.date && (
-                                <span className="text-body-secondary" style={{ fontSize: "0.75em" }}>{testResult.date}</span>
+                            <span className="small d-flex align-items-center gap-2 flex-wrap">
+                              <span className={`d-flex align-items-center gap-1 ${testResult.xui && !testResult.xui.ok ? "text-warning" : "text-success"}`}>
+                                {testResult.xui && !testResult.xui.ok
+                                  ? <TbExclamationCircle size={14} />
+                                  : <TbCircleCheck size={14} />}
+                                <span>Online</span>
+                                {testResult.version && (
+                                  <Badge bg={testResult.xui && !testResult.xui.ok ? "warning" : "success"} className="fw-normal" style={{ fontSize: "0.7em" }}>
+                                    v{testResult.version}
+                                  </Badge>
+                                )}
+                                {testResult.commit && (
+                                  <code className={testResult.xui && !testResult.xui.ok ? "text-warning" : "text-success"} style={{ fontSize: "0.75em" }}>{testResult.commit}</code>
+                                )}
+                                {testResult.date && (
+                                  <span className="text-body-secondary" style={{ fontSize: "0.75em" }}>{testResult.date}</span>
+                                )}
+                              </span>
+                              {testResult.xui && (
+                                <span className={`d-flex align-items-center gap-1 ${testResult.xui.ok ? "text-success" : "text-danger"}`}>
+                                  {testResult.xui.ok
+                                    ? <><TbCircleCheck size={14} /><span>3x-ui OK</span></>
+                                    : <><TbCircleX size={14} /><span title={testResult.xui.error}>3x-ui unreachable</span></>}
+                                </span>
                               )}
                             </span>
                           )}

@@ -46,6 +46,7 @@ export type NodeTestResult = {
   commit?: string;
   date?: string;
   error?: string;
+  xui?: { ok: boolean; error?: string };
 };
 
 export type UserFormState = {

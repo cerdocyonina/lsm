@@ -54,7 +54,18 @@ const server = Bun.serve({
     const url = new URL(req.url);
 
     if (url.pathname === "/health" && req.method === "GET") {
-      return Response.json({ ok: true, ...version });
+      let xuiOk = false;
+      let xuiError: string | undefined;
+      try {
+        await fetch(XUI_HOST!, {
+          signal: AbortSignal.timeout(3000),
+          tls: { rejectUnauthorized: false },
+        } as RequestInit);
+        xuiOk = true;
+      } catch (err) {
+        xuiError = err instanceof Error ? err.message : String(err);
+      }
+      return Response.json({ ok: true, ...version, xui: { ok: xuiOk, ...(xuiError ? { error: xuiError } : {}) } });
     }
 
     if (url.pathname === "/sync-user" && req.method === "POST") {
