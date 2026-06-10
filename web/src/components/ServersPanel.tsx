@@ -6,9 +6,11 @@ import {
   Button,
   ButtonGroup,
   Card,
+  Dropdown,
   Form,
   ListGroup,
   Spinner,
+  SplitButton,
   Table,
 } from "react-bootstrap";
 import {
@@ -18,18 +20,30 @@ import {
   TbListCheck as SelectionIcon,
   TbArrowDown,
   TbArrowUp,
+  TbCircleCheck,
+  TbCircleX,
+  TbCloudUpload,
   TbGripVertical,
 } from "react-icons/tb";
 import Editor from "react-simple-code-editor";
 import type {
   ClientHttpPingResult,
   NodeRecord,
+  NodeSyncUsersResult,
   PingResult,
   ServerFormState,
   ServerIcmpResult,
   ServerRecord,
+  SyncConflictStrategy,
 } from "../types";
 import { ActionIconButton } from "./ActionIconButton";
+
+const STRATEGY_LABELS: Record<SyncConflictStrategy, string> = {
+  overwrite: "Overwrite",
+  skip: "Skip existing",
+  "keep-both": "Keep both",
+  safe: "Safe (check first)",
+};
 
 function highlightTemplate(code: string): string {
   // Leading/trailing whitespace highlighted in amber to show it'll be trimmed on blur
@@ -86,6 +100,7 @@ type ServersPanelProps = {
   onPingAll: () => void;
   onReorder: (names: string[]) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onSyncUsersToServer: (serverName: string, strategy: SyncConflictStrategy) => Promise<NodeSyncUsersResult>;
   pinging: boolean;
   savingServer: boolean;
   serverForm: ServerFormState;
@@ -164,6 +179,7 @@ export function ServersPanel({
   onPingAll,
   onReorder,
   onSubmit,
+  onSyncUsersToServer,
   pinging,
   savingServer,
   serverForm,
@@ -181,6 +197,21 @@ export function ServersPanel({
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const dragSrcIdx = useRef<number | null>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
+  const [syncStrategy, setSyncStrategy] = useState<SyncConflictStrategy>("overwrite");
+  const [syncingServer, setSyncingServer] = useState<string | null>(null);
+  const [syncResults, setSyncResults] = useState<Record<string, NodeSyncUsersResult | null>>({});
+
+  async function handleSyncUsers(serverName: string) {
+    setSyncingServer(serverName);
+    try {
+      const result = await onSyncUsersToServer(serverName, syncStrategy);
+      setSyncResults((prev) => ({ ...prev, [serverName]: result }));
+    } catch {
+      setSyncResults((prev) => ({ ...prev, [serverName]: null }));
+    } finally {
+      setSyncingServer(null);
+    }
+  }
 
   const icmpByName = Object.fromEntries(
     icmpResults.map((r) => [r.serverName, r.icmp]),
@@ -343,14 +374,19 @@ export function ServersPanel({
                 }
               >
                 <option value="">— none —</option>
-                {nodes.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.name} (inbound #{n.inboundId})
-                  </option>
-                ))}
+                {nodes.map((n) => {
+                  const takenBy = servers.find(
+                    (s) => s.nodeId === n.id && s.name !== editingServer?.name,
+                  );
+                  return (
+                    <option key={n.id} value={n.id} disabled={!!takenBy}>
+                      {n.name} (inbound #{n.inboundId}){takenBy ? ` — assigned to "${takenBy.name}"` : ""}
+                    </option>
+                  );
+                })}
               </Form.Select>
               <Form.Text className="text-muted">
-                When set, new users are automatically synced to this node.
+                When set, new users are automatically synced to this node. Each node can only be assigned to one server.
               </Form.Text>
             </Form.Group>
           )}
@@ -492,6 +528,48 @@ export function ServersPanel({
                   <div className="admin-code-wrap">
                     <code>{server.template}</code>
                   </div>
+                  {server.nodeId !== null && (
+                    <div className="d-flex align-items-center gap-2 flex-wrap mt-2">
+                      <SplitButton
+                        title={syncingServer === server.name
+                          ? <Spinner size="sm" />
+                          : <><TbCloudUpload size={14} className="me-1" />Sync users</>}
+                        onClick={() => handleSyncUsers(server.name)}
+                        variant="outline-secondary"
+                        size="sm"
+                        disabled={syncingServer === server.name}
+                        id={`sync-users-${server.name}`}
+                      >
+                        {(Object.keys(STRATEGY_LABELS) as SyncConflictStrategy[]).map((s) => (
+                          <Dropdown.Item key={s} active={syncStrategy === s} onClick={() => setSyncStrategy(s)}>
+                            {STRATEGY_LABELS[s]}
+                          </Dropdown.Item>
+                        ))}
+                      </SplitButton>
+                      {syncResults[server.name] !== undefined && syncResults[server.name] !== null && (() => {
+                        const r = syncResults[server.name]!;
+                        if ("conflicts" in r) {
+                          return (
+                            <span className="text-danger small d-flex align-items-center gap-1">
+                              <TbCircleX size={13} />
+                              Conflicts: {r.conflicts.join(", ")}
+                            </span>
+                          );
+                        }
+                        return r.failed > 0 ? (
+                          <span className="text-warning small d-flex align-items-center gap-1">
+                            <TbCircleCheck size={13} />
+                            {r.synced} synced, {r.failed} failed
+                          </span>
+                        ) : (
+                          <span className="text-success small d-flex align-items-center gap-1">
+                            <TbCircleCheck size={13} />
+                            {r.synced} synced
+                          </span>
+                        );
+                      })()}
+                    </div>
+                  )}
                   <div className="admin-meta">
                     <small className="text-muted">
                       {new Date(server.createdAt).toLocaleString("ru-RU", {

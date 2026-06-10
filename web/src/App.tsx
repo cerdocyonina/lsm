@@ -565,11 +565,11 @@ export default function App() {
     return api<NodeTestResult>(`/nodes/${id}/test`, { method: "POST" });
   }
 
-  async function handleSyncUsersToNode(id: number, strategy: SyncConflictStrategy): Promise<NodeSyncUsersResult> {
-    return api<NodeSyncUsersResult>(`/nodes/${id}/sync-users`, {
-      method: "POST",
-      body: JSON.stringify({ onConflict: strategy }),
-    });
+  async function handleSyncUsersToServer(serverName: string, strategy: SyncConflictStrategy): Promise<NodeSyncUsersResult> {
+    return api<NodeSyncUsersResult>(
+      profilePath(activeProfileId, `/servers/${encodeURIComponent(serverName)}/sync-users`),
+      { method: "POST", body: JSON.stringify({ onConflict: strategy }) },
+    );
   }
 
   async function reorderServers(names: string[]) {
@@ -846,7 +846,6 @@ export default function App() {
             onUpdateNode={handleUpdateNode}
             onDeleteNode={handleDeleteNode}
             onTestNode={handleTestNode}
-            onSyncUsersToNode={handleSyncUsersToNode}
           />
         ) : (
         <Row className="g-4 mb-4">
@@ -910,6 +909,7 @@ export default function App() {
               onToggleAllServers={toggleAllServers}
               pingSelectionMode={pingSelectionMode}
               onTogglePingSelection={() => setPingSelectionMode((v) => !v)}
+              onSyncUsersToServer={handleSyncUsersToServer}
             />
           </Col>
         </Row>
