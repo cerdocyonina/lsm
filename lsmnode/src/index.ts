@@ -57,11 +57,17 @@ const server = Bun.serve({
       let xuiOk = false;
       let xuiError: string | undefined;
       try {
-        await fetch(XUI_HOST!, {
+        const res = await fetch(`${XUI_HOST}/csrf-token`, {
           signal: AbortSignal.timeout(3000),
           tls: { rejectUnauthorized: false },
+          headers: { "X-Requested-With": "XMLHttpRequest", Accept: "application/json" },
         } as RequestInit);
-        xuiOk = true;
+        const data = await res.json() as { success?: boolean };
+        if (data.success === true) {
+          xuiOk = true;
+        } else {
+          xuiError = `Unexpected response from ${XUI_HOST}/csrf-token (success=${data.success})`;
+        }
       } catch (err) {
         xuiError = err instanceof Error ? err.message : String(err);
       }
