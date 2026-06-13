@@ -31,6 +31,7 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
+  const [pingingAll, setPingingAll] = useState(false);
   const [testResults, setTestResults] = useState<Record<number, NodeTestResult | null>>({});
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -62,6 +63,21 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
     } finally {
       setTestingId(null);
     }
+  }
+
+  async function handlePingAll() {
+    setPingingAll(true);
+    await Promise.allSettled(
+      nodes.map(async (node) => {
+        try {
+          const result = await onTestNode(node.id);
+          setTestResults((prev) => ({ ...prev, [node.id]: result }));
+        } catch {
+          setTestResults((prev) => ({ ...prev, [node.id]: { ok: false } }));
+        }
+      }),
+    );
+    setPingingAll(false);
   }
 
   function startEdit(node: NodeRecord) {
@@ -153,6 +169,16 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
         {nodes.length > 0 && (
           <>
             <hr className="my-4" />
+            <div className="d-flex justify-content-end mb-2">
+              <Button
+                variant="outline-secondary"
+                size="sm"
+                onClick={() => { void handlePingAll(); }}
+                disabled={pingingAll || testingId !== null}
+              >
+                {pingingAll ? <><Spinner size="sm" className="me-1" />Pinging…</> : <><TbWifi size={14} className="me-1" />Ping all</>}
+              </Button>
+            </div>
             <ListGroup variant="flush">
               {nodes.map((node) => {
                 const testResult = testResults[node.id];
@@ -208,7 +234,7 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                           variant="outline-secondary"
                           size="sm"
                           onClick={() => handleTest(node.id)}
-                          disabled={testingId === node.id}
+                          disabled={testingId === node.id || pingingAll}
                           title="Test connection"
                         >
                           {testingId === node.id ? <Spinner size="sm" /> : <TbWifi size={14} />}
