@@ -17,29 +17,41 @@ export const fullDumpUserSchema = z.object({
   createdAt: z.number().int().nonnegative(),
 });
 
+export const fullDumpNodeSchema = z.object({
+  name: z.string().min(1),
+  url: z.string().url(),
+  secret: z.string().min(1),
+  inboundId: z.number().int().positive(),
+  createdAt: z.number().int().nonnegative(),
+});
+
 export const fullDumpServerSchema = z.object({
   name: z.string().min(1),
   sortOrder: z.number().int().nonnegative(),
   template: z.string().min(1),
   createdAt: z.number().int().nonnegative(),
+  nodeName: z.string().min(1).nullable().optional(),
 });
 
 export const fullDumpSchema = z.object({
   USERS: z.array(fullDumpUserSchema),
   SERVERS: z.array(fullDumpServerSchema),
+  NODES: z.array(fullDumpNodeSchema).optional(),
 });
 
 export type FullDump = z.infer<typeof fullDumpSchema>;
 export type FullDumpUser = z.infer<typeof fullDumpUserSchema>;
 export type FullDumpServer = z.infer<typeof fullDumpServerSchema>;
+export type FullDumpNode = z.infer<typeof fullDumpNodeSchema>;
 
 // ProfileDump is the same shape as FullDump — single-profile snapshot
 export const profileDumpSchema = fullDumpSchema;
 export type ProfileDump = FullDump;
 
-// Multi-profile dump: { profiles: { "main": ProfileDump, "work": ProfileDump, ... } }
+// Multi-profile dump: { profiles: { "main": ProfileDump, "work": ProfileDump, ... }, nodes: [...] }
 export const multiProfileDumpSchema = z.object({
   profiles: z.record(z.string().min(1), profileDumpSchema),
+  nodes: z.array(fullDumpNodeSchema).optional(),
 });
 export type MultiProfileDump = z.infer<typeof multiProfileDumpSchema>;
 

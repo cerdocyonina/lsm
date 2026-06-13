@@ -646,6 +646,20 @@ export class SqliteStorage implements Storage {
         )
         .run(profileName, ownerId);
 
+      const upsertNode = this.db.query(`
+        INSERT INTO nodes (owner_id, name, url, secret, inbound_id, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT(name) DO UPDATE SET
+          url = excluded.url,
+          secret = excluded.secret,
+          inbound_id = excluded.inbound_id,
+          created_at = excluded.created_at
+        WHERE nodes.owner_id = ?1 AND excluded.created_at > nodes.created_at
+      `);
+      for (const node of dump.NODES ?? []) {
+        upsertNode.run(ownerId, node.name, node.url, node.secret, node.inboundId, node.createdAt);
+      }
+
       const insertUser = this.db.query(
         `INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, created_at)
          VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6), ?2, ?3, ?4, ?5)`,
@@ -655,17 +669,31 @@ export class SqliteStorage implements Storage {
       }
 
       const insertServer = this.db.query(
-        `INSERT INTO servers (profile_id, name, sort_order, template, created_at)
-         VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6), ?2, ?3, ?4, ?5)`,
+        `INSERT INTO servers (profile_id, name, sort_order, template, created_at, node_id)
+         VALUES (
+           (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6),
+           ?2, ?3, ?4, ?5,
+           (SELECT id FROM nodes WHERE name = ?7 AND owner_id = ?6)
+         )`,
       );
       for (const server of dump.SERVERS) {
-        insertServer.run(profileName, server.name, server.sortOrder, server.template, server.createdAt, ownerId);
+        insertServer.run(profileName, server.name, server.sortOrder, server.template, server.createdAt, ownerId, server.nodeName ?? null);
       }
     });
     tx();
   }
 
   public mergeProfileFromFullDump(profileName: string, dump: ProfileDump, ownerId: number): void {
+    const upsertNode = this.db.query(`
+      INSERT INTO nodes (owner_id, name, url, secret, inbound_id, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      ON CONFLICT(name) DO UPDATE SET
+        url = excluded.url,
+        secret = excluded.secret,
+        inbound_id = excluded.inbound_id,
+        created_at = excluded.created_at
+      WHERE nodes.owner_id = ?1 AND excluded.created_at > nodes.created_at
+    `);
     const upsertUser = this.db.query(`
       INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, created_at)
       VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6), ?2, ?3, ?4, ?5)
@@ -676,21 +704,29 @@ export class SqliteStorage implements Storage {
       WHERE excluded.created_at > users.created_at
     `);
     const upsertServer = this.db.query(`
-      INSERT INTO servers (profile_id, name, sort_order, template, created_at)
-      VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6), ?2, ?3, ?4, ?5)
+      INSERT INTO servers (profile_id, name, sort_order, template, created_at, node_id)
+      VALUES (
+        (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6),
+        ?2, ?3, ?4, ?5,
+        (SELECT id FROM nodes WHERE name = ?7 AND owner_id = ?6)
+      )
       ON CONFLICT(profile_id, name) DO UPDATE SET
         sort_order = excluded.sort_order,
         template = excluded.template,
-        created_at = excluded.created_at
+        created_at = excluded.created_at,
+        node_id = excluded.node_id
       WHERE excluded.created_at > servers.created_at
     `);
 
     const tx = this.db.transaction(() => {
+      for (const node of dump.NODES ?? []) {
+        upsertNode.run(ownerId, node.name, node.url, node.secret, node.inboundId, node.createdAt);
+      }
       for (const user of dump.USERS) {
         upsertUser.run(profileName, user.clientName, user.subscriptionToken, user.userUuid, user.createdAt, ownerId);
       }
       for (const server of dump.SERVERS) {
-        upsertServer.run(profileName, server.name, server.sortOrder, server.template, server.createdAt, ownerId);
+        upsertServer.run(profileName, server.name, server.sortOrder, server.template, server.createdAt, ownerId, server.nodeName ?? null);
       }
     });
     tx();
@@ -774,6 +810,16 @@ export class SqliteStorage implements Storage {
       VALUES (?1, ?2, ?3)
       ON CONFLICT(owner_id, name) DO NOTHING
     `);
+    const upsertNode = this.db.query(`
+      INSERT INTO nodes (owner_id, name, url, secret, inbound_id, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      ON CONFLICT(name) DO UPDATE SET
+        url = excluded.url,
+        secret = excluded.secret,
+        inbound_id = excluded.inbound_id,
+        created_at = excluded.created_at
+      WHERE nodes.owner_id = ?1 AND excluded.created_at > nodes.created_at
+    `);
     const upsertUser = this.db.query(`
       INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, created_at)
       VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6), ?2, ?3, ?4, ?5)
@@ -784,24 +830,32 @@ export class SqliteStorage implements Storage {
       WHERE excluded.created_at > users.created_at
     `);
     const upsertServer = this.db.query(`
-      INSERT INTO servers (profile_id, name, sort_order, template, created_at)
-      VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6), ?2, ?3, ?4, ?5)
+      INSERT INTO servers (profile_id, name, sort_order, template, created_at, node_id)
+      VALUES (
+        (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6),
+        ?2, ?3, ?4, ?5,
+        (SELECT id FROM nodes WHERE name = ?7 AND owner_id = ?6)
+      )
       ON CONFLICT(profile_id, name) DO UPDATE SET
         sort_order = excluded.sort_order,
         template = excluded.template,
-        created_at = excluded.created_at
+        created_at = excluded.created_at,
+        node_id = excluded.node_id
       WHERE excluded.created_at > servers.created_at
     `);
 
     const tx = this.db.transaction(() => {
       const now = Date.now();
+      for (const node of dump.nodes ?? []) {
+        upsertNode.run(ownerId, node.name, node.url, node.secret, node.inboundId, node.createdAt);
+      }
       for (const [profileName, profileData] of Object.entries(dump.profiles)) {
         ensureProfile.run(ownerId, profileName, now);
         for (const user of profileData.USERS) {
           upsertUser.run(profileName, user.clientName, user.subscriptionToken, user.userUuid, user.createdAt, ownerId);
         }
         for (const server of profileData.SERVERS) {
-          upsertServer.run(profileName, server.name, server.sortOrder, server.template, server.createdAt, ownerId);
+          upsertServer.run(profileName, server.name, server.sortOrder, server.template, server.createdAt, ownerId, server.nodeName ?? null);
         }
       }
     });
@@ -924,6 +978,8 @@ export class SqliteStorage implements Storage {
 }
 
 export function buildProfileDump(storage: Storage, profileName: string, ownerId: number): ProfileDump {
+  const nodes = storage.listNodesForProfile(profileName, ownerId);
+  const nodeNameById = new Map(nodes.map((n) => [n.id, n.name]));
   return {
     USERS: storage.listUsers(profileName, ownerId).map(({ clientName, userUuid, subscriptionToken, createdAt }) => ({
       clientName,
@@ -931,10 +987,18 @@ export function buildProfileDump(storage: Storage, profileName: string, ownerId:
       subscriptionToken,
       createdAt,
     })),
-    SERVERS: storage.listServerRecords(profileName, ownerId).map(({ name, sortOrder, template, createdAt }) => ({
+    SERVERS: storage.listServerRecords(profileName, ownerId).map(({ name, sortOrder, template, createdAt, nodeId }) => ({
       name,
       sortOrder,
       template,
+      createdAt,
+      nodeName: nodeId != null ? (nodeNameById.get(nodeId) ?? null) : null,
+    })),
+    NODES: nodes.map(({ name, url, secret, inboundId, createdAt }) => ({
+      name,
+      url,
+      secret,
+      inboundId,
       createdAt,
     })),
   };
@@ -942,9 +1006,33 @@ export function buildProfileDump(storage: Storage, profileName: string, ownerId:
 
 export function buildMultiProfileDump(storage: Storage, ownerId: number): MultiProfileDump {
   const profiles = storage.listProfiles(ownerId);
-  const result: MultiProfileDump = { profiles: {} };
+  const allNodes = storage.listNodes(ownerId);
+  const nodeNameById = new Map(allNodes.map((n) => [n.id, n.name]));
+  const result: MultiProfileDump = {
+    profiles: {},
+    nodes: allNodes.map(({ name, url, secret, inboundId, createdAt }) => ({
+      name,
+      url,
+      secret,
+      inboundId,
+      createdAt,
+    })),
+  };
   for (const profile of profiles) {
-    result.profiles[profile.name] = buildProfileDump(storage, profile.name, ownerId);
+    const users = storage.listUsers(profile.name, ownerId).map(({ clientName, userUuid, subscriptionToken, createdAt }) => ({
+      clientName,
+      userUuid,
+      subscriptionToken,
+      createdAt,
+    }));
+    const servers = storage.listServerRecords(profile.name, ownerId).map(({ name, sortOrder, template, createdAt, nodeId }) => ({
+      name,
+      sortOrder,
+      template,
+      createdAt,
+      nodeName: nodeId != null ? (nodeNameById.get(nodeId) ?? null) : null,
+    }));
+    result.profiles[profile.name] = { USERS: users, SERVERS: servers };
   }
   return result;
 }
