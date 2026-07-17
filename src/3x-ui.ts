@@ -10,14 +10,23 @@ export class XUIService {
   private baseUrl: string;
   private cookie: string | null = null;
   private csrfToken: string | null = null;
+  // Whether we've made at least one successful connection and thus know the
+  // panel's scheme (http vs https) is correct — see request()'s fallback.
+  private schemeResolved = false;
 
   constructor(private config: XUIConfig) {
     this.baseUrl = config.host.replace(/\/+$/, "");
   }
 
+  // Same base URL with http<->https swapped, or null if it uses neither.
+  private altBaseUrl(): string | null {
+    if (this.baseUrl.startsWith("https://")) return `http://${this.baseUrl.slice(8)}`;
+    if (this.baseUrl.startsWith("http://")) return `https://${this.baseUrl.slice(7)}`;
+    return null;
+  }
+
   private async request(path: string, options: BunFetchRequestInit = {}) {
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-    const url = `${this.baseUrl}${normalizedPath}`;
 
     const method = ((options.method as string) ?? "GET").toUpperCase();
     const isStateChanging = !["GET", "HEAD", "OPTIONS", "TRACE"].includes(method);
@@ -35,11 +44,35 @@ export class XUIService {
       ...((options.headers as Record<string, string>) || {}),
     };
 
-    const response = await fetch(url, {
+    const fetchOptions: BunFetchRequestInit = {
       ...options,
       tls: { rejectUnauthorized: false },
       headers,
-    });
+    };
+
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${normalizedPath}`, fetchOptions);
+    } catch (err) {
+      // A connection-level failure (as opposed to an HTTP error status) usually
+      // means the panel is up but on the OTHER scheme: XUI_HOST says https://
+      // while 3x-ui — which since v3.4.0 installs without TLS unless asked —
+      // serves plain HTTP, or vice-versa. Retry once on the flipped scheme and,
+      // if it connects, pin it for the rest of this client's lifetime.
+      const alt = this.altBaseUrl();
+      if (this.schemeResolved || !alt) throw err;
+      try {
+        response = await fetch(`${alt}${normalizedPath}`, fetchOptions);
+      } catch {
+        // The flipped scheme failed too, so this wasn't a scheme mismatch —
+        // the panel is simply unreachable. Report the original (configured
+        // scheme) error; the fallback's error would name a URL the operator
+        // never configured and send them down the wrong path.
+        throw err;
+      }
+      this.baseUrl = alt;
+    }
+    this.schemeResolved = true;
 
     if (!response.ok) {
       throw new Error(
@@ -48,6 +81,27 @@ export class XUIService {
     }
 
     return response;
+  }
+
+  /**
+   * Lightweight liveness probe against the panel's public /csrf-token endpoint.
+   * Requires no credentials and is scheme-resilient (see request()), so it also
+   * pins the correct http/https scheme for any later login()/API calls.
+   */
+  async ping(timeoutMs = 4000): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const response = await this.request("/csrf-token", {
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const data = (await response.json()) as { success?: boolean };
+      if (data.success === true) return { ok: true };
+      return {
+        ok: false,
+        error: `Unexpected /csrf-token response (success=${data.success})`,
+      };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   /**

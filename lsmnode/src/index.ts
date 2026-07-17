@@ -54,23 +54,11 @@ const server = Bun.serve({
     const url = new URL(req.url);
 
     if (url.pathname === "/health" && req.method === "GET") {
-      let xuiOk = false;
-      let xuiError: string | undefined;
-      try {
-        const res = await fetch(`${XUI_HOST}/csrf-token`, {
-          signal: AbortSignal.timeout(3000),
-          tls: { rejectUnauthorized: false },
-          headers: { "X-Requested-With": "XMLHttpRequest", Accept: "application/json" },
-        } as RequestInit);
-        const data = await res.json() as { success?: boolean };
-        if (data.success === true) {
-          xuiOk = true;
-        } else {
-          xuiError = `Unexpected response from ${XUI_HOST}/csrf-token (success=${data.success})`;
-        }
-      } catch (err) {
-        xuiError = err instanceof Error ? err.message : String(err);
-      }
+      // Delegate to the shared client so the probe is scheme-resilient: if
+      // XUI_HOST's http/https doesn't match how the panel is actually serving
+      // (3x-ui >=3.4.0 installs HTTP-only by default), the client transparently
+      // retries on the other scheme instead of reporting the panel unreachable.
+      const { ok: xuiOk, error: xuiError } = await xui.ping(3000);
       return Response.json({ ok: true, ...version, xui: { ok: xuiOk, ...(xuiError ? { error: xuiError } : {}) } });
     }
 
