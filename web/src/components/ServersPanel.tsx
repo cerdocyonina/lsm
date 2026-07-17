@@ -61,10 +61,13 @@ function highlightTemplate(code: string): string {
       /(\s+)$/,
       `<mark style="background:rgba(255,193,7,0.45);border-radius:2px">$1</mark>`,
     );
-  // Named placeholders ({uuid}, {user}, {pass}, ...) and the legacy DUMMY alias
-  result = result
-    .replace(/\{(\w+)\}/g, `<mark style="${PLACEHOLDER_MARK}">{$1}</mark>`)
-    .replace(/DUMMY/g, `<mark style="${PLACEHOLDER_MARK}">DUMMY</mark>`);
+  // Named placeholders ({uuid}, {user}, {pass}, ...) and the legacy DUMMY alias —
+  // ОДНОЙ регуляркой, как resolveTemplate на бэке. Два прохода ({...}, потом DUMMY)
+  // двойным <mark> обернули бы имя, содержащее подстроку DUMMY (напр. {DUMMYnode}).
+  result = result.replace(
+    /\{\w+\}|DUMMY/g,
+    (match) => `<mark style="${PLACEHOLDER_MARK}">${match}</mark>`,
+  );
   return result;
 }
 
@@ -392,14 +395,15 @@ export function ServersPanel({
             <Form.Label>
               Template
               <OverlayTrigger trigger="click" rootClose placement="right" overlay={PLACEHOLDER_HELP}>
-                <span
-                  className="text-body-tertiary ms-1"
-                  role="button"
-                  tabIndex={0}
+                {/* Нативная <button>, а не <span role=button>: клавиша Enter/Space
+                    сама триггерит click, поэтому справка доступна с клавиатуры. */}
+                <button
+                  type="button"
+                  className="btn btn-link p-0 border-0 align-baseline text-body-tertiary ms-1"
                   aria-label="Справка по плейсхолдерам"
                 >
                   <TbHelp size={15} />
-                </span>
+                </button>
               </OverlayTrigger>
             </Form.Label>
             <TemplateTextarea
