@@ -7,6 +7,7 @@ import {
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
 import { parseDumpOrThrow } from "./app-config";
+import { buildNaiveUsers, syncNaiveNode } from "./naive-sync";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import { buildMultiProfileDump, buildProfileDump } from "./storage";
 import type { NodeRecord, ProfileRecord, Storage } from "./storage";
@@ -247,9 +248,29 @@ async function syncUserToNodes(
   email: string,
   uuid: string,
   onConflict: "skip" | "overwrite" | "keep-both" = "skip",
+  naiveContext?: { storage: Storage; profileName: string; ownerId: number },
 ) {
   return Promise.allSettled(
     nodes.map(async (node) => {
+      // Caddy is declarative: there is no per-user add. Push the whole desired
+      // list and let the node re-render its config.
+      if (node.type === "naive") {
+        if (!naiveContext) {
+          return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "naive node requires profile context" };
+        }
+        const users = buildNaiveUsers(
+          naiveContext.storage,
+          naiveContext.storage.listUsers(naiveContext.profileName, naiveContext.ownerId),
+        );
+        const res = await syncNaiveNode(node, users);
+        return {
+          nodeId: node.id,
+          nodeName: node.name,
+          result: res.error ? "failed" : "added",
+          msg: res.error,
+        };
+      }
+
       try {
         const res = await fetch(`${node.url}/sync-user`, {
           method: "POST",
@@ -270,9 +291,32 @@ async function syncUserToNodes(
   );
 }
 
-async function deleteUserFromNodes(nodes: NodeRecord[], email: string) {
+async function deleteUserFromNodes(
+  nodes: NodeRecord[],
+  email: string,
+  naiveContext?: { storage: Storage; profileName: string; ownerId: number },
+) {
   return Promise.allSettled(
     nodes.map(async (node) => {
+      // The user row is already gone from storage by now, so re-pushing the
+      // current list is exactly "delete" for a declarative backend.
+      if (node.type === "naive") {
+        if (!naiveContext) {
+          return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "naive node requires profile context" };
+        }
+        const users = buildNaiveUsers(
+          naiveContext.storage,
+          naiveContext.storage.listUsers(naiveContext.profileName, naiveContext.ownerId),
+        );
+        const res = await syncNaiveNode(node, users);
+        return {
+          nodeId: node.id,
+          nodeName: node.name,
+          result: res.error ? "failed" : "deleted",
+          msg: res.error,
+        };
+      }
+
       try {
         const res = await fetch(`${node.url}/delete-user`, {
           method: "POST",
@@ -735,7 +779,11 @@ export async function handleAdminApiRequest(
     }
 
     const nodes = storage.listNodesForProfile(profileId, adminUserId);
-    const syncSettled = await syncUserToNodes(nodes, parsed.clientName, parsed.userUuid);
+    const syncSettled = await syncUserToNodes(nodes, parsed.clientName, parsed.userUuid, "skip", {
+      storage,
+      profileName: profileId,
+      ownerId: adminUserId,
+    });
     const syncResults = syncSettled.map((r) =>
       r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
     );
@@ -760,7 +808,11 @@ export async function handleAdminApiRequest(
       return noStoreResponse(jsonResponse({ syncResults: [] }));
     }
 
-    const syncSettled = await syncUserToNodes(nodes, user.clientName, user.userUuid, "overwrite");
+    const syncSettled = await syncUserToNodes(nodes, user.clientName, user.userUuid, "overwrite", {
+      storage,
+      profileName: profileId,
+      ownerId: adminUserId,
+    });
     const syncResults = syncSettled.map((r) =>
       r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
     );
@@ -820,7 +872,11 @@ export async function handleAdminApiRequest(
     if (nodeIds.length > 0) {
       const profileNodes = storage.listNodesForProfile(profileId, adminUserId);
       const selectedNodes = profileNodes.filter((n) => nodeIds.includes(n.id));
-      const settled = await deleteUserFromNodes(selectedNodes, userPathName);
+      const settled = await deleteUserFromNodes(selectedNodes, userPathName, {
+        storage,
+        profileName: profileId,
+        ownerId: adminUserId,
+      });
       const syncResults = settled.map((r) =>
         r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
       );
@@ -916,6 +972,21 @@ export async function handleAdminApiRequest(
     const node = storage.getNode(serverRecord.nodeId, adminUserId);
     if (!node) return adminErrorResponse(404, `Node not found`);
 
+    // Naive nodes take the whole list in one declarative push — per-user
+    // conflict strategies don't apply, so skip that machinery entirely.
+    if (node.type === "naive") {
+      const naiveUsers = buildNaiveUsers(storage, storage.listUsers(profileId, adminUserId));
+      const res = await syncNaiveNode(node, naiveUsers);
+      if (res.error) return adminErrorResponse(502, res.error);
+      return noStoreResponse(
+        jsonResponse({
+          synced: res.synced,
+          failed: 0,
+          results: naiveUsers.map((u) => ({ clientName: u.user, result: "added" })),
+        }),
+      );
+    }
+
     const parsed = await parseJson(req, syncUsersSchema);
     if (parsed instanceof Response) return noStoreResponse(parsed);
 
@@ -941,7 +1012,7 @@ export async function handleAdminApiRequest(
 
     const strategy = parsed.onConflict === "safe" ? "skip" : parsed.onConflict;
     const settled = await Promise.allSettled(
-      users.map((u) => syncUserToNodes([node], u.clientName, u.userUuid, strategy)),
+      users.map((u) => syncUserToNodes([node], u.clientName, u.userUuid, strategy, { storage, profileName: profileId, ownerId: adminUserId })),
     );
 
     const results: { clientName: string; result: string; msg?: string }[] = [];
