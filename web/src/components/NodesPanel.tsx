@@ -7,10 +7,12 @@ import {
   Form,
   InputGroup,
   ListGroup,
+  OverlayTrigger,
   Spinner,
+  Tooltip,
 } from "react-bootstrap";
-import { TbCircleCheck, TbCircleX, TbEdit, TbExclamationCircle, TbTrash, TbWifi } from "react-icons/tb";
-import type { NodeFormState, NodeRecord, NodeTestResult } from "../types";
+import { TbCircleCheck, TbCircleX, TbEdit, TbExclamationCircle, TbHelp, TbTrash, TbWifi } from "react-icons/tb";
+import type { NodeFormState, NodeRecord, NodeTestResult, NodeType } from "../types";
 import { ActionIconButton } from "./ActionIconButton";
 
 type NodesPanelProps = {
@@ -22,7 +24,23 @@ type NodesPanelProps = {
 };
 
 function emptyForm(): NodeFormState {
-  return { name: "", url: "", secret: "", inboundId: "" };
+  return { name: "", url: "", secret: "", inboundId: "", type: "xui" };
+}
+
+function FieldHint({ id, text }: { id: string; text: string }) {
+  return (
+    <OverlayTrigger placement="top" overlay={<Tooltip id={id}>{text}</Tooltip>}>
+      <span className="text-body-tertiary ms-1" role="button" tabIndex={0} aria-label={text}>
+        <TbHelp size={14} />
+      </span>
+    </OverlayTrigger>
+  );
+}
+
+/** Под-статус провайдера приходит в поле xui (3x-ui-ноды) или caddy (naive-ноды). */
+function providerStatus(node: NodeRecord, result: NodeTestResult) {
+  const status = node.type === "naive" ? result.caddy : result.xui;
+  return status ? { status, label: node.type === "naive" ? "Caddy" : "3x-ui" } : null;
 }
 
 export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTestNode }: NodesPanelProps) {
@@ -82,7 +100,7 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
 
   function startEdit(node: NodeRecord) {
     setEditingNode(node);
-    setForm({ name: node.name, url: node.url, secret: "", inboundId: String(node.inboundId) });
+    setForm({ name: node.name, url: node.url, secret: "", inboundId: String(node.inboundId), type: node.type });
     setError(null);
   }
 
@@ -113,7 +131,10 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
           <div className="row g-2 mb-3">
             <div className="col-sm-6">
               <Form.Group controlId="node-name">
-                <Form.Label>Name</Form.Label>
+                <Form.Label>
+                  Name
+                  <FieldHint id="hint-node-name" text="Произвольное имя узла — только для тебя, в ссылки не попадает." />
+                </Form.Label>
                 <Form.Control
                   required
                   placeholder="node-1"
@@ -123,22 +144,53 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
               </Form.Group>
             </div>
             <div className="col-sm-6">
-              <Form.Group controlId="node-inbound-id">
-                <Form.Label>Inbound ID</Form.Label>
-                <Form.Control
-                  required
-                  type="number"
-                  min="1"
-                  placeholder="1"
-                  value={form.inboundId}
-                  onChange={(e) => setForm({ ...form, inboundId: e.target.value })}
-                />
+              <Form.Group controlId="node-type">
+                <Form.Label>
+                  Type
+                  <FieldHint
+                    id="hint-node-type"
+                    text="Чем управляет агент на узле: панелью 3x-ui (VLESS) или Caddy с NaiveProxy."
+                  />
+                </Form.Label>
+                <Form.Select
+                  value={form.type}
+                  onChange={(e) => setForm({ ...form, type: e.target.value as NodeType })}
+                >
+                  <option value="xui">3x-ui (VLESS)</option>
+                  <option value="naive">NaïveProxy (Caddy)</option>
+                </Form.Select>
               </Form.Group>
             </div>
           </div>
 
+          {form.type === "xui" ? (
+            <Form.Group className="mb-3" controlId="node-inbound-id">
+              <Form.Label>
+                Inbound ID
+                <FieldHint id="hint-node-inbound" text="ID инбаунда в панели 3x-ui, куда агент добавляет клиентов." />
+              </Form.Label>
+              <Form.Control
+                required
+                type="number"
+                min="1"
+                placeholder="1"
+                value={form.inboundId}
+                onChange={(e) => setForm({ ...form, inboundId: e.target.value })}
+              />
+            </Form.Group>
+          ) : (
+            <Alert variant="secondary" className="mb-3 py-2 small">
+              У NaïveProxy нет инбаундов. Агент управляет юзерами прямо в конфиге Caddy: пушит
+              весь список и делает <code>caddy reload</code>. Пути и имя контейнера настраиваются
+              в <code>.env</code> самого агента (<code>CADDY_USERS_FILE</code>, <code>CADDY_CONTAINER</code>).
+            </Alert>
+          )}
+
           <Form.Group className="mb-3" controlId="node-url">
-            <Form.Label>URL</Form.Label>
+            <Form.Label>
+              URL
+              <FieldHint id="hint-node-url" text="Адрес агента lsm-node на узле, например http://1.2.3.4:9000" />
+            </Form.Label>
             <Form.Control
               required
               type="url"
@@ -150,7 +202,9 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
 
           <Form.Group className="mb-3" controlId="node-secret">
             <Form.Label>
-              Shared secret{editingNode && <span className="text-muted fw-normal ms-1 small">(leave blank to keep current)</span>}
+              Shared secret
+              <FieldHint id="hint-node-secret" text="Должен совпадать с SHARED_SECRET в .env агента." />
+              {editingNode && <span className="text-muted fw-normal ms-1 small">(leave blank to keep current)</span>}
             </Form.Label>
             <Form.Control
               required={!editingNode}
@@ -188,37 +242,47 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                       <div className="flex-grow-1 min-w-0">
                         <div className="d-flex align-items-center gap-2 flex-wrap mb-1">
                           <span className="fw-semibold">{node.name}</span>
-                          <Badge bg="secondary" className="font-monospace fw-normal">
-                            inbound #{node.inboundId}
-                          </Badge>
-                          {testResult?.ok === true && (
-                            <span className="small d-flex align-items-center gap-2 flex-wrap">
-                              <span className={`d-flex align-items-center gap-1 ${testResult.xui && !testResult.xui.ok ? "text-warning" : "text-success"}`}>
-                                {testResult.xui && !testResult.xui.ok
-                                  ? <TbExclamationCircle size={14} />
-                                  : <TbCircleCheck size={14} />}
-                                <span>Online</span>
-                                {testResult.version && (
-                                  <Badge bg={testResult.xui && !testResult.xui.ok ? "warning" : "success"} className="fw-normal" style={{ fontSize: "0.7em" }}>
-                                    v{testResult.version}
-                                  </Badge>
-                                )}
-                                {testResult.commit && (
-                                  <code className={testResult.xui && !testResult.xui.ok ? "text-warning" : "text-success"} style={{ fontSize: "0.75em" }}>{testResult.commit}</code>
-                                )}
-                                {testResult.date && (
-                                  <span className="text-body-secondary" style={{ fontSize: "0.75em" }}>{testResult.date}</span>
+                          {node.type === "naive" ? (
+                            <Badge bg="secondary" className="font-monospace fw-normal">naive</Badge>
+                          ) : (
+                            <Badge bg="secondary" className="font-monospace fw-normal">
+                              inbound #{node.inboundId}
+                            </Badge>
+                          )}
+                          {testResult?.ok === true && (() => {
+                            const provider = providerStatus(node, testResult);
+                            const degraded = provider !== null && !provider.status.ok;
+                            return (
+                              <span className="small d-flex align-items-center gap-2 flex-wrap">
+                                <span className={`d-flex align-items-center gap-1 ${degraded ? "text-warning" : "text-success"}`}>
+                                  {degraded ? <TbExclamationCircle size={14} /> : <TbCircleCheck size={14} />}
+                                  <span>Online</span>
+                                  {testResult.version && (
+                                    <Badge bg={degraded ? "warning" : "success"} className="fw-normal" style={{ fontSize: "0.7em" }}>
+                                      v{testResult.version}
+                                    </Badge>
+                                  )}
+                                  {testResult.commit && (
+                                    <code className={degraded ? "text-warning" : "text-success"} style={{ fontSize: "0.75em" }}>
+                                      {testResult.commit}
+                                    </code>
+                                  )}
+                                  {testResult.date && (
+                                    <span className="text-body-secondary" style={{ fontSize: "0.75em" }}>{testResult.date}</span>
+                                  )}
+                                </span>
+                                {provider && (
+                                  <span className={`d-flex align-items-center gap-1 ${provider.status.ok ? "text-success" : "text-danger"}`}>
+                                    {provider.status.ok ? (
+                                      <><TbCircleCheck size={14} /><span>{provider.label} OK</span></>
+                                    ) : (
+                                      <><TbCircleX size={14} /><span title={provider.status.error}>{provider.label} unreachable</span></>
+                                    )}
+                                  </span>
                                 )}
                               </span>
-                              {testResult.xui && (
-                                <span className={`d-flex align-items-center gap-1 ${testResult.xui.ok ? "text-success" : "text-danger"}`}>
-                                  {testResult.xui.ok
-                                    ? <><TbCircleCheck size={14} /><span>3x-ui OK</span></>
-                                    : <><TbCircleX size={14} /><span title={testResult.xui.error}>3x-ui unreachable</span></>}
-                                </span>
-                              )}
-                            </span>
-                          )}
+                            );
+                          })()}
                           {testResult?.ok === false && (
                             <span className="text-danger small d-flex align-items-center gap-1">
                               <TbCircleX size={14} /> unreachable
