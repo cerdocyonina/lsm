@@ -22,6 +22,7 @@ export type UserRecord = {
   clientName: string;
   subscriptionToken: string;
   userUuid: string;
+  credentials: Record<string, string>;
   createdAt: number;
 };
 
@@ -33,12 +34,15 @@ export type ServerRecord = {
   nodeId: number | null;
 };
 
+export type NodeType = "xui" | "naive";
+
 export type NodeRecord = {
   id: number;
   name: string;
   url: string;
   secret: string;
   inboundId: number;
+  type: NodeType;
   createdAt: number;
 };
 
@@ -67,6 +71,7 @@ export interface Storage {
   addUser(profileName: string, clientName: string, subscriptionToken: string, userUuid: string, createdAt: number, ownerId: number): void;
   renameUser(profileName: string, oldName: string, newName: string, ownerId: number): boolean;
   setUserUuid(profileName: string, clientName: string, userUuid: string, ownerId: number): boolean;
+  setUserCredentials(profileName: string, clientName: string, credentials: Record<string, string>, ownerId: number): boolean;
   removeUser(profileName: string, clientName: string, ownerId: number): boolean;
 
   // Server methods (all scoped by ownerId via profile)
@@ -83,8 +88,8 @@ export interface Storage {
   // Node methods (all scoped by ownerId)
   listNodes(ownerId: number): NodeRecord[];
   getNode(id: number, ownerId: number): NodeRecord | null;
-  addNode(name: string, url: string, secret: string, inboundId: number, ownerId: number, createdAt: number): NodeRecord;
-  updateNode(id: number, ownerId: number, updates: Partial<Pick<NodeRecord, "name" | "url" | "secret" | "inboundId">>): boolean;
+  addNode(name: string, url: string, secret: string, inboundId: number, ownerId: number, createdAt: number, type?: NodeType): NodeRecord;
+  updateNode(id: number, ownerId: number, updates: Partial<Pick<NodeRecord, "name" | "url" | "secret" | "inboundId" | "type">>): boolean;
   removeNode(id: number, ownerId: number): boolean;
   listNodesForProfile(profileName: string, ownerId: number): NodeRecord[];
 
@@ -95,6 +100,20 @@ export interface Storage {
   mergeAllFromMultiProfileDump(dump: MultiProfileDump, ownerId: number): void;
 
   close(): void;
+}
+
+/** Мешок кредов хранится как JSON-текст; битое значение не должно ронять раздачу. */
+function parseCredentials(raw: unknown): Record<string, string> {
+  if (typeof raw !== "string" || raw.length === 0) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, v]) => typeof v === "string"),
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
 }
 
 export class SqliteStorage implements Storage {
@@ -234,6 +253,20 @@ export class SqliteStorage implements Storage {
         this.db.exec("ALTER TABLE nodes_new RENAME TO nodes");
       });
       migrateNodes();
+    }
+
+    // 6a. Migration: per-user credential bag for named placeholders ({user}, {pass}, ...).
+    // user_uuid stays where it is and remains the source for {uuid}.
+    const userCols = this.db.query("PRAGMA table_info(users)").all() as { name: string }[];
+    if (!userCols.some((c) => c.name === "credentials")) {
+      this.db.exec("ALTER TABLE users ADD COLUMN credentials TEXT NOT NULL DEFAULT '{}'");
+    }
+
+    // 6b. Migration: node provider type. Re-query — migration 6 may have just
+    // recreated the nodes table without this column.
+    const nodeColsAfterMigration = this.db.query("PRAGMA table_info(nodes)").all() as { name: string }[];
+    if (!nodeColsAfterMigration.some((c) => c.name === "type")) {
+      this.db.exec("ALTER TABLE nodes ADD COLUMN type TEXT NOT NULL DEFAULT 'xui'");
     }
 
     // 7. Seed "main" profile for primary admin if not present
@@ -447,27 +480,29 @@ export class SqliteStorage implements Storage {
   // User methods
 
   public listUsers(profileName: string, ownerId: number): UserRecord[] {
-    return this.db
+    const rows = this.db
       .query(
         `SELECT p.name AS profileName, p.owner_id AS ownerId, u.client_name AS clientName,
-         u.subscription_token AS subscriptionToken, u.user_uuid AS userUuid, u.created_at AS createdAt
+         u.subscription_token AS subscriptionToken, u.user_uuid AS userUuid,
+         u.credentials AS credentials, u.created_at AS createdAt
          FROM users u JOIN profiles p ON p.id = u.profile_id
          WHERE p.name = ?1 AND p.owner_id = ?2 ORDER BY u.created_at DESC, u.client_name`,
       )
-      .all(profileName, ownerId) as UserRecord[];
+      .all(profileName, ownerId) as (Omit<UserRecord, "credentials"> & { credentials: string })[];
+    return rows.map((row) => ({ ...row, credentials: parseCredentials(row.credentials) }));
   }
 
   public getUserBySubscriptionToken(subscriptionToken: string): UserRecord | null {
-    return (
-      (this.db
-        .query(
-          `SELECT p.name AS profileName, p.owner_id AS ownerId, u.client_name AS clientName,
-           u.subscription_token AS subscriptionToken, u.user_uuid AS userUuid, u.created_at AS createdAt
-           FROM users u JOIN profiles p ON p.id = u.profile_id
-           WHERE u.subscription_token = ?1`,
-        )
-        .get(subscriptionToken) as UserRecord | null) ?? null
-    );
+    const row = this.db
+      .query(
+        `SELECT p.name AS profileName, p.owner_id AS ownerId, u.client_name AS clientName,
+         u.subscription_token AS subscriptionToken, u.user_uuid AS userUuid,
+         u.credentials AS credentials, u.created_at AS createdAt
+         FROM users u JOIN profiles p ON p.id = u.profile_id
+         WHERE u.subscription_token = ?1`,
+      )
+      .get(subscriptionToken) as (Omit<UserRecord, "credentials"> & { credentials: string }) | null;
+    return row ? { ...row, credentials: parseCredentials(row.credentials) } : null;
   }
 
   public addUser(
@@ -511,6 +546,34 @@ export class SqliteStorage implements Storage {
       )
       .run(userUuid, profileName, clientName, ownerId);
     return result.changes > 0;
+  }
+
+  /** Мержит переданные креды в существующий мешок пользователя. */
+  public setUserCredentials(
+    profileName: string,
+    clientName: string,
+    credentials: Record<string, string>,
+    ownerId: number,
+  ): boolean {
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .query(
+          `SELECT u.credentials AS credentials FROM users u JOIN profiles p ON p.id = u.profile_id
+           WHERE p.name = ?1 AND p.owner_id = ?3 AND u.client_name = ?2`,
+        )
+        .get(profileName, clientName, ownerId) as { credentials: string } | null;
+      if (!row) return false;
+
+      const merged = { ...parseCredentials(row.credentials), ...credentials };
+      const result = this.db
+        .query(
+          `UPDATE users SET credentials = ?1
+           WHERE profile_id = (SELECT id FROM profiles WHERE name = ?2 AND owner_id = ?4) AND client_name = ?3`,
+        )
+        .run(JSON.stringify(merged), profileName, clientName, ownerId);
+      return result.changes > 0;
+    });
+    return tx() as boolean;
   }
 
   public removeUser(profileName: string, clientName: string, ownerId: number): boolean {
@@ -867,7 +930,7 @@ export class SqliteStorage implements Storage {
   public listNodes(ownerId: number): NodeRecord[] {
     return this.db
       .query(
-        "SELECT id, name, url, secret, inbound_id AS inboundId, created_at AS createdAt FROM nodes WHERE owner_id = ?1 ORDER BY created_at, id",
+        "SELECT id, name, url, secret, inbound_id AS inboundId, type, created_at AS createdAt FROM nodes WHERE owner_id = ?1 ORDER BY created_at, id",
       )
       .all(ownerId) as NodeRecord[];
   }
@@ -876,7 +939,7 @@ export class SqliteStorage implements Storage {
     return (
       (this.db
         .query(
-          "SELECT id, name, url, secret, inbound_id AS inboundId, created_at AS createdAt FROM nodes WHERE id = ?1 AND owner_id = ?2",
+          "SELECT id, name, url, secret, inbound_id AS inboundId, type, created_at AS createdAt FROM nodes WHERE id = ?1 AND owner_id = ?2",
         )
         .get(id, ownerId) as NodeRecord | null) ?? null
     );
@@ -889,13 +952,14 @@ export class SqliteStorage implements Storage {
     inboundId: number,
     ownerId: number,
     createdAt: number,
+    type: NodeType = "xui",
   ): NodeRecord {
     try {
       this.db
         .query(
-          "INSERT INTO nodes (owner_id, name, url, secret, inbound_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+          "INSERT INTO nodes (owner_id, name, url, secret, inbound_id, type, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )
-        .run(ownerId, name, url, secret, inboundId, createdAt);
+        .run(ownerId, name, url, secret, inboundId, type, createdAt);
     } catch (err) {
       if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
         throw new Error(`Node "${name}" already exists.`);
@@ -904,7 +968,7 @@ export class SqliteStorage implements Storage {
     }
     return this.db
       .query(
-        "SELECT id, name, url, secret, inbound_id AS inboundId, created_at AS createdAt FROM nodes WHERE name = ?1 AND owner_id = ?2",
+        "SELECT id, name, url, secret, inbound_id AS inboundId, type, created_at AS createdAt FROM nodes WHERE name = ?1 AND owner_id = ?2",
       )
       .get(name, ownerId) as NodeRecord;
   }
@@ -912,7 +976,7 @@ export class SqliteStorage implements Storage {
   public updateNode(
     id: number,
     ownerId: number,
-    updates: Partial<Pick<NodeRecord, "name" | "url" | "secret" | "inboundId">>,
+    updates: Partial<Pick<NodeRecord, "name" | "url" | "secret" | "inboundId" | "type">>,
   ): boolean {
     const tx = this.db.transaction(() => {
       let changed = false;
@@ -948,6 +1012,14 @@ export class SqliteStorage implements Storage {
         )
           changed = true;
       }
+      if (updates.type !== undefined) {
+        if (
+          this.db
+            .query("UPDATE nodes SET type = ?1 WHERE id = ?2 AND owner_id = ?3")
+            .run(updates.type, id, ownerId).changes > 0
+        )
+          changed = true;
+      }
       return changed;
     });
     return tx() as boolean;
@@ -963,7 +1035,7 @@ export class SqliteStorage implements Storage {
   public listNodesForProfile(profileName: string, ownerId: number): NodeRecord[] {
     return this.db
       .query(
-        `SELECT DISTINCT n.id, n.name, n.url, n.secret, n.inbound_id AS inboundId, n.created_at AS createdAt
+        `SELECT DISTINCT n.id, n.name, n.url, n.secret, n.inbound_id AS inboundId, n.type, n.created_at AS createdAt
          FROM nodes n
          JOIN servers s ON s.node_id = n.id
          JOIN profiles p ON p.id = s.profile_id
