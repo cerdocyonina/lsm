@@ -1,10 +1,9 @@
 import dotenv from "dotenv";
 import { Buffer } from "node:buffer";
 import { config, validateEnvOrThrow } from "./env-validation";
-import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
 import { logError, logger } from "./logger";
-import { resolveTemplate, templatePlaceholders } from "./placeholders";
 import { SqliteStorage } from "./storage";
+import { renderSubscriptionLinks } from "./subscription";
 import { FAKE_NGINX_404 } from "./utils";
 
 dotenv.config({
@@ -83,14 +82,17 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     }
 
-    const serverRecords = storage.listServerRecords(userRecord.profileName, userRecord.ownerId);
-    const required = [
-      ...new Set(serverRecords.flatMap((server) => templatePlaceholders(server.template))),
-    ];
-    const credentials = ensureUserCredentials(storage, userRecord, required);
-    const identity = resolvedIdentityFor(userRecord, credentials);
-    const configs = serverRecords.map((server) => resolveTemplate(server.template, identity));
-    const subContent = encodeBase64Utf8(configs.join("\n"));
+    let subContent: string;
+    try {
+      subContent = encodeBase64Utf8(renderSubscriptionLinks(storage, userRecord).join("\n"));
+    } catch (error) {
+      // Рендер лениво генерирует недостающие креды, то есть ПИШЕТ в БД на публичном
+      // GET. Раньше этот путь был read-only и упасть на записи не мог. Молча отдать
+      // подписку с пустым паролем нельзя — это тихо сломанный конфиг у клиента.
+      logError(error);
+      logger.error(`failed to render sub for user "${userRecord.clientName}"`);
+      return new Response("Service unavailable", { status: 503 });
+    }
 
     logger.info(
       `served sub for user "${userRecord.clientName}": ${req.method} ${redactedPath}`,

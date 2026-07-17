@@ -1,16 +1,10 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
-import { resolveTemplate, templatePlaceholders } from "./placeholders";
 import { SqliteStorage } from "./storage";
+import { renderSubscriptionLinks } from "./subscription";
 
-/** Повторяет конвейер рендера из src/index.ts. */
+/** Зовёт ТОТ ЖЕ конвейер, что и боевой src/index.ts — копии пайплайна тут быть не должно. */
 function renderSubscription(storage: SqliteStorage, token: string): string[] {
-  const user = storage.getUserBySubscriptionToken(token)!;
-  const servers = storage.listServerRecords(user.profileName, user.ownerId);
-  const required = [...new Set(servers.flatMap((s) => templatePlaceholders(s.template)))];
-  const credentials = ensureUserCredentials(storage, user, required);
-  const identity = resolvedIdentityFor(user, credentials);
-  return servers.map((s) => resolveTemplate(s.template, identity));
+  return renderSubscriptionLinks(storage, storage.getUserBySubscriptionToken(token)!);
 }
 
 describe("subscription render", () => {
