@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { SqliteStorage } from "./storage";
+import { buildProfileDump, SqliteStorage } from "./storage";
 
 function newStorage(): SqliteStorage {
   return new SqliteStorage(":memory:", "admin");
@@ -74,5 +74,44 @@ describe("node type", () => {
     const node = storage.addNode("n1", "http://n1:9000", "s", 1, owner, 1000);
     expect(storage.updateNode(node.id, owner, { type: "naive" })).toBe(true);
     expect(storage.getNode(node.id, owner)!.type).toBe("naive");
+  });
+});
+
+describe("dump round-trip", () => {
+  test("credentials и type переживают export → import", () => {
+    const source = newStorage();
+    const owner = ownerId(source);
+    source.addUser("main", "alice", "tok-alice", "uuid-alice", 1000, owner);
+    source.setUserCredentials("main", "alice", { user: "alice", pass: "p1" }, owner);
+    const node = source.addNode("naive-1", "http://n:9000", "sec", 0, owner, 1000, "naive");
+    source.addServer("main", "s1", "naive+https://{user}:{pass}@h:443#n", 1000, owner, node.id);
+
+    const dump = buildProfileDump(source, "main", owner);
+    expect(dump.USERS[0]!.credentials).toEqual({ user: "alice", pass: "p1" });
+    expect(dump.NODES![0]!.type).toBe("naive");
+    expect(dump.NODES![0]!.inboundId).toBe(0);
+
+    const target = newStorage();
+    const targetOwner = ownerId(target);
+    target.replaceProfileFromFullDump("main", dump, targetOwner);
+
+    expect(target.listUsers("main", targetOwner)[0]!.credentials).toEqual({ user: "alice", pass: "p1" });
+    expect(target.listNodes(targetOwner)[0]!.type).toBe("naive");
+  });
+
+  test("дамп без credentials/type читается со значениями по умолчанию", () => {
+    const target = newStorage();
+    const owner = ownerId(target);
+    target.replaceProfileFromFullDump(
+      "main",
+      {
+        USERS: [{ clientName: "bob", userUuid: "550e8400-e29b-41d4-a716-446655440000", subscriptionToken: "tok-bob", createdAt: 1 }],
+        SERVERS: [{ name: "s1", sortOrder: 0, template: "vless://DUMMY@h#n", createdAt: 1, nodeName: null }],
+        NODES: [{ name: "legacy", url: "http://n:9000", secret: "s", inboundId: 1, createdAt: 1 }],
+      },
+      owner,
+    );
+    expect(target.listUsers("main", owner)[0]!.credentials).toEqual({});
+    expect(target.listNodes(owner)[0]!.type).toBe("xui");
   });
 });
