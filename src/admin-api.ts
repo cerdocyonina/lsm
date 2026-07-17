@@ -68,25 +68,34 @@ const updateServerSchema = z
     { message: "Provide at least one server field to update." },
   );
 
-const createNodeSchema = z.object({
-  name: z.string().min(1),
-  url: z.string().url(),
-  secret: z.string().min(1),
-  inboundId: z.number().int().positive(),
-});
+export const createNodeSchema = z
+  .object({
+    name: z.string().min(1),
+    url: z.string().url(),
+    secret: z.string().min(1),
+    type: z.enum(["xui", "naive"]).default("xui"),
+    // nonnegative, not positive: naive nodes have no inbound and store 0.
+    inboundId: z.number().int().nonnegative().default(0),
+  })
+  .refine((input) => input.type !== "xui" || input.inboundId >= 1, {
+    message: "inboundId >= 1 is required for xui nodes",
+    path: ["inboundId"],
+  });
 
-const updateNodeSchema = z
+export const updateNodeSchema = z
   .object({
     name: z.string().min(1).optional(),
     url: z.string().url().optional(),
     secret: z.string().min(1).optional(),
-    inboundId: z.number().int().positive().optional(),
+    type: z.enum(["xui", "naive"]).optional(),
+    inboundId: z.number().int().nonnegative().optional(),
   })
   .refine(
     (input) =>
       input.name !== undefined ||
       input.url !== undefined ||
       input.secret !== undefined ||
+      input.type !== undefined ||
       input.inboundId !== undefined,
     { message: "Provide at least one node field to update." },
   );
@@ -222,6 +231,7 @@ function mapNodes(storage: Storage, ownerId: number) {
     id: n.id,
     name: n.name,
     url: n.url,
+    type: n.type,
     inboundId: n.inboundId,
     createdAt: n.createdAt,
     // secret intentionally omitted from list response
@@ -513,7 +523,7 @@ export async function handleAdminApiRequest(
 
     let node;
     try {
-      node = storage.addNode(parsed.name, parsed.url, parsed.secret, parsed.inboundId, adminUserId, Date.now());
+      node = storage.addNode(parsed.name, parsed.url, parsed.secret, parsed.inboundId, adminUserId, Date.now(), parsed.type);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to add node.";
       return adminErrorResponse(400, message);
@@ -555,8 +565,17 @@ export async function handleAdminApiRequest(
           headers: { Authorization: `Bearer ${node.secret}` },
           tls: { rejectUnauthorized: false },
         } as RequestInit);
-        const data = (await res.json()) as { ok: boolean; version?: string; commit?: string; date?: string; xui?: { ok: boolean; error?: string } };
-        return noStoreResponse(jsonResponse({ ok: data.ok === true, version: data.version, commit: data.commit, date: data.date, xui: data.xui }));
+        const data = (await res.json()) as {
+          ok: boolean;
+          version?: string;
+          commit?: string;
+          date?: string;
+          xui?: { ok: boolean; error?: string };
+          caddy?: { ok: boolean; error?: string };
+        };
+        return noStoreResponse(
+          jsonResponse({ ok: data.ok === true, version: data.version, commit: data.commit, date: data.date, xui: data.xui, caddy: data.caddy }),
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return noStoreResponse(jsonResponse({ ok: false, error: msg }));
