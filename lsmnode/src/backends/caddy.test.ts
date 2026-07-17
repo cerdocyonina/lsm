@@ -63,6 +63,25 @@ describe("CaddyBackend", () => {
     expect(reloaded).toEqual(["naive"]);
   });
 
+  test("ИНВАРИАНТ БЕЗОПАСНОСТИ: пустой список пишет пустой файл через syncUsers (не skip)", async () => {
+    // Тот же инвариант, но end-to-end через syncUsers, а не только renderBasicAuthLines:
+    // будущий `if (users.length === 0) return` перед записью прошёл бы мимо чистой функции.
+    // Пустой файл валиден — авторизацию держит статический basic_auth в основном Caddyfile.
+    const usersFile = await tmpUsersFile();
+    let reloaded = false;
+    const backend = new CaddyBackend({
+      usersFile,
+      container: "naive",
+      reload: async () => { reloaded = true; },
+    });
+
+    // Сначала кладём юзера, потом синкаем пустым списком — файл должен обнулиться.
+    await backend.syncUsers([{ user: "alice", pass: "p1" }]);
+    expect(await backend.syncUsers([])).toEqual({ synced: 0 });
+    expect(await readFile(usersFile, "utf8")).toBe("");
+    expect(reloaded).toBe(true);
+  });
+
   test("полный список отзывает отсутствующих", async () => {
     const usersFile = await tmpUsersFile();
     const backend = new CaddyBackend({ usersFile, container: "naive", reload: async () => {} });
