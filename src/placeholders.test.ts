@@ -42,4 +42,14 @@ describe("resolveTemplate", () => {
     expect(resolveTemplate("{user}/{user}", { user: "x" })).toBe("x/x");
     expect(resolveTemplate("DUMMY-DUMMY", { uuid: "u" })).toBe("u-u");
   });
+
+  test("значение с подстрокой DUMMY не корёжится: подстановка в один проход", () => {
+    expect(resolveTemplate("{pass}", { pass: "abcDUMMYxyz", uuid: "U1" })).toBe("abcDUMMYxyz");
+  });
+
+  test("имя клиента с DUMMY внутри сохраняется целиком", () => {
+    expect(
+      resolveTemplate("naive+https://{user}:{pass}@h#n", { user: "DUMMY-test", pass: "p", uuid: "U1" }),
+    ).toBe("naive+https://DUMMY-test:p@h#n");
+  });
 });
