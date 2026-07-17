@@ -1,7 +1,9 @@
 import dotenv from "dotenv";
 import { Buffer } from "node:buffer";
 import { config, validateEnvOrThrow } from "./env-validation";
+import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
 import { logError, logger } from "./logger";
+import { resolveTemplate, templatePlaceholders } from "./placeholders";
 import { SqliteStorage } from "./storage";
 import { FAKE_NGINX_404 } from "./utils";
 
@@ -81,10 +83,13 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     }
 
-    const servers = storage.listServers(userRecord.profileName, userRecord.ownerId);
-    const configs = servers.map((serverTemplate) =>
-      serverTemplate.replace("DUMMY", userRecord.userUuid),
-    );
+    const serverRecords = storage.listServerRecords(userRecord.profileName, userRecord.ownerId);
+    const required = [
+      ...new Set(serverRecords.flatMap((server) => templatePlaceholders(server.template))),
+    ];
+    const credentials = ensureUserCredentials(storage, userRecord, required);
+    const identity = resolvedIdentityFor(userRecord, credentials);
+    const configs = serverRecords.map((server) => resolveTemplate(server.template, identity));
     const subContent = encodeBase64Utf8(configs.join("\n"));
 
     logger.info(
