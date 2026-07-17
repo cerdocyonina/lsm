@@ -98,7 +98,11 @@ export const updateNodeSchema = z
       input.type !== undefined ||
       input.inboundId !== undefined,
     { message: "Provide at least one node field to update." },
-  );
+  )
+  .refine((input) => input.type !== "xui" || input.inboundId === undefined || input.inboundId >= 1, {
+    message: "inboundId >= 1 is required for xui nodes",
+    path: ["inboundId"],
+  });
 
 const syncUsersSchema = z.object({
   onConflict: z.enum(["skip", "overwrite", "keep-both", "safe"]).default("overwrite"),
@@ -542,6 +546,15 @@ export async function handleAdminApiRequest(
     if (nodeSubPath === "/" && req.method === "PATCH") {
       const parsed = await parseJson(req, updateNodeSchema);
       if (parsed instanceof Response) return noStoreResponse(parsed);
+
+      const existing = storage.getNode(nodeId, adminUserId);
+      if (existing) {
+        const effectiveType = parsed.type ?? existing.type;
+        const effectiveInboundId = parsed.inboundId ?? existing.inboundId;
+        if (effectiveType === "xui" && effectiveInboundId < 1) {
+          return adminErrorResponse(400, "inboundId >= 1 is required for xui nodes");
+        }
+      }
 
       const updated = storage.updateNode(nodeId, adminUserId, parsed);
       if (!updated) return adminErrorResponse(404, `Unknown node: ${nodeId}`);

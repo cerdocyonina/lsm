@@ -40,4 +40,20 @@ describe("updateNodeSchema", () => {
   test("inboundId=0 допустим", () => {
     expect(updateNodeSchema.safeParse({ inboundId: 0 }).success).toBe(true);
   });
+
+  test("одновременно type=xui и inboundId=0 в одном запросе отвергается", () => {
+    expect(updateNodeSchema.safeParse({ type: "xui", inboundId: 0 }).success).toBe(false);
+  });
+
+  test("type=xui и inboundId>=1 вместе допустимы", () => {
+    expect(updateNodeSchema.safeParse({ type: "xui", inboundId: 1 }).success).toBe(true);
+  });
+
+  test("type=naive и inboundId=0 вместе допустимы", () => {
+    expect(updateNodeSchema.safeParse({ type: "naive", inboundId: 0 }).success).toBe(true);
+  });
+
+  test("только type=xui без inboundId допускается схемой (состояние проверяет хендлер)", () => {
+    expect(updateNodeSchema.safeParse({ type: "xui" }).success).toBe(true);
+  });
 });
