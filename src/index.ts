@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
 import { SqliteStorage } from "./storage";
+import { renderSubscriptionLinks } from "./subscription";
 import { FAKE_NGINX_404 } from "./utils";
 
 dotenv.config({
@@ -81,11 +82,17 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     }
 
-    const servers = storage.listServers(userRecord.profileName, userRecord.ownerId);
-    const configs = servers.map((serverTemplate) =>
-      serverTemplate.replace("DUMMY", userRecord.userUuid),
-    );
-    const subContent = encodeBase64Utf8(configs.join("\n"));
+    let subContent: string;
+    try {
+      subContent = encodeBase64Utf8(renderSubscriptionLinks(storage, userRecord).join("\n"));
+    } catch (error) {
+      // Рендер лениво генерирует недостающие креды, то есть ПИШЕТ в БД на публичном
+      // GET. Раньше этот путь был read-only и упасть на записи не мог. Молча отдать
+      // подписку с пустым паролем нельзя — это тихо сломанный конфиг у клиента.
+      logError(error);
+      logger.error(`failed to render sub for user "${userRecord.clientName}"`);
+      return new Response("Service unavailable", { status: 503 });
+    }
 
     logger.info(
       `served sub for user "${userRecord.clientName}": ${req.method} ${redactedPath}`,

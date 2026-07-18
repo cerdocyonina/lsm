@@ -13,6 +13,7 @@
     "start": "NODE_ENV=production bun run src/index.ts",
     "start:admin": "NODE_ENV=production bun run src/admin-server.ts",
     "cli": "bun run src/cli.ts",
+    "test": "bun test",
     "version:patch": "bun scripts/bump-version.mjs patch",
     "version:minor": "bun scripts/bump-version.mjs minor",
     "version:major": "bun scripts/bump-version.mjs major"
@@ -44,5 +45,5 @@
     "typescript": "^5"
   },
   "main": "dist/index.js",
-  "version": "1.2.2"
+  "version": "1.3.0"
 }

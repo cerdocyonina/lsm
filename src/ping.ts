@@ -62,6 +62,43 @@ export function parseVlessParams(template: string): VlessParams | null {
   }
 }
 
+export type NaiveParams = {
+  host: string;
+  port: number;
+};
+
+export function templateKind(template: string): "vless" | "naive" | "unknown" {
+  if (template.startsWith("vless://")) return "vless";
+  if (template.startsWith("naive+https://")) return "naive";
+  return "unknown";
+}
+
+export function parseNaiveParams(template: string): NaiveParams | null {
+  try {
+    // naive+https://user:pass@host:port#name — strip the naive+ scheme prefix
+    // so the standard URL parser can read it.
+    const url = new URL(template.replace(/^naive\+/, ""));
+    if (!url.hostname) return null;
+    return { host: url.hostname, port: url.port ? parseInt(url.port, 10) : 443 };
+  } catch {
+    return null;
+  }
+}
+
+/** host/port шаблона независимо от провайдера — для ICMP-пинга. */
+export function parseTemplateEndpoint(template: string): NaiveParams | null {
+  switch (templateKind(template)) {
+    case "vless": {
+      const params = parseVlessParams(template);
+      return params ? { host: params.host, port: params.port } : null;
+    }
+    case "naive":
+      return parseNaiveParams(template);
+    default:
+      return null;
+  }
+}
+
 function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -162,11 +199,39 @@ async function getUniqueFreePort(): Promise<number> {
   throw new Error("failed to find a unique free port");
 }
 
+/**
+ * Liveness naive-сервера с точки зрения мастера: обычный HTTPS-GET на замаскированный
+ * фасад. 200 = домен, сертификат и Caddy живы. Это НЕ проверка туннеля — для неё нужен
+ * бинарь naive на машине мастера (вне области v1).
+ */
+async function pingNaiveHttp(params: NaiveParams, timeoutMs: number): Promise<PingResult> {
+  const start = Date.now();
+  try {
+    const response = await fetch(`https://${params.host}:${params.port}/`, {
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: "manual",
+    });
+    const latencyMs = Date.now() - start;
+    if (response.status === 200) return { ok: true, latencyMs };
+    return { ok: false, latencyMs: null, error: `unexpected HTTP ${response.status}` };
+  } catch (err) {
+    return { ok: false, latencyMs: null, error: (err as Error).message };
+  }
+}
+
 export async function pingHttp(
   template: string,
   userUuid: string,
   timeoutMs = 10000,
 ): Promise<PingResult> {
+  if (templateKind(template) === "naive") {
+    const naiveParams = parseNaiveParams(template);
+    if (!naiveParams) {
+      return { ok: false, latencyMs: null, error: "failed to parse server template" };
+    }
+    return pingNaiveHttp(naiveParams, timeoutMs);
+  }
+
   const params = parseVlessParams(template);
   if (!params) {
     return {
@@ -307,9 +372,9 @@ export async function pingAllIcmp(
   let done = 0;
   return Promise.all(
     servers.map(async ({ name, template }) => {
-      const params = parseVlessParams(template);
-      const host = params?.host ?? "";
-      const port = params?.port ?? 0;
+      const endpoint = parseTemplateEndpoint(template);
+      const host = endpoint?.host ?? "";
+      const port = endpoint?.port ?? 0;
       const icmp = host
         ? await pingIcmp(host, timeoutMs)
         : { ok: false, latencyMs: null, error: "invalid template" };

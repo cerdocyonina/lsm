@@ -9,6 +9,8 @@ import {
   Dropdown,
   Form,
   ListGroup,
+  OverlayTrigger,
+  Popover,
   Spinner,
   SplitButton,
   Table,
@@ -24,6 +26,7 @@ import {
   TbCircleX,
   TbCloudUpload,
   TbGripVertical,
+  TbHelp,
 } from "react-icons/tb";
 import Editor from "react-simple-code-editor";
 import type {
@@ -45,6 +48,8 @@ const STRATEGY_LABELS: Record<SyncConflictStrategy, string> = {
   safe: "Safe (check first)",
 };
 
+const PLACEHOLDER_MARK = `background:rgba(25,135,84,0.3);border-radius:2px;padding:0 1px`;
+
 function highlightTemplate(code: string): string {
   // Leading/trailing whitespace highlighted in amber to show it'll be trimmed on blur
   let result = code
@@ -56,12 +61,19 @@ function highlightTemplate(code: string): string {
       /(\s+)$/,
       `<mark style="background:rgba(255,193,7,0.45);border-radius:2px">$1</mark>`,
     );
-  // DUMMY highlighted in green
+  // Named placeholders ({uuid}, {user}, {pass}, ...) and the legacy DUMMY alias —
+  // ОДНОЙ регуляркой, как resolveTemplate на бэке. Два прохода ({...}, потом DUMMY)
+  // двойным <mark> обернули бы имя, содержащее подстроку DUMMY (напр. {DUMMYnode}).
   result = result.replace(
-    /DUMMY/g,
-    `<mark style="background:rgba(25,135,84,0.3);border-radius:2px;padding:0 1px">DUMMY</mark>`,
+    /\{\w+\}|DUMMY/g,
+    (match) => `<mark style="${PLACEHOLDER_MARK}">${match}</mark>`,
   );
   return result;
+}
+
+/** true, если в шаблоне есть хоть какой-то плейсхолдер (именованный или легаси DUMMY). */
+function hasPlaceholder(template: string): boolean {
+  return /\{\w+\}/.test(template) || template.includes("DUMMY");
 }
 
 function TemplateTextarea({
@@ -167,6 +179,41 @@ function HttpResultCell({ result }: { result: PingResult }) {
     </span>
   );
 }
+
+const PLACEHOLDER_HELP = (
+  <Popover id="placeholders-help" style={{ maxWidth: "26rem" }}>
+    <Popover.Header as="h3">Плейсхолдеры в шаблоне</Popover.Header>
+    <Popover.Body className="small">
+      <p className="mb-2">
+        Шаблон — это готовая ссылка, в которой креды пользователя подставляются на место
+        плейсхолдеров. Каждому юзеру уходит своя копия.
+      </p>
+      <ul className="ps-3 mb-2">
+        <li>
+          <code>{"{uuid}"}</code> — идентификатор пользователя (VLESS).
+          Легаси-алиас: <code>DUMMY</code> — работает как раньше.
+        </li>
+        <li>
+          <code>{"{user}"}</code> — логин (NaïveProxy). Совпадает с именем клиента.
+        </li>
+        <li>
+          <code>{"{pass}"}</code> — пароль (NaïveProxy). Генерируется автоматически при первой
+          выдаче подписки и дальше не меняется.
+        </li>
+      </ul>
+      <p className="mb-1 fw-semibold">Примеры</p>
+      <div className="admin-code-wrap mb-1">
+        <code>vless://{"{uuid}"}@1.2.3.4:443?security=reality&amp;sni=microsoft.com#node-1</code>
+      </div>
+      <div className="admin-code-wrap">
+        <code>naive+https://{"{user}"}:{"{pass}"}@api.example.com:443#node-2</code>
+      </div>
+      <p className="mb-0 mt-2 text-body-secondary">
+        Неизвестный плейсхолдер подставится пустой строкой — проверяй имена.
+      </p>
+    </Popover.Body>
+  </Popover>
+);
 
 export function ServersPanel({
   editingServer,
@@ -345,20 +392,33 @@ export function ServersPanel({
           </Form.Group>
 
           <Form.Group className="mb-3" controlId="server-template">
-            <Form.Label>Template</Form.Label>
+            <Form.Label>
+              Template
+              <OverlayTrigger trigger="click" rootClose placement="right" overlay={PLACEHOLDER_HELP}>
+                {/* Нативная <button>, а не <span role=button>: клавиша Enter/Space
+                    сама триггерит click, поэтому справка доступна с клавиатуры. */}
+                <button
+                  type="button"
+                  className="btn btn-link p-0 border-0 align-baseline text-body-tertiary ms-1"
+                  aria-label="Справка по плейсхолдерам"
+                >
+                  <TbHelp size={15} />
+                </button>
+              </OverlayTrigger>
+            </Form.Label>
             <TemplateTextarea
               value={serverForm.template}
               onChange={(template) =>
                 setServerForm({ ...serverForm, template })
               }
             />
-            {serverForm.template.length > 0 &&
-              !serverForm.template.includes("DUMMY") && (
-                <Alert variant="warning" className="mt-2 mb-0 py-2 small">
-                  Template doesn't include <code>DUMMY</code> — the user UUID
-                  won't be substituted.
-                </Alert>
-              )}
+            {serverForm.template.length > 0 && !hasPlaceholder(serverForm.template) && (
+              <Alert variant="warning" className="mt-2 mb-0 py-2 small">
+                В шаблоне нет плейсхолдеров (<code>{"{uuid}"}</code>, <code>{"{user}"}</code>,{" "}
+                <code>{"{pass}"}</code> или легаси <code>DUMMY</code>) — все пользователи получат
+                одну и ту же ссылку.
+              </Alert>
+            )}
           </Form.Group>
 
           {nodes.length > 0 && (

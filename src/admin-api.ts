@@ -7,6 +7,7 @@ import {
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
 import { parseDumpOrThrow } from "./app-config";
+import { buildNaiveUsers, syncNaiveNode } from "./naive-sync";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import { buildMultiProfileDump, buildProfileDump } from "./storage";
 import type { NodeRecord, ProfileRecord, Storage } from "./storage";
@@ -68,28 +69,41 @@ const updateServerSchema = z
     { message: "Provide at least one server field to update." },
   );
 
-const createNodeSchema = z.object({
-  name: z.string().min(1),
-  url: z.string().url(),
-  secret: z.string().min(1),
-  inboundId: z.number().int().positive(),
-});
+export const createNodeSchema = z
+  .object({
+    name: z.string().min(1),
+    url: z.string().url(),
+    secret: z.string().min(1),
+    type: z.enum(["xui", "naive"]).default("xui"),
+    // nonnegative, not positive: naive nodes have no inbound and store 0.
+    inboundId: z.number().int().nonnegative().default(0),
+  })
+  .refine((input) => input.type !== "xui" || input.inboundId >= 1, {
+    message: "inboundId >= 1 is required for xui nodes",
+    path: ["inboundId"],
+  });
 
-const updateNodeSchema = z
+export const updateNodeSchema = z
   .object({
     name: z.string().min(1).optional(),
     url: z.string().url().optional(),
     secret: z.string().min(1).optional(),
-    inboundId: z.number().int().positive().optional(),
+    type: z.enum(["xui", "naive"]).optional(),
+    inboundId: z.number().int().nonnegative().optional(),
   })
   .refine(
     (input) =>
       input.name !== undefined ||
       input.url !== undefined ||
       input.secret !== undefined ||
+      input.type !== undefined ||
       input.inboundId !== undefined,
     { message: "Provide at least one node field to update." },
-  );
+  )
+  .refine((input) => input.type !== "xui" || input.inboundId === undefined || input.inboundId >= 1, {
+    message: "inboundId >= 1 is required for xui nodes",
+    path: ["inboundId"],
+  });
 
 const syncUsersSchema = z.object({
   onConflict: z.enum(["skip", "overwrite", "keep-both", "safe"]).default("overwrite"),
@@ -222,6 +236,7 @@ function mapNodes(storage: Storage, ownerId: number) {
     id: n.id,
     name: n.name,
     url: n.url,
+    type: n.type,
     inboundId: n.inboundId,
     createdAt: n.createdAt,
     // secret intentionally omitted from list response
@@ -233,9 +248,30 @@ async function syncUserToNodes(
   email: string,
   uuid: string,
   onConflict: "skip" | "overwrite" | "keep-both" = "skip",
+  naiveContext?: { storage: Storage; profileName: string; ownerId: number },
 ) {
   return Promise.allSettled(
     nodes.map(async (node) => {
+      // Caddy is declarative: there is no per-user add. Push the whole desired
+      // list and let the node re-render its config.
+      if (node.type === "naive") {
+        if (!naiveContext) {
+          return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "naive node requires profile context" };
+        }
+        const { users, skipped } = buildNaiveUsers(
+          naiveContext.storage,
+          naiveContext.storage.listUsers(naiveContext.profileName, naiveContext.ownerId),
+        );
+        const res = await syncNaiveNode(node, users);
+        const skipMsg = skipped.length ? `skipped invalid names: ${skipped.join(", ")}` : undefined;
+        return {
+          nodeId: node.id,
+          nodeName: node.name,
+          result: res.error ? "failed" : "added",
+          msg: [res.error, skipMsg].filter(Boolean).join("; ") || undefined,
+        };
+      }
+
       try {
         const res = await fetch(`${node.url}/sync-user`, {
           method: "POST",
@@ -256,9 +292,33 @@ async function syncUserToNodes(
   );
 }
 
-async function deleteUserFromNodes(nodes: NodeRecord[], email: string) {
+async function deleteUserFromNodes(
+  nodes: NodeRecord[],
+  email: string,
+  naiveContext?: { storage: Storage; profileName: string; ownerId: number },
+) {
   return Promise.allSettled(
     nodes.map(async (node) => {
+      // The user row is already gone from storage by now, so re-pushing the
+      // current list is exactly "delete" for a declarative backend.
+      if (node.type === "naive") {
+        if (!naiveContext) {
+          return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "naive node requires profile context" };
+        }
+        const { users, skipped } = buildNaiveUsers(
+          naiveContext.storage,
+          naiveContext.storage.listUsers(naiveContext.profileName, naiveContext.ownerId),
+        );
+        const res = await syncNaiveNode(node, users);
+        const skipMsg = skipped.length ? `skipped invalid names: ${skipped.join(", ")}` : undefined;
+        return {
+          nodeId: node.id,
+          nodeName: node.name,
+          result: res.error ? "failed" : "deleted",
+          msg: [res.error, skipMsg].filter(Boolean).join("; ") || undefined,
+        };
+      }
+
       try {
         const res = await fetch(`${node.url}/delete-user`, {
           method: "POST",
@@ -513,7 +573,7 @@ export async function handleAdminApiRequest(
 
     let node;
     try {
-      node = storage.addNode(parsed.name, parsed.url, parsed.secret, parsed.inboundId, adminUserId, Date.now());
+      node = storage.addNode(parsed.name, parsed.url, parsed.secret, parsed.inboundId, adminUserId, Date.now(), parsed.type);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to add node.";
       return adminErrorResponse(400, message);
@@ -532,6 +592,15 @@ export async function handleAdminApiRequest(
     if (nodeSubPath === "/" && req.method === "PATCH") {
       const parsed = await parseJson(req, updateNodeSchema);
       if (parsed instanceof Response) return noStoreResponse(parsed);
+
+      const existing = storage.getNode(nodeId, adminUserId);
+      if (existing) {
+        const effectiveType = parsed.type ?? existing.type;
+        const effectiveInboundId = parsed.inboundId ?? existing.inboundId;
+        if (effectiveType === "xui" && effectiveInboundId < 1) {
+          return adminErrorResponse(400, "inboundId >= 1 is required for xui nodes");
+        }
+      }
 
       const updated = storage.updateNode(nodeId, adminUserId, parsed);
       if (!updated) return adminErrorResponse(404, `Unknown node: ${nodeId}`);
@@ -555,8 +624,17 @@ export async function handleAdminApiRequest(
           headers: { Authorization: `Bearer ${node.secret}` },
           tls: { rejectUnauthorized: false },
         } as RequestInit);
-        const data = (await res.json()) as { ok: boolean; version?: string; commit?: string; date?: string; xui?: { ok: boolean; error?: string } };
-        return noStoreResponse(jsonResponse({ ok: data.ok === true, version: data.version, commit: data.commit, date: data.date, xui: data.xui }));
+        const data = (await res.json()) as {
+          ok: boolean;
+          version?: string;
+          commit?: string;
+          date?: string;
+          xui?: { ok: boolean; error?: string };
+          caddy?: { ok: boolean; error?: string };
+        };
+        return noStoreResponse(
+          jsonResponse({ ok: data.ok === true, version: data.version, commit: data.commit, date: data.date, xui: data.xui, caddy: data.caddy }),
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return noStoreResponse(jsonResponse({ ok: false, error: msg }));
@@ -703,7 +781,11 @@ export async function handleAdminApiRequest(
     }
 
     const nodes = storage.listNodesForProfile(profileId, adminUserId);
-    const syncSettled = await syncUserToNodes(nodes, parsed.clientName, parsed.userUuid);
+    const syncSettled = await syncUserToNodes(nodes, parsed.clientName, parsed.userUuid, "skip", {
+      storage,
+      profileName: profileId,
+      ownerId: adminUserId,
+    });
     const syncResults = syncSettled.map((r) =>
       r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
     );
@@ -728,7 +810,11 @@ export async function handleAdminApiRequest(
       return noStoreResponse(jsonResponse({ syncResults: [] }));
     }
 
-    const syncSettled = await syncUserToNodes(nodes, user.clientName, user.userUuid, "overwrite");
+    const syncSettled = await syncUserToNodes(nodes, user.clientName, user.userUuid, "overwrite", {
+      storage,
+      profileName: profileId,
+      ownerId: adminUserId,
+    });
     const syncResults = syncSettled.map((r) =>
       r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
     );
@@ -788,7 +874,11 @@ export async function handleAdminApiRequest(
     if (nodeIds.length > 0) {
       const profileNodes = storage.listNodesForProfile(profileId, adminUserId);
       const selectedNodes = profileNodes.filter((n) => nodeIds.includes(n.id));
-      const settled = await deleteUserFromNodes(selectedNodes, userPathName);
+      const settled = await deleteUserFromNodes(selectedNodes, userPathName, {
+        storage,
+        profileName: profileId,
+        ownerId: adminUserId,
+      });
       const syncResults = settled.map((r) =>
         r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
       );
@@ -884,6 +974,24 @@ export async function handleAdminApiRequest(
     const node = storage.getNode(serverRecord.nodeId, adminUserId);
     if (!node) return adminErrorResponse(404, `Node not found`);
 
+    // Naive nodes take the whole list in one declarative push — per-user
+    // conflict strategies don't apply, so skip that machinery entirely.
+    if (node.type === "naive") {
+      const { users: naiveUsers, skipped } = buildNaiveUsers(storage, storage.listUsers(profileId, adminUserId));
+      const res = await syncNaiveNode(node, naiveUsers);
+      if (res.error) return adminErrorResponse(502, res.error);
+      return noStoreResponse(
+        jsonResponse({
+          synced: res.synced,
+          failed: skipped.length,
+          results: [
+            ...naiveUsers.map((u) => ({ clientName: u.user, result: "added" })),
+            ...skipped.map((clientName) => ({ clientName, result: "skipped" })),
+          ],
+        }),
+      );
+    }
+
     const parsed = await parseJson(req, syncUsersSchema);
     if (parsed instanceof Response) return noStoreResponse(parsed);
 
@@ -909,7 +1017,7 @@ export async function handleAdminApiRequest(
 
     const strategy = parsed.onConflict === "safe" ? "skip" : parsed.onConflict;
     const settled = await Promise.allSettled(
-      users.map((u) => syncUserToNodes([node], u.clientName, u.userUuid, strategy)),
+      users.map((u) => syncUserToNodes([node], u.clientName, u.userUuid, strategy, { storage, profileName: profileId, ownerId: adminUserId })),
     );
 
     const results: { clientName: string; result: string; msg?: string }[] = [];

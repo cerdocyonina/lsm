@@ -32,11 +32,14 @@ export type ServerRecord = {
   nodeId: number | null;
 };
 
+export type NodeType = "xui" | "naive";
+
 export type NodeRecord = {
   id: number;
   name: string;
   url: string;
   inboundId: number;
+  type: NodeType;
   createdAt: number;
 };
 
@@ -47,6 +50,7 @@ export type NodeTestResult = {
   date?: string;
   error?: string;
   xui?: { ok: boolean; error?: string };
+  caddy?: { ok: boolean; error?: string };
 };
 
 export type UserFormState = {
@@ -65,6 +69,7 @@ export type NodeFormState = {
   url: string;
   secret: string;
   inboundId: string;
+  type: NodeType;
 };
 
 export type SyncResult = {

@@ -1,9 +1,13 @@
 import { XUIService } from "../../src/3x-ui";
 import { version as PKG_VERSION } from "../../package.json";
+import { CaddyBackend } from "./backends/caddy";
+import type { NaiveUser, NodeBackend, OnConflict, SyncResult } from "./backends/types";
+import { XuiBackend } from "./backends/xui";
+import { buildHealthPayload, type VersionInfo } from "./health-payload";
 
 const REPO_DIR = new URL("../..", import.meta.url).pathname;
 
-function getVersionInfo(): { version: string; commit: string; date: string } | { version: string } {
+function getVersionInfo(): VersionInfo {
   try {
     const commit = Bun.spawnSync(["git", "rev-parse", "--short", "HEAD"], { cwd: REPO_DIR });
     const date = Bun.spawnSync(["git", "log", "-1", "--format=%cd", "--date=short"], { cwd: REPO_DIR });
@@ -22,27 +26,77 @@ const version = getVersionInfo();
 
 const PORT = parseInt(process.env.PORT ?? "9000", 10);
 const SHARED_SECRET = process.env.SHARED_SECRET;
-const XUI_HOST = process.env.XUI_HOST;
-const XUI_USER = process.env.XUI_USER;
-const XUI_PASSWORD = process.env.XUI_PASSWORD;
+const PROVIDER = (process.env.PROVIDER ?? "xui") as "xui" | "naive";
 
 if (!SHARED_SECRET) throw new Error("SHARED_SECRET is required");
-if (!XUI_HOST) throw new Error("XUI_HOST is required");
-if (!XUI_USER) throw new Error("XUI_USER is required");
-if (!XUI_PASSWORD) throw new Error("XUI_PASSWORD is required");
+if (PROVIDER !== "xui" && PROVIDER !== "naive") {
+  throw new Error(`PROVIDER must be "xui" or "naive", got "${PROVIDER}"`);
+}
 
-const xui = new XUIService({ host: XUI_HOST, user: XUI_USER, password: XUI_PASSWORD });
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is required when PROVIDER=${PROVIDER}`);
+  return value;
+}
 
-type SyncResult = "added" | "skipped" | "overwritten" | "kept-both" | "deleted" | "not_found" | "failed";
-type OnConflict = "skip" | "overwrite" | "keep-both";
+function createBackend(): NodeBackend {
+  if (PROVIDER === "naive") {
+    return new CaddyBackend({
+      usersFile: requireEnv("CADDY_USERS_FILE"),
+      container: process.env.CADDY_CONTAINER ?? "naive",
+    });
+  }
+  return new XuiBackend(
+    new XUIService({
+      host: requireEnv("XUI_HOST"),
+      user: requireEnv("XUI_USER"),
+      password: requireEnv("XUI_PASSWORD"),
+    }),
+  );
+}
+
+const backend = createBackend();
 
 function unauthorized(): Response {
   return Response.json({ error: "Unauthorized" }, { status: 401 });
 }
 
+function unsupported(endpoint: string): Response {
+  return Response.json(
+    { error: `${endpoint} is not supported by provider=${PROVIDER}` },
+    { status: 400 },
+  );
+}
+
 function checkAuth(req: Request): boolean {
   const auth = req.headers.get("Authorization") ?? "";
   return auth === `Bearer ${SHARED_SECRET}`;
+}
+
+async function readJsonObject(req: Request): Promise<Record<string, unknown> | Response> {
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  if (typeof body !== "object" || body === null) {
+    return Response.json({ error: "Invalid body" }, { status: 400 });
+  }
+  return body as Record<string, unknown>;
+}
+
+function parseNaiveUsers(value: unknown): NaiveUser[] | null {
+  if (!Array.isArray(value)) return null;
+  const users: NaiveUser[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const { user, pass } = entry as Record<string, unknown>;
+    if (typeof user !== "string" || !user) return null;
+    if (typeof pass !== "string" || !pass) return null;
+    users.push({ user, pass });
+  }
+  return users;
 }
 
 const server = Bun.serve({
@@ -54,27 +108,42 @@ const server = Bun.serve({
     const url = new URL(req.url);
 
     if (url.pathname === "/health" && req.method === "GET") {
-      // Delegate to the shared client so the probe is scheme-resilient: if
-      // XUI_HOST's http/https doesn't match how the panel is actually serving
-      // (3x-ui >=3.4.0 installs HTTP-only by default), the client transparently
-      // retries on the other scheme instead of reporting the panel unreachable.
-      const { ok: xuiOk, error: xuiError } = await xui.ping(3000);
-      return Response.json({ ok: true, ...version, xui: { ok: xuiOk, ...(xuiError ? { error: xuiError } : {}) } });
+      const status = await backend.health(3000);
+      return Response.json(buildHealthPayload(backend.kind, status, version));
     }
 
-    if (url.pathname === "/sync-user" && req.method === "POST") {
-      let body: unknown;
+    // --- naive: declarative full-list sync -----------------------------------
+    if (url.pathname === "/sync-users" && req.method === "POST") {
+      if (!backend.syncUsers) return unsupported("/sync-users");
+
+      const body = await readJsonObject(req);
+      if (body instanceof Response) return body;
+
+      const users = parseNaiveUsers(body.users);
+      if (!users) {
+        return Response.json(
+          { error: "users must be an array of { user: string, pass: string }" },
+          { status: 400 },
+        );
+      }
+
       try {
-        body = await req.json();
-      } catch {
-        return Response.json({ error: "Invalid JSON" }, { status: 400 });
+        return Response.json(await backend.syncUsers(users));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("sync-users failed:", msg);
+        return Response.json({ error: msg }, { status: 400 });
       }
+    }
 
-      if (typeof body !== "object" || body === null) {
-        return Response.json({ error: "Invalid body" }, { status: 400 });
-      }
+    // --- xui: per-user sync ---------------------------------------------------
+    if (url.pathname === "/sync-user" && req.method === "POST") {
+      if (!backend.syncUser) return unsupported("/sync-user");
 
-      const { email, uuid, inboundId, onConflict } = body as Record<string, unknown>;
+      const body = await readJsonObject(req);
+      if (body instanceof Response) return body;
+
+      const { email, uuid, inboundId, onConflict } = body;
 
       if (typeof email !== "string" || !email) {
         return Response.json({ error: "email is required" }, { status: 400 });
@@ -95,7 +164,7 @@ const server = Bun.serve({
       }
 
       try {
-        const result: SyncResult = await xui.syncUser(inboundId, email, uuid, conflict);
+        const result: SyncResult = await backend.syncUser(inboundId, email, uuid, conflict);
         return Response.json({ result });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -105,25 +174,18 @@ const server = Bun.serve({
     }
 
     if (url.pathname === "/check-conflicts" && req.method === "POST") {
-      let body: unknown;
-      try {
-        body = await req.json();
-      } catch {
-        return Response.json({ error: "Invalid JSON" }, { status: 400 });
-      }
+      if (!backend.checkConflicts) return unsupported("/check-conflicts");
 
-      if (typeof body !== "object" || body === null) {
-        return Response.json({ error: "Invalid body" }, { status: 400 });
-      }
+      const body = await readJsonObject(req);
+      if (body instanceof Response) return body;
 
-      const { emails } = body as Record<string, unknown>;
-
+      const { emails } = body;
       if (!Array.isArray(emails) || emails.some((e) => typeof e !== "string")) {
         return Response.json({ error: "emails must be an array of strings" }, { status: 400 });
       }
 
       try {
-        const conflicts = await xui.checkConflicts(emails as string[]);
+        const conflicts = await backend.checkConflicts(emails as string[]);
         return Response.json({ conflicts });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -133,25 +195,18 @@ const server = Bun.serve({
     }
 
     if (url.pathname === "/delete-user" && req.method === "POST") {
-      let body: unknown;
-      try {
-        body = await req.json();
-      } catch {
-        return Response.json({ error: "Invalid JSON" }, { status: 400 });
-      }
+      if (!backend.deleteUser) return unsupported("/delete-user");
 
-      if (typeof body !== "object" || body === null) {
-        return Response.json({ error: "Invalid body" }, { status: 400 });
-      }
+      const body = await readJsonObject(req);
+      if (body instanceof Response) return body;
 
-      const { email } = body as Record<string, unknown>;
-
+      const { email } = body;
       if (typeof email !== "string" || !email) {
         return Response.json({ error: "email is required" }, { status: 400 });
       }
 
       try {
-        const result: SyncResult = await xui.deleteUser(email);
+        const result: SyncResult = await backend.deleteUser(email);
         return Response.json({ result });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -164,4 +219,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`lsm-node listening on ${server.hostname}:${server.port}`);
+console.log(`lsm-node (provider=${PROVIDER}) listening on ${server.hostname}:${server.port}`);

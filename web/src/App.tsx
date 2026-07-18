@@ -535,7 +535,9 @@ export default function App() {
         name: form.name,
         url: form.url,
         secret: form.secret,
-        inboundId: parseInt(form.inboundId, 10),
+        type: form.type,
+        // naive-ноды не имеют инбаунда; поле формы пустое, parseInt дал бы NaN.
+        inboundId: form.type === "naive" ? 0 : parseInt(form.inboundId, 10),
       }),
     });
     await loadNodes();
@@ -546,7 +548,8 @@ export default function App() {
     const body: Record<string, unknown> = {
       name: form.name,
       url: form.url,
-      inboundId: parseInt(form.inboundId, 10),
+      type: form.type,
+      inboundId: form.type === "naive" ? 0 : parseInt(form.inboundId, 10),
     };
     if (form.secret) body.secret = form.secret;
     await api<{ nodes: NodeRecord[] }>(`/nodes/${id}`, { method: "PATCH", body: JSON.stringify(body) });

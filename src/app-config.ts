@@ -15,14 +15,18 @@ export const fullDumpUserSchema = z.object({
   userUuid: z.uuid(),
   subscriptionToken: z.string().min(1),
   createdAt: z.number().int().nonnegative(),
+  // Named-placeholder credentials ({user}, {pass}, ...). Absent in legacy dumps.
+  credentials: z.record(z.string(), z.string()).optional(),
 });
 
 export const fullDumpNodeSchema = z.object({
   name: z.string().min(1),
   url: z.string().url(),
   secret: z.string().min(1),
-  inboundId: z.number().int().positive(),
+  // nonnegative, not positive: naive nodes have no inbound and store 0.
+  inboundId: z.number().int().nonnegative(),
   createdAt: z.number().int().nonnegative(),
+  type: z.enum(["xui", "naive"]).optional(),
 });
 
 export const fullDumpServerSchema = z.object({
