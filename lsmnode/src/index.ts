@@ -44,6 +44,7 @@ function createBackend(): NodeBackend {
     return new CaddyBackend({
       usersFile: requireEnv("CADDY_USERS_FILE"),
       container: process.env.CADDY_CONTAINER ?? "naive",
+      probeUrl: process.env.CADDY_PROBE_URL,
     });
   }
   return new XuiBackend(

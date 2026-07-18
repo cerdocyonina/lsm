@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -140,5 +140,39 @@ describe("CaddyBackend", () => {
       probe: async () => { throw new Error("ECONNREFUSED"); },
     });
     expect(await backend.health()).toEqual({ ok: false, error: "ECONNREFUSED" });
+  });
+
+  test("health: дефолтный пробер без probeUrl бьёт по https://127.0.0.1/", async () => {
+    const calls: string[] = [];
+    const spy = spyOn(globalThis, "fetch").mockImplementation((async (input: unknown) => {
+      calls.push(String(input));
+      return new Response(null, { status: 200 });
+    }) as typeof fetch);
+    try {
+      const backend = new CaddyBackend({ usersFile: await tmpUsersFile(), container: "naive" });
+      expect(await backend.health()).toEqual({ ok: true });
+      expect(calls).toEqual(["https://127.0.0.1/"]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("health: probeUrl задаёт цель пробы (SNI-совместимость с probe_resistance)", async () => {
+    const calls: string[] = [];
+    const spy = spyOn(globalThis, "fetch").mockImplementation((async (input: unknown) => {
+      calls.push(String(input));
+      return new Response(null, { status: 200 });
+    }) as typeof fetch);
+    try {
+      const backend = new CaddyBackend({
+        usersFile: await tmpUsersFile(),
+        container: "naive",
+        probeUrl: "https://api.example/",
+      });
+      expect(await backend.health()).toEqual({ ok: true });
+      expect(calls).toEqual(["https://api.example/"]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

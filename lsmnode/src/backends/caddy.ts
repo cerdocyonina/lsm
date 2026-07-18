@@ -45,8 +45,10 @@ async function dockerReload(container: string): Promise<void> {
   }
 }
 
-async function httpsProbe(): Promise<{ status: number }> {
-  const response = await fetch("https://127.0.0.1/", {
+const DEFAULT_PROBE_URL = "https://127.0.0.1/";
+
+async function httpsProbe(url: string): Promise<{ status: number }> {
+  const response = await fetch(url, {
     signal: AbortSignal.timeout(3000),
     redirect: "manual",
     tls: { rejectUnauthorized: false },
@@ -57,9 +59,17 @@ async function httpsProbe(): Promise<{ status: number }> {
 export type CaddyDeps = {
   usersFile: string;
   container: string;
+  /**
+   * URL для health-проверки фасада. По умолчанию https://127.0.0.1/. Но если у Caddy
+   * включён probe_resistance, он рвёт TLS-хендшейк без правильного SNI (это его задача —
+   * прятаться от активного зондирования), и проба по голому IP не проходит. Тогда укажи
+   * хостнейм (https://<домен>/), а сам домен пропиши на loopback в /etc/hosts —
+   * получишь и правильный SNI, и чистый loopback без выхода в интернет.
+   */
+  probeUrl?: string;
   /** Инъекция для тестов; по умолчанию docker exec caddy reload. */
   reload?: (container: string) => Promise<void>;
-  /** Инъекция для тестов; по умолчанию HTTPS-GET на локальный фасад. */
+  /** Инъекция для тестов; по умолчанию HTTPS-GET на probeUrl. */
   probe?: () => Promise<{ status: number }>;
 };
 
@@ -74,7 +84,8 @@ export class CaddyBackend implements NodeBackend {
   public constructor(private readonly deps: CaddyDeps) {}
 
   public async health(): Promise<HealthStatus> {
-    const probe = this.deps.probe ?? httpsProbe;
+    const probeUrl = this.deps.probeUrl ?? DEFAULT_PROBE_URL;
+    const probe = this.deps.probe ?? (() => httpsProbe(probeUrl));
     try {
       const { status } = await probe();
       if (status === 200) return { ok: true };
