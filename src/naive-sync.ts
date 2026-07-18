@@ -3,15 +3,33 @@ import type { NodeRecord, Storage, UserRecord } from "./storage";
 
 export type NaiveUser = { user: string; pass: string };
 
+// Caddy basic_auth принимает только этот charset (зеркалит USER_RE/PASS_RE в CaddyBackend).
+// pass всегда base64url и безопасен; user = clientName и может им НЕ быть. Декларативный
+// пуш всего списка означает, что один плохой логин иначе отверг бы синк всей ноды — поэтому
+// пропускаем нарушителя (валидного naive-логина у него всё равно быть не может) и репортим.
+const NAIVE_CRED_RE = /^[A-Za-z0-9._-]+$/;
+
 /**
  * Собирает полный список naive-кредов, генерируя недостающие.
  * Те же креды потом отдаст рендер подписки — источник истины один (мешок в БД).
  */
-export function buildNaiveUsers(storage: Storage, users: UserRecord[]): NaiveUser[] {
-  return users.map((user) => {
+export function buildNaiveUsers(
+  storage: Storage,
+  users: UserRecord[],
+): { users: NaiveUser[]; skipped: string[] } {
+  const valid: NaiveUser[] = [];
+  const skipped: string[] = [];
+  for (const user of users) {
     const credentials = ensureUserCredentials(storage, user, ["user", "pass"]);
-    return { user: credentials.user!, pass: credentials.pass! };
-  });
+    const naiveUser = credentials.user!;
+    const naivePass = credentials.pass!;
+    if (NAIVE_CRED_RE.test(naiveUser) && NAIVE_CRED_RE.test(naivePass)) {
+      valid.push({ user: naiveUser, pass: naivePass });
+    } else {
+      skipped.push(user.clientName);
+    }
+  }
+  return { users: valid, skipped };
 }
 
 /**

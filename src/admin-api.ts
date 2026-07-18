@@ -258,16 +258,17 @@ async function syncUserToNodes(
         if (!naiveContext) {
           return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "naive node requires profile context" };
         }
-        const users = buildNaiveUsers(
+        const { users, skipped } = buildNaiveUsers(
           naiveContext.storage,
           naiveContext.storage.listUsers(naiveContext.profileName, naiveContext.ownerId),
         );
         const res = await syncNaiveNode(node, users);
+        const skipMsg = skipped.length ? `skipped invalid names: ${skipped.join(", ")}` : undefined;
         return {
           nodeId: node.id,
           nodeName: node.name,
           result: res.error ? "failed" : "added",
-          msg: res.error,
+          msg: [res.error, skipMsg].filter(Boolean).join("; ") || undefined,
         };
       }
 
@@ -304,16 +305,17 @@ async function deleteUserFromNodes(
         if (!naiveContext) {
           return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "naive node requires profile context" };
         }
-        const users = buildNaiveUsers(
+        const { users, skipped } = buildNaiveUsers(
           naiveContext.storage,
           naiveContext.storage.listUsers(naiveContext.profileName, naiveContext.ownerId),
         );
         const res = await syncNaiveNode(node, users);
+        const skipMsg = skipped.length ? `skipped invalid names: ${skipped.join(", ")}` : undefined;
         return {
           nodeId: node.id,
           nodeName: node.name,
           result: res.error ? "failed" : "deleted",
-          msg: res.error,
+          msg: [res.error, skipMsg].filter(Boolean).join("; ") || undefined,
         };
       }
 
@@ -975,14 +977,17 @@ export async function handleAdminApiRequest(
     // Naive nodes take the whole list in one declarative push — per-user
     // conflict strategies don't apply, so skip that machinery entirely.
     if (node.type === "naive") {
-      const naiveUsers = buildNaiveUsers(storage, storage.listUsers(profileId, adminUserId));
+      const { users: naiveUsers, skipped } = buildNaiveUsers(storage, storage.listUsers(profileId, adminUserId));
       const res = await syncNaiveNode(node, naiveUsers);
       if (res.error) return adminErrorResponse(502, res.error);
       return noStoreResponse(
         jsonResponse({
           synced: res.synced,
-          failed: 0,
-          results: naiveUsers.map((u) => ({ clientName: u.user, result: "added" })),
+          failed: skipped.length,
+          results: [
+            ...naiveUsers.map((u) => ({ clientName: u.user, result: "added" })),
+            ...skipped.map((clientName) => ({ clientName, result: "skipped" })),
+          ],
         }),
       );
     }
