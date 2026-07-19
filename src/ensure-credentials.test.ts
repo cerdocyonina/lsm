@@ -29,6 +29,12 @@ describe("ensureUserCredentials", () => {
     expect(second.pass).toBe(first.pass);
   });
 
+  test("sskey — стандартный base64 на 16 байт (24 символа с паддингом) для ss-2022", () => {
+    const creds = ensureUserCredentials(storage, alice(), ["sskey"]);
+    expect(creds.sskey).toMatch(/^[A-Za-z0-9+/]{22}==$/);
+    expect(Buffer.from(creds.sskey!, "base64")).toHaveLength(16);
+  });
+
   test("uuid не попадает в мешок — он живёт в user_uuid", () => {
     const creds = ensureUserCredentials(storage, alice(), ["uuid"]);
     expect(creds).toEqual({});

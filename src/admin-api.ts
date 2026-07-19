@@ -7,7 +7,7 @@ import {
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
 import { parseDumpOrThrow } from "./app-config";
-import { buildNaiveUsersForNode, syncNaiveNode } from "./naive-sync";
+import { buildNaiveUsersForNode, buildShadowsocksUsersForNode, syncNaiveNode } from "./naive-sync";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import { buildMultiProfileDump, buildProfileDump } from "./storage";
 import type { NodeRecord, ProfileRecord, Storage } from "./storage";
@@ -74,8 +74,8 @@ export const createNodeSchema = z
     name: z.string().min(1),
     url: z.string().url(),
     secret: z.string().min(1),
-    type: z.enum(["xui", "naive"]).default("xui"),
-    // nonnegative, not positive: naive nodes have no inbound and store 0.
+    type: z.enum(["xui", "naive", "shadowsocks"]).default("xui"),
+    // nonnegative, not positive: naive/shadowsocks nodes have no inbound and store 0.
     inboundId: z.number().int().nonnegative().default(0),
   })
   .refine((input) => input.type !== "xui" || input.inboundId >= 1, {
@@ -88,7 +88,7 @@ export const updateNodeSchema = z
     name: z.string().min(1).optional(),
     url: z.string().url().optional(),
     secret: z.string().min(1).optional(),
-    type: z.enum(["xui", "naive"]).optional(),
+    type: z.enum(["xui", "naive", "shadowsocks"]).optional(),
     inboundId: z.number().int().nonnegative().optional(),
   })
   .refine(
@@ -243,6 +243,22 @@ function mapNodes(storage: Storage, ownerId: number) {
   }));
 }
 
+/** Ноды-«декларативы» (весь список пушится разом): naive и shadowsocks. */
+function isDeclarativeNode(node: NodeRecord): boolean {
+  return node.type === "naive" || node.type === "shadowsocks";
+}
+
+/** Целевой список юзеров для декларативной ноды — по её типу выбираем нужный кред. */
+function buildDeclarativeUsers(
+  storage: Storage,
+  node: NodeRecord,
+  ownerId: number,
+): { users: { user: string; pass: string }[]; skipped: string[] } {
+  return node.type === "shadowsocks"
+    ? buildShadowsocksUsersForNode(storage, node.id, ownerId)
+    : buildNaiveUsersForNode(storage, node.id, ownerId);
+}
+
 async function syncUserToNodes(
   nodes: NodeRecord[],
   email: string,
@@ -252,19 +268,15 @@ async function syncUserToNodes(
 ) {
   return Promise.allSettled(
     nodes.map(async (node) => {
-      // Caddy is declarative: there is no per-user add. Push the whole desired
-      // list and let the node re-render its config.
-      if (node.type === "naive") {
+      // naive/shadowsocks are declarative: there is no per-user add. Push the whole
+      // desired list and let the node re-render its config.
+      if (isDeclarativeNode(node)) {
         if (!naiveContext) {
-          return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "naive node requires profile context" };
+          return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "declarative node requires profile context" };
         }
-        // Union across every profile bound to this node — naive replaces the whole
-        // file, so pushing one profile's list would clobber the others.
-        const { users, skipped } = buildNaiveUsersForNode(
-          naiveContext.storage,
-          node.id,
-          naiveContext.ownerId,
-        );
+        // Union across every profile bound to this node — the node replaces its whole
+        // config, so pushing one profile's list would clobber the others.
+        const { users, skipped } = buildDeclarativeUsers(naiveContext.storage, node, naiveContext.ownerId);
         const res = await syncNaiveNode(node, users);
         const skipMsg = skipped.length ? `skipped invalid names: ${skipped.join(", ")}` : undefined;
         return {
@@ -304,17 +316,13 @@ async function deleteUserFromNodes(
     nodes.map(async (node) => {
       // The user row is already gone from storage by now, so re-pushing the
       // current list is exactly "delete" for a declarative backend.
-      if (node.type === "naive") {
+      if (isDeclarativeNode(node)) {
         if (!naiveContext) {
-          return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "naive node requires profile context" };
+          return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "declarative node requires profile context" };
         }
-        // Union across every profile bound to this node — naive replaces the whole
-        // file, so pushing one profile's list would clobber the others.
-        const { users, skipped } = buildNaiveUsersForNode(
-          naiveContext.storage,
-          node.id,
-          naiveContext.ownerId,
-        );
+        // Union across every profile bound to this node — the node replaces its whole
+        // config, so pushing one profile's list would clobber the others.
+        const { users, skipped } = buildDeclarativeUsers(naiveContext.storage, node, naiveContext.ownerId);
         const res = await syncNaiveNode(node, users);
         const skipMsg = skipped.length ? `skipped invalid names: ${skipped.join(", ")}` : undefined;
         return {
@@ -637,9 +645,10 @@ export async function handleAdminApiRequest(
           date?: string;
           xui?: { ok: boolean; error?: string };
           caddy?: { ok: boolean; error?: string };
+          shadowsocks?: { ok: boolean; error?: string };
         };
         return noStoreResponse(
-          jsonResponse({ ok: data.ok === true, version: data.version, commit: data.commit, date: data.date, xui: data.xui, caddy: data.caddy }),
+          jsonResponse({ ok: data.ok === true, version: data.version, commit: data.commit, date: data.date, xui: data.xui, caddy: data.caddy, shadowsocks: data.shadowsocks }),
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -980,18 +989,18 @@ export async function handleAdminApiRequest(
     const node = storage.getNode(serverRecord.nodeId, adminUserId);
     if (!node) return adminErrorResponse(404, `Node not found`);
 
-    // Naive nodes take the whole list in one declarative push — per-user
+    // Naive/shadowsocks nodes take the whole list in one declarative push — per-user
     // conflict strategies don't apply, so skip that machinery entirely.
-    if (node.type === "naive") {
-      const { users: naiveUsers, skipped } = buildNaiveUsersForNode(storage, node.id, adminUserId);
-      const res = await syncNaiveNode(node, naiveUsers);
+    if (isDeclarativeNode(node)) {
+      const { users: declUsers, skipped } = buildDeclarativeUsers(storage, node, adminUserId);
+      const res = await syncNaiveNode(node, declUsers);
       if (res.error) return adminErrorResponse(502, res.error);
       return noStoreResponse(
         jsonResponse({
           synced: res.synced,
           failed: skipped.length,
           results: [
-            ...naiveUsers.map((u) => ({ clientName: u.user, result: "added" })),
+            ...declUsers.map((u) => ({ clientName: u.user, result: "added" })),
             ...skipped.map((clientName) => ({ clientName, result: "skipped" })),
           ],
         }),

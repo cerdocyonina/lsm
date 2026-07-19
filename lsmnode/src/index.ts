@@ -1,8 +1,6 @@
-import { XUIService } from "../../src/3x-ui";
 import { version as PKG_VERSION } from "../../package.json";
-import { CaddyBackend } from "./backends/caddy";
 import type { NaiveUser, NodeBackend, OnConflict, SyncResult } from "./backends/types";
-import { XuiBackend } from "./backends/xui";
+import { buildBackends } from "./config";
 import { buildHealthPayload, type VersionInfo } from "./health-payload";
 
 const REPO_DIR = new URL("../..", import.meta.url).pathname;
@@ -26,45 +24,30 @@ const version = getVersionInfo();
 
 const PORT = parseInt(process.env.PORT ?? "9000", 10);
 const SHARED_SECRET = process.env.SHARED_SECRET;
-const PROVIDER = (process.env.PROVIDER ?? "xui") as "xui" | "naive";
 
 if (!SHARED_SECRET) throw new Error("SHARED_SECRET is required");
-if (PROVIDER !== "xui" && PROVIDER !== "naive") {
-  throw new Error(`PROVIDER must be "xui" or "naive", got "${PROVIDER}"`);
-}
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required when PROVIDER=${PROVIDER}`);
-  return value;
-}
+// Один агент — несколько бэкендов. Мастер адресует бэкенд первым сегментом пути
+// (/<name>/sync-users); unprefixed-роуты идут в default (обратная совместимость с
+// существующими нодами, которые ходят на голый /sync-users).
+const { backends, defaultName } = buildBackends(process.env);
 
-function createBackend(): NodeBackend {
-  if (PROVIDER === "naive") {
-    return new CaddyBackend({
-      usersFile: requireEnv("CADDY_USERS_FILE"),
-      container: process.env.CADDY_CONTAINER ?? "naive",
-      probeUrl: process.env.CADDY_PROBE_URL,
-    });
+/** По pathname выбираем бэкенд и «действие» без его префикса. */
+function resolveBackend(pathname: string): { backend: NodeBackend; action: string } {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length > 0 && backends.has(segments[0]!)) {
+    return { backend: backends.get(segments[0]!)!, action: `/${segments.slice(1).join("/")}` };
   }
-  return new XuiBackend(
-    new XUIService({
-      host: requireEnv("XUI_HOST"),
-      user: requireEnv("XUI_USER"),
-      password: requireEnv("XUI_PASSWORD"),
-    }),
-  );
+  return { backend: backends.get(defaultName)!, action: pathname };
 }
-
-const backend = createBackend();
 
 function unauthorized(): Response {
   return Response.json({ error: "Unauthorized" }, { status: 401 });
 }
 
-function unsupported(endpoint: string): Response {
+function unsupported(endpoint: string, backend: NodeBackend): Response {
   return Response.json(
-    { error: `${endpoint} is not supported by provider=${PROVIDER}` },
+    { error: `${endpoint} is not supported by backend kind=${backend.kind}` },
     { status: 400 },
   );
 }
@@ -107,15 +90,16 @@ const server = Bun.serve({
     if (!checkAuth(req)) return unauthorized();
 
     const url = new URL(req.url);
+    const { backend, action } = resolveBackend(url.pathname);
 
-    if (url.pathname === "/health" && req.method === "GET") {
+    if (action === "/health" && req.method === "GET") {
       const status = await backend.health(3000);
       return Response.json(buildHealthPayload(backend.kind, status, version));
     }
 
-    // --- naive: declarative full-list sync -----------------------------------
-    if (url.pathname === "/sync-users" && req.method === "POST") {
-      if (!backend.syncUsers) return unsupported("/sync-users");
+    // --- naive / shadowsocks: declarative full-list sync ---------------------
+    if (action === "/sync-users" && req.method === "POST") {
+      if (!backend.syncUsers) return unsupported("/sync-users", backend);
 
       const body = await readJsonObject(req);
       if (body instanceof Response) return body;
@@ -138,8 +122,8 @@ const server = Bun.serve({
     }
 
     // --- xui: per-user sync ---------------------------------------------------
-    if (url.pathname === "/sync-user" && req.method === "POST") {
-      if (!backend.syncUser) return unsupported("/sync-user");
+    if (action === "/sync-user" && req.method === "POST") {
+      if (!backend.syncUser) return unsupported("/sync-user", backend);
 
       const body = await readJsonObject(req);
       if (body instanceof Response) return body;
@@ -174,8 +158,8 @@ const server = Bun.serve({
       }
     }
 
-    if (url.pathname === "/check-conflicts" && req.method === "POST") {
-      if (!backend.checkConflicts) return unsupported("/check-conflicts");
+    if (action === "/check-conflicts" && req.method === "POST") {
+      if (!backend.checkConflicts) return unsupported("/check-conflicts", backend);
 
       const body = await readJsonObject(req);
       if (body instanceof Response) return body;
@@ -195,8 +179,8 @@ const server = Bun.serve({
       }
     }
 
-    if (url.pathname === "/delete-user" && req.method === "POST") {
-      if (!backend.deleteUser) return unsupported("/delete-user");
+    if (action === "/delete-user" && req.method === "POST") {
+      if (!backend.deleteUser) return unsupported("/delete-user", backend);
 
       const body = await readJsonObject(req);
       if (body instanceof Response) return body;
@@ -220,4 +204,5 @@ const server = Bun.serve({
   },
 });
 
-console.log(`lsm-node (provider=${PROVIDER}) listening on ${server.hostname}:${server.port}`);
+const mounted = [...backends.entries()].map(([name, b]) => `${name}=${b.kind}`).join(", ");
+console.log(`lsm-node listening on ${server.hostname}:${server.port} — backends: ${mounted} (default=${defaultName})`);

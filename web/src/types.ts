@@ -32,7 +32,7 @@ export type ServerRecord = {
   nodeId: number | null;
 };
 
-export type NodeType = "xui" | "naive";
+export type NodeType = "xui" | "naive" | "shadowsocks";
 
 export type NodeRecord = {
   id: number;
@@ -51,6 +51,7 @@ export type NodeTestResult = {
   error?: string;
   xui?: { ok: boolean; error?: string };
   caddy?: { ok: boolean; error?: string };
+  shadowsocks?: { ok: boolean; error?: string };
 };
 
 export type UserFormState = {

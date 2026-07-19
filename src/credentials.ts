@@ -6,12 +6,23 @@ function randomSecret(): string {
 }
 
 /**
+ * Personal-PSK для Shadowsocks-2022 ({sskey}). Ключ обязан быть СТАНДАРТНЫМ base64
+ * (Xray декодит его StdEncoding — base64url с '-'/'_' и без паддинга не пройдёт), а длина —
+ * совпадать с методом: 2022-blake3-aes-128-gcm требует 16 байт → 24 символа с "==" на конце.
+ */
+function randomShadowsocksKey(): string {
+  return randomBytes(16).toString("base64");
+}
+
+/**
  * Значение для кредa по имени плейсхолдера.
  * "user" — это логин, его делаем читаемым (как email-клиента в 3x-ui);
- * всё остальное — случайный секрет.
+ * "sskey" — ss-2022 PSK в стандартном base64;
+ * всё остальное — случайный секрет в base64url.
  */
 export function generateCredential(key: string, clientName: string): string {
   if (key === "user") return clientName;
+  if (key === "sskey") return randomShadowsocksKey();
   return randomSecret();
 }
 

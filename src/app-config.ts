@@ -23,10 +23,10 @@ export const fullDumpNodeSchema = z.object({
   name: z.string().min(1),
   url: z.string().url(),
   secret: z.string().min(1),
-  // nonnegative, not positive: naive nodes have no inbound and store 0.
+  // nonnegative, not positive: naive/shadowsocks nodes have no inbound and store 0.
   inboundId: z.number().int().nonnegative(),
   createdAt: z.number().int().nonnegative(),
-  type: z.enum(["xui", "naive"]).optional(),
+  type: z.enum(["xui", "naive", "shadowsocks"]).optional(),
 });
 
 export const fullDumpServerSchema = z.object({

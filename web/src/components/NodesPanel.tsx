@@ -37,8 +37,11 @@ function FieldHint({ id, text }: { id: string; text: string }) {
   );
 }
 
-/** Под-статус провайдера приходит в поле xui (3x-ui-ноды) или caddy (naive-ноды). */
+/** Под-статус провайдера: xui (3x-ui), caddy (naive) или shadowsocks (ss-2022). */
 function providerStatus(node: NodeRecord, result: NodeTestResult) {
+  if (node.type === "shadowsocks") {
+    return result.shadowsocks ? { status: result.shadowsocks, label: "Shadowsocks" } : null;
+  }
   const status = node.type === "naive" ? result.caddy : result.xui;
   return status ? { status, label: node.type === "naive" ? "Caddy" : "3x-ui" } : null;
 }
@@ -149,7 +152,7 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                   Type
                   <FieldHint
                     id="hint-node-type"
-                    text="Чем управляет агент на узле: панелью 3x-ui (VLESS) или Caddy с NaiveProxy."
+                    text="Чем управляет агент на узле: панелью 3x-ui (VLESS), Caddy с NaiveProxy или Xray с Shadowsocks-2022."
                   />
                 </Form.Label>
                 <Form.Select
@@ -158,6 +161,7 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                 >
                   <option value="xui">3x-ui (VLESS)</option>
                   <option value="naive">NaïveProxy (Caddy)</option>
+                  <option value="shadowsocks">Shadowsocks-2022 (Xray)</option>
                 </Form.Select>
               </Form.Group>
             </div>
@@ -244,6 +248,8 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                           <span className="fw-semibold">{node.name}</span>
                           {node.type === "naive" ? (
                             <Badge bg="secondary" className="font-monospace fw-normal">naive</Badge>
+                          ) : node.type === "shadowsocks" ? (
+                            <Badge bg="secondary" className="font-monospace fw-normal">ss-2022</Badge>
                           ) : (
                             <Badge bg="secondary" className="font-monospace fw-normal">
                               inbound #{node.inboundId}

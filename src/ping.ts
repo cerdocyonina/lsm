@@ -67,9 +67,10 @@ export type NaiveParams = {
   port: number;
 };
 
-export function templateKind(template: string): "vless" | "naive" | "unknown" {
+export function templateKind(template: string): "vless" | "naive" | "shadowsocks" | "unknown" {
   if (template.startsWith("vless://")) return "vless";
   if (template.startsWith("naive+https://")) return "naive";
+  if (template.startsWith("ss://")) return "shadowsocks";
   return "unknown";
 }
 
@@ -85,6 +86,23 @@ export function parseNaiveParams(template: string): NaiveParams | null {
   }
 }
 
+/**
+ * host/port из ss://-шаблона. Userinfo (method:iPSK:{sskey} или base64url) может содержать ':'
+ * и '/', поэтому не полагаемся на URL-парсер: берём то, что после последнего '@', до '#'.
+ */
+export function parseShadowsocksParams(template: string): NaiveParams | null {
+  const rest = template.slice("ss://".length);
+  const at = rest.lastIndexOf("@");
+  if (at === -1) return null;
+  const hostPort = rest.slice(at + 1).split("#")[0]!;
+  const colon = hostPort.lastIndexOf(":");
+  if (colon === -1) return null;
+  const host = hostPort.slice(0, colon);
+  const port = parseInt(hostPort.slice(colon + 1), 10);
+  if (!host || Number.isNaN(port)) return null;
+  return { host, port };
+}
+
 /** host/port шаблона независимо от провайдера — для ICMP-пинга. */
 export function parseTemplateEndpoint(template: string): NaiveParams | null {
   switch (templateKind(template)) {
@@ -94,6 +112,8 @@ export function parseTemplateEndpoint(template: string): NaiveParams | null {
     }
     case "naive":
       return parseNaiveParams(template);
+    case "shadowsocks":
+      return parseShadowsocksParams(template);
     default:
       return null;
   }

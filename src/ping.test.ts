@@ -1,10 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { parseNaiveParams, parseTemplateEndpoint, parseVlessParams, templateKind } from "./ping";
+import { parseNaiveParams, parseShadowsocksParams, parseTemplateEndpoint, parseVlessParams, templateKind } from "./ping";
 
 describe("templateKind", () => {
   test("vless", () => expect(templateKind("vless://u@h:443#n")).toBe("vless"));
   test("naive", () => expect(templateKind("naive+https://u:p@h:443#n")).toBe("naive"));
-  test("прочее", () => expect(templateKind("ss://x@h:443#n")).toBe("unknown"));
+  test("shadowsocks", () => expect(templateKind("ss://x@h:443#n")).toBe("shadowsocks"));
+  test("прочее", () => expect(templateKind("trojan://x@h:443#n")).toBe("unknown"));
+});
+
+describe("parseShadowsocksParams", () => {
+  test("берёт host:port после последнего @, userinfo с ':' не мешает", () => {
+    expect(parseShadowsocksParams("ss://2022-blake3-aes-128-gcm:IPSK==:PSK==@1.2.3.4:9444#SS")).toEqual({
+      host: "1.2.3.4",
+      port: 9444,
+    });
+  });
+
+  test("работает и с уже-закодированным (base64url) userinfo", () => {
+    expect(parseShadowsocksParams("ss://YWJjZA@api.gregg.li:9444#SS")).toEqual({ host: "api.gregg.li", port: 9444 });
+  });
 });
 
 describe("parseNaiveParams", () => {
@@ -40,8 +54,15 @@ describe("parseTemplateEndpoint", () => {
     expect(parseTemplateEndpoint("naive+https://u:p@h.example:443#n")).toEqual({ host: "h.example", port: 443 });
   });
 
+  test("работает для shadowsocks", () => {
+    expect(parseTemplateEndpoint("ss://2022-blake3-aes-128-gcm:IPSK==:PSK==@h.example:9444#n")).toEqual({
+      host: "h.example",
+      port: 9444,
+    });
+  });
+
   test("неизвестный тип — null", () => {
-    expect(parseTemplateEndpoint("ss://x@h:443#n")).toBeNull();
+    expect(parseTemplateEndpoint("trojan://x@h:443#n")).toBeNull();
   });
 });
 

@@ -11,19 +11,25 @@ export type NaiveUser = { user: string; pass: string };
 const NAIVE_CRED_RE = /^[A-Za-z0-9._-]+$/;
 
 /**
- * Полный naive-список для ноды — ОБЪЕДИНЕНИЕ юзеров ВСЕХ профилей, чей сервер привязан
- * к этой ноде. Naive-синк декларативный (нода заменяет весь файл целиком), поэтому список
- * одного профиля затёр бы остальные — надо слать всех, кто попадает на ноду через любой
- * профиль. Логин namespace-нут профилем ({user} = <profile>.<clientName>), так что
- * одинаковый clientName в разных профилях (это разные люди) не конфликтует по username.
+ * Полный декларативный список юзеров для ноды — ОБЪЕДИНЕНИЕ юзеров ВСЕХ профилей, чей сервер
+ * привязан к этой ноде. Синк декларативный (нода заменяет весь конфиг целиком), поэтому список
+ * одного профиля затёр бы остальные — надо слать всех, кто попадает на ноду через любой профиль.
+ * Логин (метка) namespace-нут профилем (<profile>.<clientName>), так что одинаковый clientName
+ * в разных профилях (это разные люди) не конфликтует.
  *
- * Те же креды (пароль) отдаёт и рендер подписки — источник истины один (мешок в БД),
- * а логин обе стороны считают одинаково через naiveLogin().
+ * Секрет берётся из мешка кредов под ключом credKey ("pass" для naive, "sskey" для ss-2022) —
+ * ровно тот же, что отдаст рендер подписки (источник истины один — БД).
+ *
+ * validSecret решает, годится ли секрет для целевого конфига: у Caddy basic_auth строгий
+ * charset, у ss-2022 PSK — стандартный base64 (валиден по построению), поэтому проверка
+ * разная. Метку валидируем всегда (её видит и Caddyfile, и email в Xray).
  */
-export function buildNaiveUsersForNode(
+function buildDeclarativeUsersForNode(
   storage: Storage,
   nodeId: number,
   ownerId: number,
+  credKey: string,
+  validSecret: (secret: string) => boolean,
 ): { users: NaiveUser[]; skipped: string[] } {
   const valid: NaiveUser[] = [];
   const skipped: string[] = [];
@@ -35,15 +41,34 @@ export function buildNaiveUsersForNode(
 
     for (const user of storage.listUsers(profile.name, ownerId)) {
       const login = naiveLogin(profile.name, user.clientName);
-      const pass = ensureUserCredentials(storage, user, ["pass"]).pass!;
-      if (NAIVE_CRED_RE.test(login) && NAIVE_CRED_RE.test(pass)) {
-        valid.push({ user: login, pass });
+      const secret = ensureUserCredentials(storage, user, [credKey])[credKey]!;
+      if (NAIVE_CRED_RE.test(login) && validSecret(secret)) {
+        valid.push({ user: login, pass: secret });
       } else {
         skipped.push(`${profile.name}/${user.clientName}`);
       }
     }
   }
   return { users: valid, skipped };
+}
+
+/** Naive-список (login <profile>.<clientName> + base64url-пароль, всё в строгом charset). */
+export function buildNaiveUsersForNode(
+  storage: Storage,
+  nodeId: number,
+  ownerId: number,
+): { users: NaiveUser[]; skipped: string[] } {
+  return buildDeclarativeUsersForNode(storage, nodeId, ownerId, "pass", (s) => NAIVE_CRED_RE.test(s));
+}
+
+/** Shadowsocks-2022 список (метка-email + personal-PSK в стандартном base64). */
+export function buildShadowsocksUsersForNode(
+  storage: Storage,
+  nodeId: number,
+  ownerId: number,
+): { users: NaiveUser[]; skipped: string[] } {
+  // sskey генерится нами как стандартный base64 → валиден по построению; проверять не нужно.
+  return buildDeclarativeUsersForNode(storage, nodeId, ownerId, "sskey", () => true);
 }
 
 /**

@@ -42,6 +42,23 @@ describe("subscription render", () => {
     expect(renderSubscription(storage, "tok")).toEqual(renderSubscription(storage, "tok"));
   });
 
+  test("ss-2022 шаблон рендерится в SIP002: ss://base64url(method:iPSK:userPSK)@host#tag", () => {
+    storage.addServer("main", "s1", "ss://2022-blake3-aes-128-gcm:IPSK==:{sskey}@1.2.3.4:9444#SS", 1000, owner);
+    const [link] = renderSubscription(storage, "tok");
+    const [, b64, tail] = link!.match(/^ss:\/\/([^@]+)@(.+)$/)!;
+    expect(tail).toBe("1.2.3.4:9444#SS");
+    const decoded = Buffer.from(b64!, "base64url").toString("utf8");
+    expect(decoded).toMatch(/^2022-blake3-aes-128-gcm:IPSK==:[A-Za-z0-9+/]{22}==$/);
+  });
+
+  test("ss-пароль подписки совпадает с тем, что уйдёт на ноду (общий sskey)", () => {
+    storage.addServer("main", "s1", "ss://2022-blake3-aes-128-gcm:IPSK==:{sskey}@h:9444#SS", 1000, owner);
+    const [link] = renderSubscription(storage, "tok");
+    const decoded = Buffer.from(link!.slice(5).split("@")[0]!, "base64url").toString("utf8");
+    const userPsk = decoded.split(":")[2];
+    expect(storage.listUsers("main", owner)[0]!.credentials.sskey).toBe(userPsk);
+  });
+
   test("порядок ссылок следует sort_order", () => {
     storage.addServer("main", "a", "vless://DUMMY@a#a", 1000, owner);
     storage.addServer("main", "b", "vless://DUMMY@b#b", 1001, owner);
