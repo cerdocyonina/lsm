@@ -55,7 +55,7 @@ describe("resolvedIdentityFor", () => {
       createdAt: 0,
     };
     expect(resolvedIdentityFor(user, user.credentials)).toEqual({
-      user: "alice",
+      user: "main.alice", // {user} = <profile>.<clientName>, namespace-нут профилем
       pass: "p1",
       uuid: "uuid-alice",
     });

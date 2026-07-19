@@ -22,3 +22,17 @@ export function generateCredential(key: string, clientName: string): string {
 export function missingCredentialKeys(required: string[], have: Record<string, string>): string[] {
   return required.filter((key) => key !== "uuid" && !have[key]);
 }
+
+/**
+ * Логин для naive-подстановки ({user}). Одна naive-нода может обслуживать несколько
+ * профилей, а у HTTP basic_auth на username ровно один пароль — поэтому одинаковый
+ * clientName в разных профилях (это РАЗНЫЕ люди с разными кредами) обязан получить
+ * РАЗНЫЕ логины. Префиксуем именем профиля.
+ *
+ * Склейка через "." инъективна: имя профиля ограничено [a-z0-9_-] (без точки, см.
+ * createProfileSchema), поэтому пара (профиль, clientName) однозначно кодируется в
+ * "<profile>.<clientName>" — разные пары не дают одинаковую строку.
+ */
+export function naiveLogin(profileName: string, clientName: string): string {
+  return `${profileName}.${clientName}`;
+}

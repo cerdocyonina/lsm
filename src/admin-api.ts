@@ -7,7 +7,7 @@ import {
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
 import { parseDumpOrThrow } from "./app-config";
-import { buildNaiveUsers, syncNaiveNode } from "./naive-sync";
+import { buildNaiveUsersForNode, syncNaiveNode } from "./naive-sync";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import { buildMultiProfileDump, buildProfileDump } from "./storage";
 import type { NodeRecord, ProfileRecord, Storage } from "./storage";
@@ -258,9 +258,12 @@ async function syncUserToNodes(
         if (!naiveContext) {
           return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "naive node requires profile context" };
         }
-        const { users, skipped } = buildNaiveUsers(
+        // Union across every profile bound to this node — naive replaces the whole
+        // file, so pushing one profile's list would clobber the others.
+        const { users, skipped } = buildNaiveUsersForNode(
           naiveContext.storage,
-          naiveContext.storage.listUsers(naiveContext.profileName, naiveContext.ownerId),
+          node.id,
+          naiveContext.ownerId,
         );
         const res = await syncNaiveNode(node, users);
         const skipMsg = skipped.length ? `skipped invalid names: ${skipped.join(", ")}` : undefined;
@@ -305,9 +308,12 @@ async function deleteUserFromNodes(
         if (!naiveContext) {
           return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "naive node requires profile context" };
         }
-        const { users, skipped } = buildNaiveUsers(
+        // Union across every profile bound to this node — naive replaces the whole
+        // file, so pushing one profile's list would clobber the others.
+        const { users, skipped } = buildNaiveUsersForNode(
           naiveContext.storage,
-          naiveContext.storage.listUsers(naiveContext.profileName, naiveContext.ownerId),
+          node.id,
+          naiveContext.ownerId,
         );
         const res = await syncNaiveNode(node, users);
         const skipMsg = skipped.length ? `skipped invalid names: ${skipped.join(", ")}` : undefined;
@@ -977,7 +983,7 @@ export async function handleAdminApiRequest(
     // Naive nodes take the whole list in one declarative push — per-user
     // conflict strategies don't apply, so skip that machinery entirely.
     if (node.type === "naive") {
-      const { users: naiveUsers, skipped } = buildNaiveUsers(storage, storage.listUsers(profileId, adminUserId));
+      const { users: naiveUsers, skipped } = buildNaiveUsersForNode(storage, node.id, adminUserId);
       const res = await syncNaiveNode(node, naiveUsers);
       if (res.error) return adminErrorResponse(502, res.error);
       return noStoreResponse(

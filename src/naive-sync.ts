@@ -1,32 +1,46 @@
+import { naiveLogin } from "./credentials";
 import { ensureUserCredentials } from "./ensure-credentials";
-import type { NodeRecord, Storage, UserRecord } from "./storage";
+import type { NodeRecord, Storage } from "./storage";
 
 export type NaiveUser = { user: string; pass: string };
 
 // Caddy basic_auth принимает только этот charset (зеркалит USER_RE/PASS_RE в CaddyBackend).
-// pass всегда base64url и безопасен; user = clientName и может им НЕ быть. Декларативный
-// пуш всего списка означает, что один плохой логин иначе отверг бы синк всей ноды — поэтому
-// пропускаем нарушителя (валидного naive-логина у него всё равно быть не может) и репортим.
+// pass всегда base64url и безопасен; login = <profile>.<clientName> и может содержать
+// невалидный символ, если clientName кривой. Декларативный пуш всего списка означает, что
+// один плохой логин иначе отверг бы синк всей ноды — поэтому пропускаем нарушителя и репортим.
 const NAIVE_CRED_RE = /^[A-Za-z0-9._-]+$/;
 
 /**
- * Собирает полный список naive-кредов, генерируя недостающие.
- * Те же креды потом отдаст рендер подписки — источник истины один (мешок в БД).
+ * Полный naive-список для ноды — ОБЪЕДИНЕНИЕ юзеров ВСЕХ профилей, чей сервер привязан
+ * к этой ноде. Naive-синк декларативный (нода заменяет весь файл целиком), поэтому список
+ * одного профиля затёр бы остальные — надо слать всех, кто попадает на ноду через любой
+ * профиль. Логин namespace-нут профилем ({user} = <profile>.<clientName>), так что
+ * одинаковый clientName в разных профилях (это разные люди) не конфликтует по username.
+ *
+ * Те же креды (пароль) отдаёт и рендер подписки — источник истины один (мешок в БД),
+ * а логин обе стороны считают одинаково через naiveLogin().
  */
-export function buildNaiveUsers(
+export function buildNaiveUsersForNode(
   storage: Storage,
-  users: UserRecord[],
+  nodeId: number,
+  ownerId: number,
 ): { users: NaiveUser[]; skipped: string[] } {
   const valid: NaiveUser[] = [];
   const skipped: string[] = [];
-  for (const user of users) {
-    const credentials = ensureUserCredentials(storage, user, ["user", "pass"]);
-    const naiveUser = credentials.user!;
-    const naivePass = credentials.pass!;
-    if (NAIVE_CRED_RE.test(naiveUser) && NAIVE_CRED_RE.test(naivePass)) {
-      valid.push({ user: naiveUser, pass: naivePass });
-    } else {
-      skipped.push(user.clientName);
+  for (const profile of storage.listProfiles(ownerId)) {
+    const usesNode = storage
+      .listServerRecords(profile.name, ownerId)
+      .some((server) => server.nodeId === nodeId);
+    if (!usesNode) continue;
+
+    for (const user of storage.listUsers(profile.name, ownerId)) {
+      const login = naiveLogin(profile.name, user.clientName);
+      const pass = ensureUserCredentials(storage, user, ["pass"]).pass!;
+      if (NAIVE_CRED_RE.test(login) && NAIVE_CRED_RE.test(pass)) {
+        valid.push({ user: login, pass });
+      } else {
+        skipped.push(`${profile.name}/${user.clientName}`);
+      }
     }
   }
   return { users: valid, skipped };

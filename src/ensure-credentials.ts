@@ -1,4 +1,4 @@
-import { generateCredential, missingCredentialKeys } from "./credentials";
+import { generateCredential, missingCredentialKeys, naiveLogin } from "./credentials";
 import type { Storage, UserRecord } from "./storage";
 
 /**
@@ -22,10 +22,20 @@ export function ensureUserCredentials(
   return next;
 }
 
-/** Карта для подстановки: uuid всегда из колонки user_uuid, мешок его не перебивает. */
+/**
+ * Карта для подстановки плейсхолдеров.
+ * - uuid всегда из колонки user_uuid, мешок его не перебивает.
+ * - {user} — это naive-логин, namespace-нутый профилем (<profile>.<clientName>),
+ *   чтобы одна нода, шаренная между профилями, не ловила коллизии по username.
+ *   Пароль ({pass}) остаётся из мешка кредов.
+ */
 export function resolvedIdentityFor(
-  user: Pick<UserRecord, "userUuid">,
+  user: Pick<UserRecord, "userUuid" | "profileName" | "clientName">,
   credentials: Record<string, string>,
 ): Record<string, string> {
-  return { ...credentials, uuid: user.userUuid };
+  return {
+    ...credentials,
+    user: naiveLogin(user.profileName, user.clientName),
+    uuid: user.userUuid,
+  };
 }

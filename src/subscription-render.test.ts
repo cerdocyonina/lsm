@@ -25,7 +25,7 @@ describe("subscription render", () => {
   test("naive-шаблон получает сгенерённые логин и пароль", () => {
     storage.addServer("main", "s1", "naive+https://{user}:{pass}@api.gregg.li:443#naive", 1000, owner);
     const [link] = renderSubscription(storage, "tok");
-    expect(link).toMatch(/^naive\+https:\/\/alice:[A-Za-z0-9_-]{22}@api\.gregg\.li:443#naive$/);
+    expect(link).toMatch(/^naive\+https:\/\/main\.alice:[A-Za-z0-9_-]{22}@api\.gregg\.li:443#naive$/);
   });
 
   test("смешанный профиль: vless и naive в одной подписке", () => {
@@ -34,7 +34,7 @@ describe("subscription render", () => {
     const links = renderSubscription(storage, "tok");
     expect(links).toHaveLength(2);
     expect(links[0]).toBe("vless://uuid-alice@h:443#v");
-    expect(links[1]).toMatch(/^naive\+https:\/\/alice:[A-Za-z0-9_-]{22}@h:443#n$/);
+    expect(links[1]).toMatch(/^naive\+https:\/\/main\.alice:[A-Za-z0-9_-]{22}@h:443#n$/);
   });
 
   test("пароль стабилен между запросами подписки", () => {
