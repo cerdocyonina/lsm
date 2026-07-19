@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseNaiveParams, parseShadowsocksParams, parseTemplateEndpoint, parseVlessParams, templateKind } from "./ping";
+import { parseNaiveParams, parseShadowsocksClient, parseShadowsocksParams, parseTemplateEndpoint, parseVlessParams, templateKind } from "./ping";
 
 describe("templateKind", () => {
   test("vless", () => expect(templateKind("vless://u@h:443#n")).toBe("vless"));
@@ -18,6 +18,21 @@ describe("parseShadowsocksParams", () => {
 
   test("работает и с уже-закодированным (base64url) userinfo", () => {
     expect(parseShadowsocksParams("ss://YWJjZA@api.gregg.li:9444#SS")).toEqual({ host: "api.gregg.li", port: 9444 });
+  });
+});
+
+describe("parseShadowsocksClient", () => {
+  test("достаёт host/port/method/iPSK из плоского ss-шаблона (userPSK берётся отдельно)", () => {
+    expect(parseShadowsocksClient("ss://2022-blake3-aes-128-gcm:IPSKvalue==:{sskey}@1.2.3.4:9444#SS")).toEqual({
+      host: "1.2.3.4",
+      port: 9444,
+      method: "2022-blake3-aes-128-gcm",
+      identityKey: "IPSKvalue==",
+    });
+  });
+
+  test("userinfo без method:iPSK:psk (мало частей) — null", () => {
+    expect(parseShadowsocksClient("ss://onlyone@1.2.3.4:9444#SS")).toBeNull();
   });
 });
 

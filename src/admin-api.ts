@@ -7,8 +7,10 @@ import {
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
 import { parseDumpOrThrow } from "./app-config";
+import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
 import { buildNaiveUsersForNode, buildShadowsocksUsersForNode, syncNaiveNode } from "./naive-sync";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
+import { templatePlaceholders } from "./placeholders";
 import { buildMultiProfileDump, buildProfileDump } from "./storage";
 import type { NodeRecord, ProfileRecord, Storage } from "./storage";
 
@@ -969,7 +971,13 @@ export async function handleAdminApiRequest(
     const userExceptSet = parsed.usersExcept && parsed.usersExcept.length > 0 ? new Set(parsed.usersExcept) : null;
     if (userSet) userRecords = userRecords.filter((u) => userSet.has(u.clientName));
     else if (userExceptSet) userRecords = userRecords.filter((u) => !userExceptSet.has(u.clientName));
-    const users = userRecords.map((u) => ({ clientName: u.clientName, userUuid: u.userUuid }));
+    // Пингу нужны те же per-user креды, что и подписке: uuid для vless, {user}/{pass} для
+    // naive, {sskey} для ss. Резолвим идентичность точно так же, как рендер подписки.
+    const required = [...new Set(records.flatMap((s) => templatePlaceholders(s.template)))];
+    const users = userRecords.map((u) => ({
+      clientName: u.clientName,
+      identity: resolvedIdentityFor(u, ensureUserCredentials(storage, u, required)),
+    }));
 
     const [icmp, http] = await Promise.all([
       strategy !== "http" ? pingAllIcmp(servers) : Promise.resolve(null),

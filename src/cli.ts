@@ -12,8 +12,10 @@ import { version as VERSION } from "../package.json";
 import { XUIService } from "./3x-ui";
 import type { ProfileDump } from "./app-config";
 import { loadDumpOrThrow } from "./app-config";
+import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
 import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
+import { templatePlaceholders } from "./placeholders";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import type { ClientHttpPingResult, PingResult, ServerIcmpResult } from "./ping";
 import { SqliteStorage } from "./storage";
@@ -691,7 +693,7 @@ async function bootstrap() {
           usersOnly ? usersOnly.has(name) : usersExcept ? !usersExcept.has(name) : true;
 
         const profileId = resolveProfile(program);
-        const { serverRecords, users } = withStorageAsAdmin((storage, ownerId) => {
+        const { serverRecords, users, clients } = withStorageAsAdmin((storage, ownerId) => {
           let records = storage.listServerRecords(profileId, ownerId);
           if (nameArg) {
             records = records.filter((s) => s.name === nameArg);
@@ -700,11 +702,17 @@ async function bootstrap() {
             records = records.filter((s) => keepServer(s.name));
           }
           const allUsers = storage.listUsers(profileId, ownerId).filter((u) => keepUser(u.clientName));
-          return { serverRecords: records, users: allUsers };
+          // Те же per-user креды, что рендерит подписка — нужны для реальной http-пробы
+          // (uuid для vless, {user}/{pass} для naive, {sskey} для ss).
+          const required = [...new Set(records.flatMap((s) => templatePlaceholders(s.template)))];
+          const clientList = allUsers.map((u) => ({
+            clientName: u.clientName,
+            identity: resolvedIdentityFor(u, ensureUserCredentials(storage, u, required)),
+          }));
+          return { serverRecords: records, users: allUsers, clients: clientList };
         });
 
         const servers = serverRecords.map((s) => ({ name: s.name, template: s.template }));
-        const clients = users.map((u) => ({ clientName: u.clientName, userUuid: u.userUuid }));
 
         function fmtPing(r: PingResult): string {
           if (r.ok && r.latencyMs !== null) return chalk.green(`${r.latencyMs}ms`);

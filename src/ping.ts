@@ -103,6 +103,26 @@ export function parseShadowsocksParams(template: string): NaiveParams | null {
   return { host, port };
 }
 
+/**
+ * Разбирает ss-ШАБЛОН (плоский userinfo с плейсхолдером) на клиентские параметры:
+ * host/port + метод + identity-PSK. Ждём форму "ss://<method>:<iPSK>:{sskey}@host:port#tag" —
+ * ту, что хранится в БД (до base64-кодирования подписки). userPSK берётся из identity.sskey,
+ * так что здесь только серверная часть.
+ */
+export function parseShadowsocksClient(
+  template: string,
+): { host: string; port: number; method: string; identityKey: string } | null {
+  const endpoint = parseShadowsocksParams(template);
+  if (!endpoint) return null;
+  const rest = template.slice("ss://".length);
+  const at = rest.lastIndexOf("@");
+  const userinfo = rest.slice(0, at);
+  const parts = userinfo.split(":");
+  // Ожидаем ровно method:iPSK:<placeholder|psk>. base64/имя метода '@'/':' не содержат.
+  if (parts.length < 3 || !parts[0] || !parts[1]) return null;
+  return { host: endpoint.host, port: endpoint.port, method: parts[0], identityKey: parts[1] };
+}
+
 /** host/port шаблона независимо от провайдера — для ICMP-пинга. */
 export function parseTemplateEndpoint(template: string): NaiveParams | null {
   switch (templateKind(template)) {
@@ -219,48 +239,26 @@ async function getUniqueFreePort(): Promise<number> {
   throw new Error("failed to find a unique free port");
 }
 
-/**
- * Liveness naive-сервера с точки зрения мастера: обычный HTTPS-GET на замаскированный
- * фасад. 200 = домен, сертификат и Caddy живы. Это НЕ проверка туннеля — для неё нужен
- * бинарь naive на машине мастера (вне области v1).
- */
-async function pingNaiveHttp(params: NaiveParams, timeoutMs: number): Promise<PingResult> {
-  const start = Date.now();
-  try {
-    const response = await fetch(`https://${params.host}:${params.port}/`, {
-      signal: AbortSignal.timeout(timeoutMs),
-      redirect: "manual",
-    });
-    const latencyMs = Date.now() - start;
-    if (response.status === 200) return { ok: true, latencyMs };
-    return { ok: false, latencyMs: null, error: `unexpected HTTP ${response.status}` };
-  } catch (err) {
-    return { ok: false, latencyMs: null, error: (err as Error).message };
+/** Разбирает "%{http_code} %{time_total}" от curl в PingResult (204 = ок). */
+function curlProbeResult(output: string, elapsedMs: number): PingResult {
+  const parts = output.trim().split(" ");
+  const httpCode = parts[0];
+  const timeSec = parseFloat(parts[1] ?? "0");
+  if (httpCode === "204") {
+    return { ok: true, latencyMs: isNaN(timeSec) ? elapsedMs : Math.round(timeSec * 1000) };
   }
+  return {
+    ok: false,
+    latencyMs: null,
+    error: httpCode === "000" ? "connection failed" : `unexpected HTTP ${httpCode}`,
+  };
 }
 
-export async function pingHttp(
-  template: string,
-  userUuid: string,
-  timeoutMs = 10000,
-): Promise<PingResult> {
-  if (templateKind(template) === "naive") {
-    const naiveParams = parseNaiveParams(template);
-    if (!naiveParams) {
-      return { ok: false, latencyMs: null, error: "failed to parse server template" };
-    }
-    return pingNaiveHttp(naiveParams, timeoutMs);
-  }
-
-  const params = parseVlessParams(template);
-  if (!params) {
-    return {
-      ok: false,
-      latencyMs: null,
-      error: "failed to parse server template",
-    };
-  }
-
+/**
+ * Гоняет 204-пробу через локальный xray с заданным outbound (socks5 → curl).
+ * Общий движок для vless и shadowsocks: различаются только outbound-настройки.
+ */
+async function pingThroughXray(outbound: unknown, timeoutMs: number): Promise<PingResult> {
   let socksPort: number;
   try {
     socksPort = await getUniqueFreePort();
@@ -270,54 +268,15 @@ export async function pingHttp(
 
   const xrayConfig = {
     log: { loglevel: "none" },
-    inbounds: [
-      {
-        listen: "127.0.0.1",
-        port: socksPort,
-        protocol: "socks",
-        settings: { udp: false },
-      },
-    ],
-    outbounds: [
-      {
-        protocol: "vless",
-        settings: {
-          vnext: [
-            {
-              address: params.host,
-              port: params.port,
-              users: [{ id: userUuid, flow: params.flow, encryption: "none" }],
-            },
-          ],
-        },
-        streamSettings: {
-          network: "tcp",
-          security: "reality",
-          realitySettings: {
-            serverName: params.sni,
-            fingerprint: params.fp,
-            publicKey: params.pbk,
-            shortId: params.sid,
-            spiderX: params.spx,
-          },
-        },
-      },
-    ],
+    inbounds: [{ listen: "127.0.0.1", port: socksPort, protocol: "socks", settings: { udp: false } }],
+    outbounds: [outbound],
   };
-
-  const tmpFile = join(
-    tmpdir(),
-    `lsm-ping-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
-  );
+  const tmpFile = join(tmpdir(), `lsm-ping-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
 
   try {
     await writeFile(tmpFile, JSON.stringify(xrayConfig));
 
-    const xrayProc = Bun.spawn(["xray", "run", "-c", tmpFile], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
+    const xrayProc = Bun.spawn(["xray", "run", "-c", tmpFile], { stdout: "pipe", stderr: "pipe" });
     const portPromise = waitForPort(socksPort, 5000);
     const crashPromise = (async () => {
       const code = await xrayProc.exited;
@@ -336,51 +295,121 @@ export async function pingHttp(
     const start = Date.now();
     const curlProc = Bun.spawn(
       [
-        "curl",
-        "--socks5-hostname",
-        `127.0.0.1:${socksPort}`,
-        "-o",
-        "/dev/null",
-        "-s",
-        "-w",
-        "%{http_code} %{time_total}",
-        "--max-time",
-        String(curlTimeoutSec),
+        "curl", "--socks5-hostname", `127.0.0.1:${socksPort}`,
+        "-o", "/dev/null", "-s", "-w", "%{http_code} %{time_total}",
+        "--max-time", String(curlTimeoutSec),
         "http://www.google.com/generate_204",
       ],
       { stdout: "pipe", stderr: "pipe" },
     );
-
     const curlOutput = await new Response(curlProc.stdout).text();
     await curlProc.exited;
     const elapsed = Date.now() - start;
 
     xrayProc.kill();
     await xrayProc.exited;
-
-    const parts = curlOutput.trim().split(" ");
-    const httpCode = parts[0];
-    const timeSec = parseFloat(parts[1] ?? "0");
-
-    if (httpCode === "204") {
-      const latencyMs = isNaN(timeSec) ? elapsed : Math.round(timeSec * 1000);
-      return { ok: true, latencyMs };
-    }
-
-    return {
-      ok: false,
-      latencyMs: null,
-      error:
-        httpCode === "000"
-          ? "connection failed"
-          : `unexpected HTTP ${httpCode}`,
-    };
+    return curlProbeResult(curlOutput, elapsed);
   } catch (err) {
     return { ok: false, latencyMs: null, error: (err as Error).message };
   } finally {
     await rm(tmpFile, { force: true });
     activePorts.delete(socksPort);
   }
+}
+
+/**
+ * Реальная per-user проверка naive: curl через сам CONNECT-прокси с basic_auth юзера.
+ * 204 = и туннель, и креды рабочие. naive-бинарь на мастере не нужен — Caddy forward_proxy
+ * принимает стандартный HTTPS-CONNECT, а curl умеет https-прокси (--proxy-user + -x https://).
+ */
+async function pingNaiveTunnel(
+  params: NaiveParams,
+  user: string,
+  pass: string,
+  timeoutMs: number,
+): Promise<PingResult> {
+  const curlTimeoutSec = Math.ceil(timeoutMs / 1000);
+  const start = Date.now();
+  const proc = Bun.spawn(
+    [
+      "curl", "-o", "/dev/null", "-s", "-w", "%{http_code} %{time_total}",
+      "--max-time", String(curlTimeoutSec),
+      "--proxy-user", `${user}:${pass}`,
+      "-x", `https://${params.host}:${params.port}`,
+      "https://www.google.com/generate_204",
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const output = await new Response(proc.stdout).text();
+  await proc.exited;
+  return curlProbeResult(output, Date.now() - start);
+}
+
+/**
+ * Per-user проверка соединения. identity — та же карта, что рендерит подписка
+ * (resolvedIdentityFor): uuid для vless, {user}/{pass} для naive, {sskey} для ss.
+ */
+export async function pingHttp(
+  template: string,
+  identity: Record<string, string>,
+  timeoutMs = 10000,
+): Promise<PingResult> {
+  const kind = templateKind(template);
+
+  if (kind === "naive") {
+    const naiveParams = parseNaiveParams(template);
+    if (!naiveParams) return { ok: false, latencyMs: null, error: "failed to parse server template" };
+    if (!identity.user || !identity.pass) {
+      return { ok: false, latencyMs: null, error: "missing naive credentials" };
+    }
+    return pingNaiveTunnel(naiveParams, identity.user, identity.pass, timeoutMs);
+  }
+
+  if (kind === "shadowsocks") {
+    const ss = parseShadowsocksClient(template);
+    if (!ss) return { ok: false, latencyMs: null, error: "failed to parse server template" };
+    if (!identity.sskey) return { ok: false, latencyMs: null, error: "missing shadowsocks key" };
+    return pingThroughXray(
+      {
+        protocol: "shadowsocks",
+        settings: {
+          servers: [
+            { address: ss.host, port: ss.port, method: ss.method, password: `${ss.identityKey}:${identity.sskey}` },
+          ],
+        },
+      },
+      timeoutMs,
+    );
+  }
+
+  const params = parseVlessParams(template);
+  if (!params) return { ok: false, latencyMs: null, error: "failed to parse server template" };
+  return pingThroughXray(
+    {
+      protocol: "vless",
+      settings: {
+        vnext: [
+          {
+            address: params.host,
+            port: params.port,
+            users: [{ id: identity.uuid, flow: params.flow, encryption: "none" }],
+          },
+        ],
+      },
+      streamSettings: {
+        network: "tcp",
+        security: "reality",
+        realitySettings: {
+          serverName: params.sni,
+          fingerprint: params.fp,
+          publicKey: params.pbk,
+          shortId: params.sid,
+          spiderX: params.spx,
+        },
+      },
+    },
+    timeoutMs,
+  );
 }
 
 export async function pingAllIcmp(
@@ -406,7 +435,7 @@ export async function pingAllIcmp(
 
 export async function pingAllHttp(
   servers: { name: string; template: string }[],
-  users: { clientName: string; userUuid: string }[],
+  users: { clientName: string; identity: Record<string, string> }[],
   timeoutMs = 10000,
   onProgress?: (done: number, total: number) => void,
 ): Promise<ClientHttpPingResult[]> {
@@ -427,7 +456,7 @@ export async function pingAllHttp(
     async ({ clientIdx, serverIdx }) => {
       const result = await pingHttp(
         servers[serverIdx]!.template,
-        users[clientIdx]!.userUuid,
+        users[clientIdx]!.identity,
         timeoutMs,
       );
       onProgress?.(++done, total);
@@ -437,7 +466,7 @@ export async function pingAllHttp(
 
   return users.map((user, ci) => ({
     clientName: user.clientName,
-    userUuid: user.userUuid,
+    userUuid: user.identity.uuid ?? "",
     servers: servers.map((server, si) => ({
       serverName: server.name,
       result: results[ci * servers.length + si]!,
