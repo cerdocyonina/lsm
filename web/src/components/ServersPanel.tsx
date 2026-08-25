@@ -28,7 +28,16 @@ import {
   TbGripVertical,
   TbHelp,
 } from "react-icons/tb";
-import Editor from "react-simple-code-editor";
+import CodeMirror from "@uiw/react-codemirror";
+import { RangeSetBuilder } from "@codemirror/state";
+import {
+  Decoration,
+  type DecorationSet,
+  EditorView,
+  MatchDecorator,
+  ViewPlugin,
+  type ViewUpdate,
+} from "@codemirror/view";
 import type {
   ClientHttpPingResult,
   NodeRecord,
@@ -48,39 +57,82 @@ const STRATEGY_LABELS: Record<SyncConflictStrategy, string> = {
   safe: "Safe (check first)",
 };
 
-// No padding/margin/border here: react-simple-code-editor overlays this highlighted
-// <pre> exactly on top of an invisible <textarea>, so any highlighted span whose
-// styling adds layout width (e.g. padding) desyncs the two layers' character
-// positions — the caret then visibly drifts from the character it's actually next
-// to, worse the more placeholders precede it. background/border-radius are safe
-// (paint-only, no layout width).
-const PLACEHOLDER_MARK = `background:rgba(25,135,84,0.3);border-radius:2px`;
-
-function highlightTemplate(code: string): string {
-  // Leading/trailing whitespace highlighted in amber to show it'll be trimmed on blur
-  let result = code
-    .replace(
-      /^(\s+)/,
-      `<mark style="background:rgba(255,193,7,0.45);border-radius:2px">$1</mark>`,
-    )
-    .replace(
-      /(\s+)$/,
-      `<mark style="background:rgba(255,193,7,0.45);border-radius:2px">$1</mark>`,
-    );
-  // Named placeholders ({uuid}, {user}, {pass}, ...) and the legacy DUMMY alias —
-  // ОДНОЙ регуляркой, как resolveTemplate на бэке. Два прохода ({...}, потом DUMMY)
-  // двойным <mark> обернули бы имя, содержащее подстроку DUMMY (напр. {DUMMYnode}).
-  result = result.replace(
-    /\{\w+\}|DUMMY/g,
-    (match) => `<mark style="${PLACEHOLDER_MARK}">${match}</mark>`,
-  );
-  return result;
-}
-
 /** true, если в шаблоне есть хоть какой-то плейсхолдер (именованный или легаси DUMMY). */
 function hasPlaceholder(template: string): boolean {
   return /\{\w+\}/.test(template) || template.includes("DUMMY");
 }
+
+// CodeMirror renders its own caret as part of one text-layout model, unlike the old
+// react-simple-code-editor approach (a transparent <textarea> pixel-overlaid on a
+// separately-highlighted <pre>) — that dual-layer trick desyncs under line-wrapping
+// because the highlighted layer's <mark> spans split the text into extra inline nodes,
+// so a long wrapped line can pick a DIFFERENT wrap point than the plain-text layer,
+// and every character after that point drifts. Decorations here just paint spans of
+// the SAME single document, so there's no second layer to fall out of sync with.
+
+const PLACEHOLDER_DECORATION = Decoration.mark({
+  attributes: { style: "background:rgba(25,135,84,0.3);border-radius:2px" },
+});
+const WHITESPACE_DECORATION = Decoration.mark({
+  attributes: { style: "background:rgba(255,193,7,0.45);border-radius:2px" },
+});
+
+// Named placeholders ({uuid}, {user}, {pass}, ...) and the legacy DUMMY alias — one
+// regex, matching resolveTemplate on the backend (two passes would double-<mark> a
+// name containing the substring DUMMY, e.g. {DUMMYnode}).
+const placeholderMatcher = new MatchDecorator({
+  regexp: /\{\w+\}|DUMMY/g,
+  decoration: () => PLACEHOLDER_DECORATION,
+});
+
+const placeholderHighlighter = ViewPlugin.fromClass(
+  class {
+    placeholders: DecorationSet;
+    constructor(view: EditorView) {
+      this.placeholders = placeholderMatcher.createDeco(view);
+    }
+    update(update: ViewUpdate) {
+      this.placeholders = placeholderMatcher.updateDeco(update, this.placeholders);
+    }
+  },
+  { decorations: (v) => v.placeholders },
+);
+
+/** Leading/trailing whitespace highlighted in amber to show it'll be trimmed on blur. */
+function computeWhitespaceDecorations(view: EditorView): DecorationSet {
+  const text = view.state.doc.toString();
+  const builder = new RangeSetBuilder<Decoration>();
+  const leading = /^\s+/.exec(text);
+  const leadingEnd = leading ? leading[0].length : 0;
+  if (leading) builder.add(0, leadingEnd, WHITESPACE_DECORATION);
+  const trailing = /\s+$/.exec(text);
+  if (trailing) {
+    const trailingStart = text.length - trailing[0].length;
+    // Guard against the all-whitespace case, where leading/trailing would overlap —
+    // RangeSetBuilder requires strictly increasing, non-overlapping ranges.
+    if (trailingStart >= leadingEnd) builder.add(trailingStart, text.length, WHITESPACE_DECORATION);
+  }
+  return builder.finish();
+}
+
+const whitespaceHighlighter = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
+      this.decorations = computeWhitespaceDecorations(view);
+    }
+    update(update: ViewUpdate) {
+      if (update.docChanged) this.decorations = computeWhitespaceDecorations(update.view);
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
+
+const templateEditorTheme = EditorView.theme({
+  "&": { fontFamily: "monospace", fontSize: "inherit" },
+  ".cm-content": { padding: "10px" },
+  ".cm-scroller": { overflow: "auto" },
+});
 
 function TemplateTextarea({
   value,
@@ -90,19 +142,21 @@ function TemplateTextarea({
   onChange: (v: string) => void;
 }) {
   return (
-    <Editor
+    <CodeMirror
       value={value}
-      onValueChange={(v) => onChange(v.replace(/[\r\n]/g, ""))}
-      highlight={highlightTemplate}
-      padding={10}
-      className="form-control"
-      style={{
-        fontFamily: "monospace",
-        fontSize: "inherit",
-        minHeight: "6.5rem",
-      }}
-      textareaClassName="focus-ring-0"
+      onChange={(v) => onChange(v.replace(/[\r\n]/g, ""))}
       onBlur={() => onChange(value.trim())}
+      extensions={[EditorView.lineWrapping, placeholderHighlighter, whitespaceHighlighter, templateEditorTheme]}
+      theme="none"
+      basicSetup={{
+        lineNumbers: false,
+        foldGutter: false,
+        highlightActiveLine: false,
+        highlightActiveLineGutter: false,
+        autocompletion: false,
+      }}
+      className="form-control p-0 focus-ring-0"
+      minHeight="6.5rem"
     />
   );
 }

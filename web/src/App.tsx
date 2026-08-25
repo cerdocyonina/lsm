@@ -1055,7 +1055,7 @@ export default function App() {
               type="file"
               accept=".json,application/json"
               size="sm"
-              onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => setImportFile((e.target as HTMLInputElement).files?.[0] ?? null)}
             />
             <Form.Text className="text-body-secondary">
               Single-profile exports and legacy configs are merged into the current profile.
