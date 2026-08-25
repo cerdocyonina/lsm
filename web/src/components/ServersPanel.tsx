@@ -48,7 +48,13 @@ const STRATEGY_LABELS: Record<SyncConflictStrategy, string> = {
   safe: "Safe (check first)",
 };
 
-const PLACEHOLDER_MARK = `background:rgba(25,135,84,0.3);border-radius:2px;padding:0 1px`;
+// No padding/margin/border here: react-simple-code-editor overlays this highlighted
+// <pre> exactly on top of an invisible <textarea>, so any highlighted span whose
+// styling adds layout width (e.g. padding) desyncs the two layers' character
+// positions — the caret then visibly drifts from the character it's actually next
+// to, worse the more placeholders precede it. background/border-radius are safe
+// (paint-only, no layout width).
+const PLACEHOLDER_MARK = `background:rgba(25,135,84,0.3);border-radius:2px`;
 
 function highlightTemplate(code: string): string {
   // Leading/trailing whitespace highlighted in amber to show it'll be trimmed on blur
@@ -439,15 +445,27 @@ export function ServersPanel({
                     (s) => s.nodeId === n.id && s.name !== editingServer?.name,
                   );
                   return (
-                    <option key={n.id} value={n.id} disabled={!!takenBy}>
-                      {n.name} (inbound #{n.inboundId}){takenBy ? ` — assigned to "${takenBy.name}"` : ""}
+                    <option key={n.id} value={n.id}>
+                      {n.name} (inbound #{n.inboundId}){takenBy ? ` — also assigned to "${takenBy.name}"` : ""}
                     </option>
                   );
                 })}
               </Form.Select>
               <Form.Text className="text-muted">
-                When set, new users are automatically synced to this node. Each node can only be assigned to one server.
+                When set, new users are automatically synced to this node.
               </Form.Text>
+              {(() => {
+                const sharedWith = serverForm.nodeId
+                  ? servers.find((s) => s.nodeId === serverForm.nodeId && s.name !== editingServer?.name)
+                  : null;
+                return sharedWith ? (
+                  <Alert variant="warning" className="mt-2 mb-0 py-2">
+                    This node is already assigned to server &quot;{sharedWith.name}&quot; in this profile — both will
+                    sync to the same physical node. That&apos;s fine if intentional (e.g. two link variants for the
+                    same node), just know syncing either one pushes the same user list.
+                  </Alert>
+                ) : null;
+              })()}
             </Form.Group>
           )}
 
