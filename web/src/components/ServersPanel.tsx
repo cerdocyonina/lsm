@@ -340,7 +340,11 @@ export function ServersPanel({
       ? filteredServers
       : filteredServers.slice((page - 1) * pageSize, page * pageSize);
 
-  const isDraggable = !search.trim() && pageSize === 0;
+  // Reorder needs paginatedServers to be the full, correctly-ordered servers array (index
+  // N in the view = index N in the underlying array) — true whenever nothing is actually
+  // filtered/paginated away, not just when pageSize's literal value is 0 ("All"). A small
+  // list (fits on one page at the default page size) was wrongly hidden before this fix.
+  const isDraggable = paginatedServers.length === servers.length;
 
   const allFilteredSelected =
     paginatedServers.length > 0 &&

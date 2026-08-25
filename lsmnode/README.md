@@ -81,6 +81,9 @@ systemctl enable --now lsm-node
 | `XUI_HOST` | URL 3x-ui панели (обычно `http://127.0.0.1:2053`) | - |
 | `XUI_USER` | Логин 3x-ui | - |
 | `XUI_PASSWORD` | Пароль 3x-ui | - |
+| `PROVIDER` | Провайдер узла: `xui` \| `naive` | `xui` |
+| `CADDY_USERS_FILE` | (naive) файл с управляемыми `basic_auth`-строками, импортируемый в Caddyfile | - |
+| `CADDY_CONTAINER` | (naive) имя docker-контейнера с Caddy | `naive` |
 
 ## API
 
@@ -120,3 +123,17 @@ Authorization: Bearer <SHARED_SECRET>
 ```
 
 Возможные значения `result`: `added`, `skipped`, `overwritten`, `kept-both`, `failed`.
+
+### `POST /sync-users` (PROVIDER=naive)
+
+Декларативный синк: принимает **весь** целевой список и перерендеривает конфиг Caddy.
+Отсутствующие в списке юзеры тем самым отзываются.
+
+```json
+{ "users": [{ "user": "alice", "pass": "nvKH4m6a6jel8z3yb0nBb8" }] }
+```
+
+Ответ: `{ "synced": 1 }` либо `{ "synced": 1, "error": "caddy reload failed: ..." }`.
+
+⚠️ Управляемый файл — не единственный источник авторизации: статическая строка `basic_auth`
+в основном Caddyfile обязана остаться, иначе пустой список сделает `forward_proxy` открытым.

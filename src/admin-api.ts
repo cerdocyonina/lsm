@@ -916,12 +916,6 @@ export async function handleAdminApiRequest(
       return noStoreResponse(parsed);
     }
 
-    if (parsed.nodeId) {
-      const existing = storage.listServerRecords(profileId, adminUserId);
-      const conflict = existing.find((s) => s.nodeId === parsed.nodeId);
-      if (conflict) return adminErrorResponse(400, `Node is already assigned to server "${conflict.name}"`);
-    }
-
     try {
       storage.addServer(profileId, parsed.name, parsed.template, Date.now(), adminUserId, parsed.nodeId ?? null);
     } catch (error) {
@@ -1088,11 +1082,6 @@ export async function handleAdminApiRequest(
 
       if (parsed.nodeId !== undefined) {
         const targetName = parsed.name ?? serverPathName;
-        if (parsed.nodeId !== null) {
-          const existing = storage.listServerRecords(profileId, adminUserId);
-          const conflict = existing.find((s) => s.nodeId === parsed.nodeId && s.name !== targetName);
-          if (conflict) return adminErrorResponse(400, `Node is already assigned to server "${conflict.name}"`);
-        }
         const updated = storage.setServerNode(profileId, targetName, parsed.nodeId, adminUserId);
         if (!updated) {
           return adminErrorResponse(404, `Unknown server name: ${targetName}`);
