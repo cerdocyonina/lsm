@@ -13,6 +13,20 @@ export class XUIService {
   // Whether we've made at least one successful connection and thus know the
   // panel's scheme (http vs https) is correct — see request()'s fallback.
   private schemeResolved = false;
+  // In-flight login(), so concurrent callers (a bulk sync fires all users at once
+  // against this one shared XUIService instance) await the SAME attempt instead of
+  // each racing their own: overlapping logins each get their own session cookie from
+  // 3x-ui, and whichever's cookie and CSRF-token writes land last can end up mismatched
+  // (cookie from one session, token from another) — 3x-ui then 403s every request from
+  // that point on, since nothing ever clears this.cookie to trigger a fresh login.
+  private loginPromise: Promise<void> | null = null;
+  // Tail of a FIFO chain that every request() call joins — confirmed live (x-ui.go's own
+  // access log shows nothing for the rejected calls, meaning they never reach the
+  // controller) that 3x-ui's session/CSRF middleware isn't safe for concurrent requests
+  // on the same session: 20 concurrent client-adds against one logged-in session 401'd
+  // about half of them, while 12 of the SAME calls run one-at-a-time all succeeded.
+  // One in-flight request to the panel at a time sidesteps that entirely.
+  private requestQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private config: XUIConfig) {
     this.baseUrl = config.host.replace(/\/+$/, "");
@@ -25,7 +39,22 @@ export class XUIService {
     return null;
   }
 
-  private async request(path: string, options: BunFetchRequestInit = {}) {
+  // Thin wrapper that queues onto requestQueue (see its comment) — actual work is in
+  // doRequest(). The queue link always resolves (even when the request fails) so one
+  // failed call doesn't jam the chain for everything queued after it.
+  private request(path: string, options: BunFetchRequestInit = {}): Promise<Response> {
+    const run = this.requestQueue.then(
+      () => this.doRequest(path, options),
+      () => this.doRequest(path, options),
+    );
+    this.requestQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async doRequest(path: string, options: BunFetchRequestInit = {}) {
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
 
     const method = ((options.method as string) ?? "GET").toUpperCase();
@@ -165,6 +194,17 @@ export class XUIService {
     console.log("Successfully logged in to 3x-ui");
   }
 
+  /** Serializes login() across concurrent callers — see loginPromise's comment. */
+  private async ensureLoggedIn(): Promise<void> {
+    if (this.cookie) return;
+    if (!this.loginPromise) {
+      this.loginPromise = this.login().finally(() => {
+        this.loginPromise = null;
+      });
+    }
+    await this.loginPromise;
+  }
+
   // ---------------------------------------------------------------------------
   // Client helpers (new /panel/api/clients/* API)
   // ---------------------------------------------------------------------------
@@ -198,7 +238,7 @@ export class XUIService {
     uuid: string,
     onConflict: "skip" | "overwrite" | "keep-both" = "skip",
   ): Promise<"added" | "overwritten" | "skipped" | "kept-both" | "failed"> {
-    if (!this.cookie) await this.login();
+    await this.ensureLoggedIn();
 
     const exists = await this.clientExists(email);
 
@@ -305,13 +345,13 @@ export class XUIService {
   }
 
   async checkConflicts(emails: string[]): Promise<string[]> {
-    if (!this.cookie) await this.login();
+    await this.ensureLoggedIn();
     const existing = await this.getAllClientEmails();
     return emails.filter((e) => existing.has(e));
   }
 
   async deleteUser(email: string): Promise<"deleted" | "not_found" | "failed"> {
-    if (!this.cookie) await this.login();
+    await this.ensureLoggedIn();
 
     const exists = await this.clientExists(email);
     if (!exists) {
