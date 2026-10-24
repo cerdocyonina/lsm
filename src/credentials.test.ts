@@ -35,4 +35,8 @@ describe("missingCredentialKeys", () => {
   test("всё на месте — пусто", () => {
     expect(missingCredentialKeys(["user", "pass"], { user: "a", pass: "b" })).toEqual([]);
   });
+
+  test("серверный {ip} игнорируется — его даёт нода, а не мешок юзера", () => {
+    expect(missingCredentialKeys(["ip", "sskey"], {})).toEqual(["sskey"]);
+  });
 });

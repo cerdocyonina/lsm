@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveTemplate, templatePlaceholders } from "./placeholders";
+import { applyServerPlaceholders, nodeHost, resolveTemplate, templateNeedsNode, templatePlaceholders } from "./placeholders";
 
 describe("templatePlaceholders", () => {
   test("находит именованные плейсхолдеры", () => {
@@ -51,5 +51,48 @@ describe("resolveTemplate", () => {
     expect(
       resolveTemplate("naive+https://{user}:{pass}@h#n", { user: "DUMMY-test", pass: "p", uuid: "U1" }),
     ).toBe("naive+https://DUMMY-test:p@h#n");
+  });
+});
+
+describe("applyServerPlaceholders", () => {
+  const node = { url: "http://191.217.211.141:9000/ss2022" };
+
+  test("{ip} берётся из хоста URL ноды", () => {
+    expect(applyServerPlaceholders("ss://m:K:{sskey}@{ip}:9444#n", node)).toBe("ss://m:K:{sskey}@191.217.211.141:9444#n");
+  });
+
+  test("юзерские плейсхолдеры и легаси DUMMY не трогает", () => {
+    expect(applyServerPlaceholders("vless://DUMMY@{ip}:443?x={uuid}#{user}", node)).toBe(
+      "vless://DUMMY@191.217.211.141:443?x={uuid}#{user}",
+    );
+  });
+
+  test("без ноды {ip} схлопывается в пустую строку", () => {
+    expect(applyServerPlaceholders("vless://{uuid}@{ip}:443#n", null)).toBe("vless://{uuid}@:443#n");
+  });
+
+  test("ключи прототипа ({constructor}) не считаются серверными", () => {
+    expect(applyServerPlaceholders("{constructor}@{ip}", node)).toBe("{constructor}@191.217.211.141");
+  });
+});
+
+describe("nodeHost", () => {
+  test("IPv6 остаётся в скобках — годен для host:port", () => {
+    expect(nodeHost("http://[2001:db8::1]:9000/naive")).toBe("[2001:db8::1]");
+  });
+
+  test("домен приводится к нижнему регистру", () => {
+    expect(nodeHost("http://Node.Example.COM:9000")).toBe("node.example.com");
+  });
+
+  test("невалидный URL даёт пустую строку", () => {
+    expect(nodeHost("not a url")).toBe("");
+  });
+});
+
+describe("templateNeedsNode", () => {
+  test("{ip} требует ноду, юзерские плейсхолдеры — нет", () => {
+    expect(templateNeedsNode("ss://m:K:{sskey}@{ip}:9444#n")).toBe(true);
+    expect(templateNeedsNode("ss://m:K:{sskey}@1.2.3.4:9444#n")).toBe(false);
   });
 });

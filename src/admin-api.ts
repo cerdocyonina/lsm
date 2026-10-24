@@ -10,8 +10,9 @@ import { parseDumpOrThrow } from "./app-config";
 import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
 import { buildNaiveUsersForNode, buildShadowsocksUsersForNode, syncNaiveNode } from "./naive-sync";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
-import { templatePlaceholders } from "./placeholders";
+import { templateNeedsNode, templatePlaceholders } from "./placeholders";
 import { buildMultiProfileDump, buildProfileDump } from "./storage";
+import { resolveServerTemplates } from "./subscription";
 import type { NodeRecord, ProfileRecord, Storage } from "./storage";
 
 const loginSchema = z.object({
@@ -151,6 +152,12 @@ function noStoreResponse(response: Response): Response {
 
 function adminErrorResponse(status: number, message: string): Response {
   return noStoreResponse(errorResponse(status, message));
+}
+
+/** {ip} берётся из URL ноды — без ноды ссылка ушла бы юзерам с пустым хостом. */
+function ipWithoutNodeError(template: string, nodeId: number | null): Response | null {
+  if (nodeId !== null || !templateNeedsNode(template)) return null;
+  return adminErrorResponse(400, "Template uses {ip}, which is taken from the assigned node's URL — assign a node.");
 }
 
 async function parseJson<T>(
@@ -915,6 +922,8 @@ export async function handleAdminApiRequest(
     if (parsed instanceof Response) {
       return noStoreResponse(parsed);
     }
+    const ipError = ipWithoutNodeError(parsed.template, parsed.nodeId ?? null);
+    if (ipError) return ipError;
 
     try {
       storage.addServer(profileId, parsed.name, parsed.template, Date.now(), adminUserId, parsed.nodeId ?? null);
@@ -959,7 +968,9 @@ export async function handleAdminApiRequest(
       }
     }
 
-    const servers = records.map((s) => ({ name: s.name, template: s.template }));
+    // {ip} подставлен заранее: и ICMP, и http-проба разбирают host:port прямо из шаблона.
+    const templates = resolveServerTemplates(storage, records, adminUserId);
+    const servers = records.map((s, i) => ({ name: s.name, template: templates[i]! }));
     let userRecords = storage.listUsers(profileId, adminUserId);
     const userSet = parsed.users && parsed.users.length > 0 ? new Set(parsed.users) : null;
     const userExceptSet = parsed.usersExcept && parsed.usersExcept.length > 0 ? new Set(parsed.usersExcept) : null;
@@ -967,7 +978,7 @@ export async function handleAdminApiRequest(
     else if (userExceptSet) userRecords = userRecords.filter((u) => !userExceptSet.has(u.clientName));
     // Пингу нужны те же per-user креды, что и подписке: uuid для vless, {user}/{pass} для
     // naive, {sskey} для ss. Резолвим идентичность точно так же, как рендер подписки.
-    const required = [...new Set(records.flatMap((s) => templatePlaceholders(s.template)))];
+    const required = [...new Set(templates.flatMap((template) => templatePlaceholders(template)))];
     const users = userRecords.map((u) => ({
       clientName: u.clientName,
       identity: resolvedIdentityFor(u, ensureUserCredentials(storage, u, required)),
@@ -1062,6 +1073,15 @@ export async function handleAdminApiRequest(
     const parsed = await parseJson(req, updateServerSchema);
     if (parsed instanceof Response) {
       return noStoreResponse(parsed);
+    }
+    // Проверяем ИТОГОВОЕ состояние: {ip} можно добавить в шаблон, а можно отвязать ноду.
+    const existing = storage.listServerRecords(profileId, adminUserId).find((s) => s.name === serverPathName);
+    if (existing) {
+      const ipError = ipWithoutNodeError(
+        parsed.template ?? existing.template,
+        parsed.nodeId !== undefined ? parsed.nodeId : existing.nodeId,
+      );
+      if (ipError) return ipError;
     }
 
     try {

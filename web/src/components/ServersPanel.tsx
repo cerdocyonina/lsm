@@ -57,9 +57,25 @@ const STRATEGY_LABELS: Record<SyncConflictStrategy, string> = {
   safe: "Safe (check first)",
 };
 
-/** true, если в шаблоне есть хоть какой-то плейсхолдер (именованный или легаси DUMMY). */
+// Серверные плейсхолдеры: одно значение на всех юзеров, из URL привязанной ноды.
+// Зеркалит SERVER_PLACEHOLDERS / nodeHost из src/placeholders.ts.
+const SERVER_PLACEHOLDERS = ["ip"];
+
+function nodeHost(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * true, если в шаблоне есть хоть один ЮЗЕРСКИЙ плейсхолдер (именованный или легаси DUMMY).
+ * {ip} не в счёт: он у всех юзеров одинаковый, и ссылки от него разными не станут.
+ */
 function hasPlaceholder(template: string): boolean {
-  return /\{\w+\}/.test(template) || template.includes("DUMMY");
+  const named = [...template.matchAll(/\{(\w+)\}/g)].some((m) => !SERVER_PLACEHOLDERS.includes(m[1]!));
+  return named || template.includes("DUMMY");
 }
 
 // CodeMirror renders its own caret as part of one text-layout model, unlike the old
@@ -260,13 +276,23 @@ const PLACEHOLDER_HELP = (
           <code>{"{pass}"}</code> — пароль (NaïveProxy). Генерируется автоматически при первой
           выдаче подписки и дальше не меняется.
         </li>
+        <li>
+          <code>{"{sskey}"}</code> — личный ключ (Shadowsocks-2022). Генерируется так же.
+        </li>
+        <li>
+          <code>{"{ip}"}</code> — хост из URL привязанной ноды, один на всех юзеров. При переезде
+          ноды на новый IP достаточно поменять URL ноды. Без ноды не работает.
+        </li>
       </ul>
       <p className="mb-1 fw-semibold">Примеры</p>
       <div className="admin-code-wrap mb-1">
-        <code>vless://{"{uuid}"}@1.2.3.4:443?security=reality&amp;sni=microsoft.com#node-1</code>
+        <code>vless://{"{uuid}"}@{"{ip}"}:443?security=reality&amp;sni=microsoft.com#node-1</code>
+      </div>
+      <div className="admin-code-wrap mb-1">
+        <code>naive+https://{"{user}"}:{"{pass}"}@api.example.com:443#node-2</code>
       </div>
       <div className="admin-code-wrap">
-        <code>naive+https://{"{user}"}:{"{pass}"}@api.example.com:443#node-2</code>
+        <code>ss://2022-blake3-aes-128-gcm:IPSK:{"{sskey}"}@{"{ip}"}:9444#node-3</code>
       </div>
       <p className="mb-0 mt-2 text-body-secondary">
         Неизвестный плейсхолдер подставится пустой строкой — проверяй имена.
@@ -483,6 +509,12 @@ export function ServersPanel({
                 одну и ту же ссылку.
               </Alert>
             )}
+            {serverForm.template.includes("{ip}") && serverForm.nodeId === null && (
+              <Alert variant="warning" className="mt-2 mb-0 py-2 small">
+                <code>{"{ip}"}</code> берётся из URL привязанной ноды — выбери ноду ниже, без неё сервер
+                не сохранится.
+              </Alert>
+            )}
           </Form.Group>
 
           {nodes.length > 0 && (
@@ -511,6 +543,15 @@ export function ServersPanel({
               </Form.Select>
               <Form.Text className="text-muted">
                 When set, new users are automatically synced to this node.
+                {(() => {
+                  const node = nodes.find((n) => n.id === serverForm.nodeId);
+                  return node && serverForm.template.includes("{ip}") ? (
+                    <>
+                      {" "}
+                      <code>{"{ip}"}</code> → <code>{nodeHost(node.url) || "?"}</code>
+                    </>
+                  ) : null;
+                })()}
               </Form.Text>
               {(() => {
                 const sharedWith = serverForm.nodeId

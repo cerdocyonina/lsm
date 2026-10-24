@@ -15,12 +15,13 @@ import { loadDumpOrThrow } from "./app-config";
 import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
 import { config, validateEnvOrThrow } from "./env-validation";
 import { logError, logger } from "./logger";
-import { templatePlaceholders } from "./placeholders";
+import { templateNeedsNode, templatePlaceholders } from "./placeholders";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import type { ClientHttpPingResult, PingResult, ServerIcmpResult } from "./ping";
 import { SqliteStorage } from "./storage";
 import { buildMultiProfileDump, buildProfileDump } from "./storage";
 import { createSubscriptionToken, loadAppContext } from "./sub-links";
+import { resolveServerTemplates } from "./subscription";
 
 dotenv.config({
   path: resolve(__dirname, "..", process.env.ENV_PATH || ".env"),
@@ -587,6 +588,10 @@ async function bootstrap() {
           storage.addServer(profileId, name, template, Date.now(), ownerId),
         );
         logger.info(`stored server "${name}" in profile "${profileId}"`);
+        // CLI не умеет привязывать ноду, а {ip} берётся из её URL.
+        if (templateNeedsNode(template)) {
+          logger.warn(`template uses {ip}: assign a node to "${name}" in the admin panel, until then it renders with an empty host`);
+        }
       }),
     );
 
@@ -624,11 +629,15 @@ async function bootstrap() {
     .action(
       withErrorHandling((name, newUrl) => {
         const profileId = resolveProfile(program);
-        const updated = withStorageAsAdmin((storage, ownerId) =>
-          storage.setServerUrl(profileId, name, newUrl, ownerId),
-        );
+        const { updated, nodeId } = withStorageAsAdmin((storage, ownerId) => ({
+          updated: storage.setServerUrl(profileId, name, newUrl, ownerId),
+          nodeId: storage.listServerRecords(profileId, ownerId).find((s) => s.name === name)?.nodeId ?? null,
+        }));
         if (!updated) throw new Error(`Unknown server name: ${name}`);
         logger.info(`updated url for server "${name}"`);
+        if (nodeId === null && templateNeedsNode(newUrl)) {
+          logger.warn(`template uses {ip}, but "${name}" has no node: assign one in the admin panel, until then it renders with an empty host`);
+        }
       }),
     );
 
@@ -693,7 +702,7 @@ async function bootstrap() {
           usersOnly ? usersOnly.has(name) : usersExcept ? !usersExcept.has(name) : true;
 
         const profileId = resolveProfile(program);
-        const { serverRecords, users, clients } = withStorageAsAdmin((storage, ownerId) => {
+        const { serverRecords, templates, users, clients } = withStorageAsAdmin((storage, ownerId) => {
           let records = storage.listServerRecords(profileId, ownerId);
           if (nameArg) {
             records = records.filter((s) => s.name === nameArg);
@@ -704,15 +713,17 @@ async function bootstrap() {
           const allUsers = storage.listUsers(profileId, ownerId).filter((u) => keepUser(u.clientName));
           // Те же per-user креды, что рендерит подписка — нужны для реальной http-пробы
           // (uuid для vless, {user}/{pass} для naive, {sskey} для ss).
-          const required = [...new Set(records.flatMap((s) => templatePlaceholders(s.template)))];
+          // {ip} подставлен заранее: и ICMP, и http-проба разбирают host:port прямо из шаблона.
+          const resolvedTemplates = resolveServerTemplates(storage, records, ownerId);
+          const required = [...new Set(resolvedTemplates.flatMap((template) => templatePlaceholders(template)))];
           const clientList = allUsers.map((u) => ({
             clientName: u.clientName,
             identity: resolvedIdentityFor(u, ensureUserCredentials(storage, u, required)),
           }));
-          return { serverRecords: records, users: allUsers, clients: clientList };
+          return { serverRecords: records, templates: resolvedTemplates, users: allUsers, clients: clientList };
         });
 
-        const servers = serverRecords.map((s) => ({ name: s.name, template: s.template }));
+        const servers = serverRecords.map((s, i) => ({ name: s.name, template: templates[i]! }));
 
         function fmtPing(r: PingResult): string {
           if (r.ok && r.latencyMs !== null) return chalk.green(`${r.latencyMs}ms`);

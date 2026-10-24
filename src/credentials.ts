@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { SERVER_PLACEHOLDERS } from "./placeholders";
 
 /** 16 случайных байт в base64url дают ровно 22 символа без паддинга. */
 function randomSecret(): string {
@@ -29,9 +30,11 @@ export function generateCredential(key: string, clientName: string): string {
 /**
  * Какие из требуемых кредов надо сгенерировать.
  * "uuid" исключается: он хранится в отдельной колонке user_uuid, а не в мешке.
+ * Серверные плейсхолдеры ({ip}) — тоже: их значение даёт нода, а не юзер, иначе каждый
+ * юзер получил бы в мешок случайный "ip".
  */
 export function missingCredentialKeys(required: string[], have: Record<string, string>): string[] {
-  return required.filter((key) => key !== "uuid" && !have[key]);
+  return required.filter((key) => key !== "uuid" && !SERVER_PLACEHOLDERS.includes(key) && !have[key]);
 }
 
 /**

@@ -59,6 +59,22 @@ describe("subscription render", () => {
     expect(storage.listUsers("main", owner)[0]!.credentials.sskey).toBe(userPsk);
   });
 
+  test("{ip} подставляется из URL ноды и следует за ней при переезде", () => {
+    const node = storage.addNode("vyrfop-ss", "http://108.165.164.194:9000/ss2022", "sec", 0, owner, 1000, "shadowsocks");
+    storage.addServer("main", "s1", "ss://2022-blake3-aes-128-gcm:IPSK==:{sskey}@{ip}:9444#SS", 1000, owner, node.id);
+    expect(renderSubscription(storage, "tok")[0]).toMatch(/@108\.165\.164\.194:9444#SS$/);
+
+    storage.updateNode(node.id, owner, { url: "http://191.217.211.141:9000/ss2022" });
+    expect(renderSubscription(storage, "tok")[0]).toMatch(/@191\.217\.211\.141:9444#SS$/);
+  });
+
+  test("{ip} не порождает кред в мешке юзера", () => {
+    const node = storage.addNode("n", "http://1.2.3.4:9000", "sec", 1, owner, 1000);
+    storage.addServer("main", "s1", "vless://{uuid}@{ip}:443#v", 1000, owner, node.id);
+    expect(renderSubscription(storage, "tok")).toEqual(["vless://uuid-alice@1.2.3.4:443#v"]);
+    expect(storage.listUsers("main", owner)[0]!.credentials).toEqual({});
+  });
+
   test("порядок ссылок следует sort_order", () => {
     storage.addServer("main", "a", "vless://DUMMY@a#a", 1000, owner);
     storage.addServer("main", "b", "vless://DUMMY@b#b", 1001, owner);
