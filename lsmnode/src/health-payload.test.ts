@@ -18,6 +18,14 @@ describe("buildHealthPayload", () => {
     });
   });
 
+  test("mieru-нода отдаёт поле mieru", () => {
+    expect(buildHealthPayload("mieru", { ok: true }, { version: "1.4.0" })).toEqual({
+      ok: true,
+      version: "1.4.0",
+      mieru: { ok: true },
+    });
+  });
+
   test("ошибка бэкенда прокидывается", () => {
     expect(buildHealthPayload("naive", { ok: false, error: "ECONNREFUSED" }, { version: "1.3.0" })).toEqual({
       ok: true,

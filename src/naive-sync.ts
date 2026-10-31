@@ -72,6 +72,20 @@ export function buildShadowsocksUsersForNode(
 }
 
 /**
+ * mieru-список (mita): логин <profile>.<clientName> — тот же {user}, что у naive, а пароль —
+ * отдельный кред {mpass}. Свой, а не общий {pass}: утечка конфига одного протокола не должна
+ * раскрывать доступ к другому, и ротировать их можно независимо. Оба значения попадают
+ * в mierus://-ссылку как userinfo без percent-encoding, поэтому charset тот же строгий.
+ */
+export function buildMieruUsersForNode(
+  storage: Storage,
+  nodeId: number,
+  ownerId: number,
+): { users: NaiveUser[]; skipped: string[] } {
+  return buildDeclarativeUsersForNode(storage, nodeId, ownerId, "mpass", (s) => NAIVE_CRED_RE.test(s));
+}
+
+/**
  * Синк naive-ноды декларативный: пушим весь целевой список, нода перерендеривает
  * конфиг. Удаление отдельного юзера — это тоже полный пуш, просто уже без него.
  */

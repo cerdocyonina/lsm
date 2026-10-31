@@ -712,7 +712,7 @@ async function bootstrap() {
           }
           const allUsers = storage.listUsers(profileId, ownerId).filter((u) => keepUser(u.clientName));
           // Те же per-user креды, что рендерит подписка — нужны для реальной http-пробы
-          // (uuid для vless, {user}/{pass} для naive, {sskey} для ss).
+          // (uuid для vless, {user}/{pass} для naive, {sskey} для ss, {user}/{mpass} для mieru).
           // {ip} подставлен заранее: и ICMP, и http-проба разбирают host:port прямо из шаблона.
           const resolvedTemplates = resolveServerTemplates(storage, records, ownerId);
           const required = [...new Set(resolvedTemplates.flatMap((template) => templatePlaceholders(template)))];

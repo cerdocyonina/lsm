@@ -23,6 +23,12 @@ describe("createNodeSchema", () => {
     expect(createNodeSchema.safeParse({ ...base, type: "naive", inboundId: 0 }).success).toBe(true);
   });
 
+  test("mieru не требует inboundId и получает 0", () => {
+    const parsed = createNodeSchema.parse({ ...base, type: "mieru" });
+    expect(parsed.type).toBe("mieru");
+    expect(parsed.inboundId).toBe(0);
+  });
+
   test("неизвестный тип отвергается", () => {
     expect(createNodeSchema.safeParse({ ...base, type: "wireguard", inboundId: 1 }).success).toBe(false);
   });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { buildNaiveUsersForNode, buildShadowsocksUsersForNode } from "./naive-sync";
+import { buildMieruUsersForNode, buildNaiveUsersForNode, buildShadowsocksUsersForNode } from "./naive-sync";
 import { SqliteStorage } from "./storage";
 
 const NAIVE = "naive+https://{user}:{pass}@h:443#n";
@@ -124,5 +124,59 @@ describe("buildShadowsocksUsersForNode", () => {
     const second = buildShadowsocksUsersForNode(storage, nodeId, owner);
     expect(second).toEqual(first);
     expect(storage.listUsers("main", owner)[0]!.credentials.sskey).toBe(first.users[0]!.pass);
+  });
+});
+
+const MIERU = "mierus://{user}:{mpass}@h?profile=default&port=8444-8453&protocol=TCP";
+
+describe("buildMieruUsersForNode", () => {
+  let storage: SqliteStorage;
+  let owner: number;
+  let nodeId: number;
+
+  beforeEach(() => {
+    storage = new SqliteStorage(":memory:", "admin");
+    owner = storage.getPrimaryAdmin().id;
+    storage.createProfile("par", owner, 0);
+    nodeId = storage.addNode("hosfop", "http://x:9000/mieru", "sek", 0, owner, 0, "mieru").id;
+  });
+
+  test("логин namespace-нут профилем; пароль — отдельный кред mpass, не naive-шный pass", () => {
+    storage.addServer("main", "s-mieru", MIERU, 0, owner, nodeId);
+    storage.addServer("main", "s-naive", NAIVE, 1, owner, null);
+    storage.addUser("main", "alice", "t1", "u1", 1000, owner);
+    // naive-пароль появляется в мешке при рендере naive-сервера — эмулируем это заранее.
+    storage.setUserCredentials("main", "alice", { pass: "naivePass123" }, owner);
+
+    const { users, skipped } = buildMieruUsersForNode(storage, nodeId, owner);
+    expect(skipped).toEqual([]);
+    expect(users).toHaveLength(1);
+    expect(users[0]!.user).toBe("main.alice");
+    expect(users[0]!.pass).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(users[0]!.pass).not.toBe("naivePass123");
+    const creds = storage.listUsers("main", owner)[0]!.credentials;
+    expect(creds.mpass).toBe(users[0]!.pass);
+    expect(creds.pass).toBe("naivePass123");
+  });
+
+  test("одинаковый clientName в двух профилях → логины различны, пароли разные", () => {
+    storage.addServer("main", "s-main", MIERU, 0, owner, nodeId);
+    storage.addServer("par", "s-par", MIERU, 0, owner, nodeId);
+    storage.addUser("main", "client1", "t1", "u1", 1000, owner);
+    storage.addUser("par", "client1", "t2", "u2", 1001, owner);
+
+    const byLabel = Object.fromEntries(buildMieruUsersForNode(storage, nodeId, owner).users.map((u) => [u.user, u.pass]));
+    expect(Object.keys(byLabel).sort()).toEqual(["main.client1", "par.client1"]);
+    expect(byLabel["main.client1"]).not.toBe(byLabel["par.client1"]);
+  });
+
+  test("невалидное имя пропускается, а не роняет синк всей ноды", () => {
+    storage.addServer("main", "s-main", MIERU, 0, owner, nodeId);
+    storage.addUser("main", "ok", "t1", "u1", 1000, owner);
+    storage.addUser("main", "bad name", "t2", "u2", 1001, owner);
+
+    const { users, skipped } = buildMieruUsersForNode(storage, nodeId, owner);
+    expect(users.map((u) => u.user)).toEqual(["main.ok"]);
+    expect(skipped).toEqual(["main/bad name"]);
   });
 });

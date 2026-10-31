@@ -280,6 +280,10 @@ const PLACEHOLDER_HELP = (
           <code>{"{sskey}"}</code> — личный ключ (Shadowsocks-2022). Генерируется так же.
         </li>
         <li>
+          <code>{"{mpass}"}</code> — пароль mieru. Отдельный от <code>{"{pass}"}</code>, генерируется так же;
+          логин — тот же <code>{"{user}"}</code>.
+        </li>
+        <li>
           <code>{"{ip}"}</code> — хост из URL привязанной ноды, один на всех юзеров. При переезде
           ноды на новый IP достаточно поменять URL ноды. Без ноды не работает.
         </li>
@@ -291,8 +295,13 @@ const PLACEHOLDER_HELP = (
       <div className="admin-code-wrap mb-1">
         <code>naive+https://{"{user}"}:{"{pass}"}@api.example.com:443#node-2</code>
       </div>
-      <div className="admin-code-wrap">
+      <div className="admin-code-wrap mb-1">
         <code>ss://2022-blake3-aes-128-gcm:IPSK:{"{sskey}"}@{"{ip}"}:9444#node-3</code>
+      </div>
+      <div className="admin-code-wrap">
+        <code>
+          mierus://{"{user}"}:{"{mpass}"}@{"{ip}"}?profile=default&amp;port=8444-8453&amp;protocol=TCP#node-4
+        </code>
       </div>
       <p className="mb-0 mt-2 text-body-secondary">
         Неизвестный плейсхолдер подставится пустой строкой — проверяй имена.

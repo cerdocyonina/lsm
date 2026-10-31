@@ -8,7 +8,7 @@ import {
 import type { LoginRateLimiter } from "./admin-rate-limit";
 import { parseDumpOrThrow } from "./app-config";
 import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
-import { buildNaiveUsersForNode, buildShadowsocksUsersForNode, syncNaiveNode } from "./naive-sync";
+import { buildMieruUsersForNode, buildNaiveUsersForNode, buildShadowsocksUsersForNode, syncNaiveNode } from "./naive-sync";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import { templateNeedsNode, templatePlaceholders } from "./placeholders";
 import { buildMultiProfileDump, buildProfileDump } from "./storage";
@@ -77,8 +77,8 @@ export const createNodeSchema = z
     name: z.string().min(1),
     url: z.string().url(),
     secret: z.string().min(1),
-    type: z.enum(["xui", "naive", "shadowsocks"]).default("xui"),
-    // nonnegative, not positive: naive/shadowsocks nodes have no inbound and store 0.
+    type: z.enum(["xui", "naive", "shadowsocks", "mieru"]).default("xui"),
+    // nonnegative, not positive: naive/shadowsocks/mieru nodes have no inbound and store 0.
     inboundId: z.number().int().nonnegative().default(0),
   })
   .refine((input) => input.type !== "xui" || input.inboundId >= 1, {
@@ -91,7 +91,7 @@ export const updateNodeSchema = z
     name: z.string().min(1).optional(),
     url: z.string().url().optional(),
     secret: z.string().min(1).optional(),
-    type: z.enum(["xui", "naive", "shadowsocks"]).optional(),
+    type: z.enum(["xui", "naive", "shadowsocks", "mieru"]).optional(),
     inboundId: z.number().int().nonnegative().optional(),
   })
   .refine(
@@ -252,9 +252,9 @@ function mapNodes(storage: Storage, ownerId: number) {
   }));
 }
 
-/** Ноды-«декларативы» (весь список пушится разом): naive и shadowsocks. */
+/** Ноды-«декларативы» (весь список пушится разом): naive, shadowsocks и mieru. */
 function isDeclarativeNode(node: NodeRecord): boolean {
-  return node.type === "naive" || node.type === "shadowsocks";
+  return node.type === "naive" || node.type === "shadowsocks" || node.type === "mieru";
 }
 
 /** Целевой список юзеров для декларативной ноды — по её типу выбираем нужный кред. */
@@ -263,9 +263,14 @@ function buildDeclarativeUsers(
   node: NodeRecord,
   ownerId: number,
 ): { users: { user: string; pass: string }[]; skipped: string[] } {
-  return node.type === "shadowsocks"
-    ? buildShadowsocksUsersForNode(storage, node.id, ownerId)
-    : buildNaiveUsersForNode(storage, node.id, ownerId);
+  switch (node.type) {
+    case "shadowsocks":
+      return buildShadowsocksUsersForNode(storage, node.id, ownerId);
+    case "mieru":
+      return buildMieruUsersForNode(storage, node.id, ownerId);
+    default:
+      return buildNaiveUsersForNode(storage, node.id, ownerId);
+  }
 }
 
 async function syncUserToNodes(
@@ -277,7 +282,7 @@ async function syncUserToNodes(
 ) {
   return Promise.allSettled(
     nodes.map(async (node) => {
-      // naive/shadowsocks are declarative: there is no per-user add. Push the whole
+      // naive/shadowsocks/mieru are declarative: there is no per-user add. Push the whole
       // desired list and let the node re-render its config.
       if (isDeclarativeNode(node)) {
         if (!naiveContext) {
@@ -655,9 +660,19 @@ export async function handleAdminApiRequest(
           xui?: { ok: boolean; error?: string };
           caddy?: { ok: boolean; error?: string };
           shadowsocks?: { ok: boolean; error?: string };
+          mieru?: { ok: boolean; error?: string };
         };
         return noStoreResponse(
-          jsonResponse({ ok: data.ok === true, version: data.version, commit: data.commit, date: data.date, xui: data.xui, caddy: data.caddy, shadowsocks: data.shadowsocks }),
+          jsonResponse({
+            ok: data.ok === true,
+            version: data.version,
+            commit: data.commit,
+            date: data.date,
+            xui: data.xui,
+            caddy: data.caddy,
+            shadowsocks: data.shadowsocks,
+            mieru: data.mieru,
+          }),
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -977,7 +992,8 @@ export async function handleAdminApiRequest(
     if (userSet) userRecords = userRecords.filter((u) => userSet.has(u.clientName));
     else if (userExceptSet) userRecords = userRecords.filter((u) => !userExceptSet.has(u.clientName));
     // Пингу нужны те же per-user креды, что и подписке: uuid для vless, {user}/{pass} для
-    // naive, {sskey} для ss. Резолвим идентичность точно так же, как рендер подписки.
+    // naive, {sskey} для ss, {user}/{mpass} для mieru. Резолвим идентичность точно так же,
+    // как рендер подписки.
     const required = [...new Set(templates.flatMap((template) => templatePlaceholders(template)))];
     const users = userRecords.map((u) => ({
       clientName: u.clientName,
@@ -1002,7 +1018,7 @@ export async function handleAdminApiRequest(
     const node = storage.getNode(serverRecord.nodeId, adminUserId);
     if (!node) return adminErrorResponse(404, `Node not found`);
 
-    // Naive/shadowsocks nodes take the whole list in one declarative push — per-user
+    // Naive/shadowsocks/mieru nodes take the whole list in one declarative push — per-user
     // conflict strategies don't apply, so skip that machinery entirely.
     if (isDeclarativeNode(node)) {
       const { users: declUsers, skipped } = buildDeclarativeUsers(storage, node, adminUserId);

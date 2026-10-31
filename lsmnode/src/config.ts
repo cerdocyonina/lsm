@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { XUIService } from "../../src/3x-ui";
 import { CaddyBackend } from "./backends/caddy";
+import { MieruBackend, validateBaseConfig } from "./backends/mieru";
 import { ShadowsocksBackend } from "./backends/shadowsocks";
 import type { NodeBackend } from "./backends/types";
 import { XuiBackend } from "./backends/xui";
@@ -54,6 +55,14 @@ export function createBackendFromSpec(name: string, spec: Record<string, unknown
       });
     case "xui":
       return new XuiBackend(new XUIService({ host: str("host"), user: str("user"), password: str("password") }));
+    case "mieru":
+      // baseConfig — серверный конфиг mita без users (portBindings, mtu, trafficPattern, ...).
+      // users рендерит сам бэкенд на каждом синке.
+      try {
+        return new MieruBackend({ baseConfig: validateBaseConfig(spec.baseConfig), mitaBin: optStr("mitaBin") });
+      } catch (err) {
+        throw new Error(`backend "${name}": ${err instanceof Error ? err.message : String(err)}`);
+      }
     default:
       throw new Error(`backend "${name}": unknown kind ${JSON.stringify(kind)}`);
   }
@@ -82,7 +91,8 @@ function buildLegacyBackend(env: Env): NodeBackend {
  *
  * Мультибэкенд-режим (BACKENDS_CONFIG=<путь к json>): один агент обслуживает несколько
  * провайдеров, каждый под своим именем-префиксом. Файл:
- *   { "default": "naive", "backends": { "naive": {kind, ...}, "ss2022": {kind, ...} } }
+ *   { "default": "naive", "backends": { "naive": {kind, ...}, "ss2022": {kind, ...},
+ *     "mieru": {"kind": "mieru", "baseConfig": {"portBindings": [...]}} } }
  *
  * Легаси-режим (без BACKENDS_CONFIG): единственный бэкенд из PROVIDER-env, смонтированный
  * под именем провайдера и назначенный default — существующие ноды продолжают работать

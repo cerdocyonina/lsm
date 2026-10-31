@@ -81,7 +81,8 @@ systemctl enable --now lsm-node
 | `XUI_HOST` | URL 3x-ui панели (обычно `http://127.0.0.1:2053`) | - |
 | `XUI_USER` | Логин 3x-ui | - |
 | `XUI_PASSWORD` | Пароль 3x-ui | - |
-| `PROVIDER` | Провайдер узла: `xui` \| `naive` | `xui` |
+| `PROVIDER` | Провайдер узла (одно-бэкендовый режим): `xui` \| `naive` | `xui` |
+| `BACKENDS_CONFIG` | Путь к `backends.json` — мультибэкенд-режим (naive, shadowsocks, mieru, xui на одном агенте). Если задан, `PROVIDER` игнорируется | - |
 | `CADDY_USERS_FILE` | (naive) файл с управляемыми `basic_auth`-строками, импортируемый в Caddyfile | - |
 | `CADDY_CONTAINER` | (naive) имя docker-контейнера с Caddy | `naive` |
 
@@ -124,9 +125,10 @@ Authorization: Bearer <SHARED_SECRET>
 
 Возможные значения `result`: `added`, `skipped`, `overwritten`, `kept-both`, `failed`.
 
-### `POST /sync-users` (PROVIDER=naive)
+### `POST /sync-users` (naive / shadowsocks / mieru)
 
-Декларативный синк: принимает **весь** целевой список и перерендеривает конфиг Caddy.
+Декларативный синк: принимает **весь** целевой список и перерендеривает конфиг провайдера
+(Caddy, Xray или mita).
 Отсутствующие в списке юзеры тем самым отзываются.
 
 ```json
@@ -137,3 +139,67 @@ Authorization: Bearer <SHARED_SECRET>
 
 ⚠️ Управляемый файл — не единственный источник авторизации: статическая строка `basic_auth`
 в основном Caddyfile обязана остаться, иначе пустой список сделает `forward_proxy` открытым.
+
+## mieru (mita)
+
+[mieru](https://github.com/enfein/mieru) — свой протокол поверх TCP/UDP без TLS (как shadowsocks).
+Сервер называется `mita` и ставится **нативно** (deb/rpm + systemd), не в docker. Агент управляет
+им через CLI `mita`, который ходит в unix-сокет `/var/run/mita/mita.sock`.
+
+Синк декларативный: агент рендерит **полный** конфиг (`baseConfig` + все юзеры) и делает
+`mita replace config` → `mita reload` → `mita start`. `reload` подменяет юзеров без обрыва живых
+соединений; `start` идемпотентен и нужен только на свежей установке, где прокси ещё в `IDLE`.
+`apply config` не используется: он мёржит юзеров по имени, и удалённый юзер остался бы жить.
+Пустой список — `users: []`, mita никого не пускает.
+
+### Установка на узле
+
+```bash
+# 1. mita (версию брать из https://github.com/enfein/mieru/releases)
+curl -fLO https://github.com/enfein/mieru/releases/download/v3.39.0/mita_3.39.0_amd64.deb
+sudo dpkg -i mita_3.39.0_amd64.deb      # ставит systemd-юнит mita и группу mita
+
+# 2. доступ агента к сокету mita: юзер, под которым крутится lsm-node, — в группу mita
+sudo usermod -aG mita "$(whoami)"
+sudo systemctl restart lsmnode          # systemd подхватит новую группу при рестарте
+
+# 3. точное время обязательно: ключ шифрования выводится из времени (окно ±4 минуты)
+timedatectl status | grep -i synchronized
+
+# 4. порты (docker тут не участвует, так что ufw действительно решает)
+sudo ufw allow 8444:8453/tcp
+```
+
+### `backends.json`
+
+```json
+{
+  "default": "naive",
+  "backends": {
+    "naive":  { "kind": "naive", "usersFile": "/opt/naive/managed/naive-users.caddy", "container": "naive" },
+    "mieru": {
+      "kind": "mieru",
+      "baseConfig": {
+        "portBindings": [{ "portRange": "8444-8453", "protocol": "TCP" }],
+        "mtu": 1400
+      }
+    }
+  }
+}
+```
+
+- `baseConfig` — серверный конфиг mita **без** `users` (их владелец — агент). Обязательны
+  `portBindings`; остальное (`mtu`, `trafficPattern`, `egress`, `dns`, ...) передаётся как есть,
+  формат — [server-install.md](https://github.com/enfein/mieru/blob/main/docs/server-install.md).
+- `mitaBin` — путь к бинарю, если `mita` не в `PATH` (по умолчанию `mita`).
+- Смена `portBindings`: поправить `backends.json`, рестартнуть агент, синкнуть. Если `reload`
+  не сможет пересоздать listeners, ошибка вернётся в ответе синка — тогда `mita stop && mita start`.
+
+### На мастере
+
+- нода: тип **mieru (mita)**, URL `http://<host>:9000/mieru` (имя бэкенда из `backends.json`);
+- шаблон сервера (простая ссылка mieru):
+  `mierus://{user}:{mpass}@{ip}?profile=default&port=8444-8453&protocol=TCP#mieru-node`.
+  `{user}` = `<профиль>.<клиент>` (как у naive), `{mpass}` — отдельный пароль mieru;
+- HTTP-пинг mieru требует клиент `mieru` в `PATH` мастера (поднимается временно с конфигом из
+  `MIERU_CONFIG_JSON_FILE`, socks5 → curl). Часы мастера тоже должны быть точными.

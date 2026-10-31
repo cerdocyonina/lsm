@@ -1,4 +1,4 @@
-import type { HealthStatus } from "./backends/types";
+import type { BackendKind, HealthStatus } from "./backends/types";
 
 export type VersionInfo = { version: string; commit?: string; date?: string };
 
@@ -10,6 +10,7 @@ export type HealthPayload = {
   xui?: HealthStatus;
   caddy?: HealthStatus;
   shadowsocks?: HealthStatus;
+  mieru?: HealthStatus;
 };
 
 /**
@@ -17,10 +18,11 @@ export type HealthPayload = {
  * в проде уже отдают "xui", naive — "caddy", и мастер читает именно их. Менять существующие
  * — значит требовать одновременного передеплоя всех нод.
  */
-const HEALTH_FIELD: Record<"xui" | "naive" | "shadowsocks", "xui" | "caddy" | "shadowsocks"> = {
+const HEALTH_FIELD: Record<BackendKind, "xui" | "caddy" | "shadowsocks" | "mieru"> = {
   xui: "xui",
   naive: "caddy",
   shadowsocks: "shadowsocks",
+  mieru: "mieru",
 };
 
 /**
@@ -28,7 +30,7 @@ const HEALTH_FIELD: Record<"xui" | "naive" | "shadowsocks", "xui" | "caddy" | "s
  * в поле провайдера.
  */
 export function buildHealthPayload(
-  kind: "xui" | "naive" | "shadowsocks",
+  kind: BackendKind,
   status: HealthStatus,
   version: VersionInfo,
 ): HealthPayload {

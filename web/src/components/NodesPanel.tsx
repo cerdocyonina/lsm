@@ -37,13 +37,52 @@ function FieldHint({ id, text }: { id: string; text: string }) {
   );
 }
 
-/** Под-статус провайдера: xui (3x-ui), caddy (naive) или shadowsocks (ss-2022). */
+/** Под-статус провайдера: xui (3x-ui), caddy (naive), shadowsocks (ss-2022) или mieru (mita). */
 function providerStatus(node: NodeRecord, result: NodeTestResult) {
-  if (node.type === "shadowsocks") {
-    return result.shadowsocks ? { status: result.shadowsocks, label: "Shadowsocks" } : null;
+  const byType = {
+    xui: { status: result.xui, label: "3x-ui" },
+    naive: { status: result.caddy, label: "Caddy" },
+    shadowsocks: { status: result.shadowsocks, label: "Shadowsocks" },
+    mieru: { status: result.mieru, label: "mita" },
+  } satisfies Record<NodeType, { status?: { ok: boolean; error?: string }; label: string }>;
+  const { status, label } = byType[node.type];
+  return status ? { status, label } : null;
+}
+
+/** Бейдж типа в списке нод; у xui вместо типа — номер инбаунда. */
+const TYPE_BADGE: Record<Exclude<NodeType, "xui">, string> = {
+  naive: "naive",
+  shadowsocks: "ss-2022",
+  mieru: "mieru",
+};
+
+/** Пояснение под выбором типа для декларативных нод (у них нет инбаунда). */
+function DeclarativeNodeHint({ type }: { type: Exclude<NodeType, "xui"> }) {
+  if (type === "mieru") {
+    return (
+      <>
+        У mieru нет инбаундов. Агент рендерит полный конфиг <code>mita</code> (порты из{" "}
+        <code>baseConfig</code> в <code>backends.json</code> агента + все юзеры) и применяет его через{" "}
+        <code>mita replace config</code> + <code>mita reload</code> — без обрыва соединений. Юзер агента
+        должен быть в группе <code>mita</code>.
+      </>
+    );
   }
-  const status = node.type === "naive" ? result.caddy : result.xui;
-  return status ? { status, label: node.type === "naive" ? "Caddy" : "3x-ui" } : null;
+  if (type === "shadowsocks") {
+    return (
+      <>
+        У Shadowsocks-2022 нет инбаундов в панели. Агент рендерит конфиг Xray со всеми per-user ключами
+        и рестартит контейнер. Порт, метод и identity-ключ задаются в <code>backends.json</code> агента.
+      </>
+    );
+  }
+  return (
+    <>
+      У NaïveProxy нет инбаундов. Агент управляет юзерами прямо в конфиге Caddy: пушит весь список и
+      делает <code>caddy reload</code>. Пути и имя контейнера настраиваются в <code>.env</code> самого
+      агента (<code>CADDY_USERS_FILE</code>, <code>CADDY_CONTAINER</code>).
+    </>
+  );
 }
 
 export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTestNode }: NodesPanelProps) {
@@ -152,7 +191,7 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                   Type
                   <FieldHint
                     id="hint-node-type"
-                    text="Чем управляет агент на узле: панелью 3x-ui (VLESS), Caddy с NaiveProxy или Xray с Shadowsocks-2022."
+                    text="Чем управляет агент на узле: панелью 3x-ui (VLESS), Caddy с NaiveProxy, Xray с Shadowsocks-2022 или mita (mieru)."
                   />
                 </Form.Label>
                 <Form.Select
@@ -162,6 +201,7 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                   <option value="xui">3x-ui (VLESS)</option>
                   <option value="naive">NaïveProxy (Caddy)</option>
                   <option value="shadowsocks">Shadowsocks-2022 (Xray)</option>
+                  <option value="mieru">mieru (mita)</option>
                 </Form.Select>
               </Form.Group>
             </div>
@@ -184,16 +224,17 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
             </Form.Group>
           ) : (
             <Alert variant="secondary" className="mb-3 py-2 small">
-              У NaïveProxy нет инбаундов. Агент управляет юзерами прямо в конфиге Caddy: пушит
-              весь список и делает <code>caddy reload</code>. Пути и имя контейнера настраиваются
-              в <code>.env</code> самого агента (<code>CADDY_USERS_FILE</code>, <code>CADDY_CONTAINER</code>).
+              <DeclarativeNodeHint type={form.type} />
             </Alert>
           )}
 
           <Form.Group className="mb-3" controlId="node-url">
             <Form.Label>
               URL
-              <FieldHint id="hint-node-url" text="Адрес агента lsm-node на узле, например http://1.2.3.4:9000" />
+              <FieldHint
+                id="hint-node-url"
+                text="Адрес агента lsm-node на узле, например http://1.2.3.4:9000. Если агент обслуживает несколько бэкендов, добавь имя бэкенда: http://1.2.3.4:9000/mieru"
+              />
             </Form.Label>
             <Form.Control
               required
@@ -246,10 +287,8 @@ export function NodesPanel({ nodes, onAddNode, onUpdateNode, onDeleteNode, onTes
                       <div className="flex-grow-1 min-w-0">
                         <div className="d-flex align-items-center gap-2 flex-wrap mb-1">
                           <span className="fw-semibold">{node.name}</span>
-                          {node.type === "naive" ? (
-                            <Badge bg="secondary" className="font-monospace fw-normal">naive</Badge>
-                          ) : node.type === "shadowsocks" ? (
-                            <Badge bg="secondary" className="font-monospace fw-normal">ss-2022</Badge>
+                          {node.type !== "xui" ? (
+                            <Badge bg="secondary" className="font-monospace fw-normal">{TYPE_BADGE[node.type]}</Badge>
                           ) : (
                             <Badge bg="secondary" className="font-monospace fw-normal">
                               inbound #{node.inboundId}

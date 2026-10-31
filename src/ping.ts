@@ -1,7 +1,8 @@
 import { rm, writeFile } from "node:fs/promises";
-import { connect, createServer } from "node:net";
+import { connect, createServer, isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveTemplate } from "./placeholders";
 import { runWithConcurrency } from "./utils";
 
 export type PingResult = {
@@ -67,10 +68,11 @@ export type NaiveParams = {
   port: number;
 };
 
-export function templateKind(template: string): "vless" | "naive" | "shadowsocks" | "unknown" {
+export function templateKind(template: string): "vless" | "naive" | "shadowsocks" | "mieru" | "unknown" {
   if (template.startsWith("vless://")) return "vless";
   if (template.startsWith("naive+https://")) return "naive";
   if (template.startsWith("ss://")) return "shadowsocks";
+  if (template.startsWith("mierus://")) return "mieru";
   return "unknown";
 }
 
@@ -123,6 +125,82 @@ export function parseShadowsocksClient(
   return { host: endpoint.host, port: endpoint.port, method: parts[0], identityKey: parts[1] };
 }
 
+export type MieruPortBinding = { port?: number; portRange?: string; protocol: "TCP" | "UDP" };
+
+export type MieruParams = {
+  /** Хост без IPv6-скобок — как его ждёт клиентский конфиг mieru. */
+  host: string;
+  /** Логин/пароль из userinfo (percent-decoded). В нерезолвленном шаблоне это "{user}" и т.п. */
+  user: string;
+  pass: string;
+  bindings: MieruPortBinding[];
+  mtu?: number;
+  multiplexing?: string;
+  handshakeMode?: string;
+};
+
+/**
+ * Разбирает простую mieru-ссылку (формат `mieru export config simple`):
+ *   mierus://<user>:<pass>@<host>?profile=<name>&port=<N|A-B>&protocol=<TCP|UDP>[&port=..&protocol=..]
+ * port/protocol повторяются парами по индексу. traffic-pattern намеренно игнорируем: это
+ * клиентская маскировка, с сервером он совпадать не обязан, а пробе он не нужен.
+ */
+export function parseMieruLink(link: string): MieruParams | null {
+  if (!link.startsWith("mierus://")) return null;
+  let url: URL;
+  try {
+    url = new URL(link);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.replace(/^\[(.*)\]$/, "$1");
+  if (!host) return null;
+
+  const ports = url.searchParams.getAll("port");
+  const protocols = url.searchParams.getAll("protocol");
+  if (ports.length === 0 || ports.length !== protocols.length) return null;
+  const bindings: MieruPortBinding[] = [];
+  for (let i = 0; i < ports.length; i++) {
+    const protocol = protocols[i];
+    if (protocol !== "TCP" && protocol !== "UDP") return null;
+    const port = ports[i]!;
+    const range = port.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      const [from, to] = [Number(range[1]), Number(range[2])];
+      if (from < 1 || to > 65535 || from > to) return null;
+      bindings.push({ portRange: `${from}-${to}`, protocol });
+    } else if (/^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535) {
+      bindings.push({ port: Number(port), protocol });
+    } else {
+      return null;
+    }
+  }
+
+  const decode = (value: string) => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  };
+  const mtu = url.searchParams.get("mtu");
+  return {
+    host,
+    user: decode(url.username),
+    pass: decode(url.password),
+    bindings,
+    ...(mtu && /^\d+$/.test(mtu) ? { mtu: Number(mtu) } : {}),
+    ...(url.searchParams.get("multiplexing") ? { multiplexing: url.searchParams.get("multiplexing")! } : {}),
+    ...(url.searchParams.get("handshake-mode") ? { handshakeMode: url.searchParams.get("handshake-mode")! } : {}),
+  };
+}
+
+/** Первый порт привязки (начало диапазона) — для отображения host:port и ICMP-строки. */
+function firstMieruPort(bindings: MieruPortBinding[]): number {
+  const first = bindings[0]!;
+  return first.port ?? Number(first.portRange!.split("-")[0]);
+}
+
 /** host/port шаблона независимо от провайдера — для ICMP-пинга. */
 export function parseTemplateEndpoint(template: string): NaiveParams | null {
   switch (templateKind(template)) {
@@ -134,6 +212,10 @@ export function parseTemplateEndpoint(template: string): NaiveParams | null {
       return parseNaiveParams(template);
     case "shadowsocks":
       return parseShadowsocksParams(template);
+    case "mieru": {
+      const params = parseMieruLink(template);
+      return params ? { host: params.host, port: firstMieruPort(params.bindings) } : null;
+    }
     default:
       return null;
   }
@@ -254,11 +336,20 @@ function curlProbeResult(output: string, elapsedMs: number): PingResult {
   };
 }
 
+type LocalProxySpec = {
+  /** Имя для сообщений об ошибках ("xray", "mieru"). */
+  name: string;
+  /** Конфиг локального клиента, слушающего socks5 на 127.0.0.1:socksPort. */
+  buildConfig: (socksPort: number) => unknown;
+  /** Как запустить клиента с этим конфигом. */
+  spawn: (configFile: string) => { argv: string[]; env?: Record<string, string | undefined> };
+};
+
 /**
- * Гоняет 204-пробу через локальный xray с заданным outbound (socks5 → curl).
- * Общий движок для vless и shadowsocks: различаются только outbound-настройки.
+ * Поднимает локального прокси-клиента (socks5 на свободном порту), гоняет через него
+ * 204-пробу curl-ом и гасит клиента. Общий движок для xray (vless, ss) и mieru.
  */
-async function pingThroughXray(outbound: unknown, timeoutMs: number): Promise<PingResult> {
+async function pingThroughLocalProxy(spec: LocalProxySpec, timeoutMs: number): Promise<PingResult> {
   let socksPort: number;
   try {
     socksPort = await getUniqueFreePort();
@@ -266,28 +357,31 @@ async function pingThroughXray(outbound: unknown, timeoutMs: number): Promise<Pi
     return { ok: false, latencyMs: null, error: "failed to find free port" };
   }
 
-  const xrayConfig = {
-    log: { loglevel: "none" },
-    inbounds: [{ listen: "127.0.0.1", port: socksPort, protocol: "socks", settings: { udp: false } }],
-    outbounds: [outbound],
-  };
   const tmpFile = join(tmpdir(), `lsm-ping-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
 
   try {
-    await writeFile(tmpFile, JSON.stringify(xrayConfig));
+    // 0600: в конфиге лежат креды юзера.
+    await writeFile(tmpFile, JSON.stringify(spec.buildConfig(socksPort)), { mode: 0o600 });
 
-    const xrayProc = Bun.spawn(["xray", "run", "-c", tmpFile], { stdout: "pipe", stderr: "pipe" });
+    const { argv, env } = spec.spawn(tmpFile);
+    const proxyProc = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", env: env ?? process.env });
     const portPromise = waitForPort(socksPort, 5000);
     const crashPromise = (async () => {
-      const code = await xrayProc.exited;
-      throw new Error(`xray crashed instantly with code ${code}`);
+      const code = await proxyProc.exited;
+      // mieru с MIERU_CONFIG_JSON_FILE логирует в stdout, xray — в stderr: берём, что есть.
+      const [stderr, stdout] = await Promise.all([
+        new Response(proxyProc.stderr).text(),
+        new Response(proxyProc.stdout).text(),
+      ]);
+      const lastLine = (stderr.trim() || stdout.trim()).split("\n").pop();
+      throw new Error(`${spec.name} crashed instantly with code ${code}${lastLine ? `: ${lastLine}` : ""}`);
     })();
 
     try {
       await Promise.race([portPromise, crashPromise]);
     } catch (err) {
-      xrayProc.kill();
-      await xrayProc.exited;
+      proxyProc.kill();
+      await proxyProc.exited;
       return { ok: false, latencyMs: null, error: (err as Error).message };
     }
 
@@ -306,8 +400,8 @@ async function pingThroughXray(outbound: unknown, timeoutMs: number): Promise<Pi
     await curlProc.exited;
     const elapsed = Date.now() - start;
 
-    xrayProc.kill();
-    await xrayProc.exited;
+    proxyProc.kill();
+    await proxyProc.exited;
     return curlProbeResult(curlOutput, elapsed);
   } catch (err) {
     return { ok: false, latencyMs: null, error: (err as Error).message };
@@ -315,6 +409,71 @@ async function pingThroughXray(outbound: unknown, timeoutMs: number): Promise<Pi
     await rm(tmpFile, { force: true });
     activePorts.delete(socksPort);
   }
+}
+
+/** 204-проба через локальный xray с заданным outbound (vless, shadowsocks). */
+function pingThroughXray(outbound: unknown, timeoutMs: number): Promise<PingResult> {
+  return pingThroughLocalProxy(
+    {
+      name: "xray",
+      buildConfig: (socksPort) => ({
+        log: { loglevel: "none" },
+        inbounds: [{ listen: "127.0.0.1", port: socksPort, protocol: "socks", settings: { udp: false } }],
+        outbounds: [outbound],
+      }),
+      spawn: (configFile) => ({ argv: ["xray", "run", "-c", configFile] }),
+    },
+    timeoutMs,
+  );
+}
+
+/**
+ * Клиентский конфиг mieru для пробы: один профиль, socks5 на заданном порту, RPC выключен
+ * (rpcPort 0 — так mieru работает в «мобильном» режиме, без управляющего сокета).
+ */
+export function buildMieruClientConfig(params: MieruParams, socksPort: number): Record<string, unknown> {
+  const isIp = isIP(params.host) !== 0;
+  return {
+    profiles: [
+      {
+        profileName: "lsm-ping",
+        user: { name: params.user, password: params.pass },
+        servers: [
+          {
+            ...(isIp ? { ipAddress: params.host } : { domainName: params.host }),
+            portBindings: params.bindings,
+          },
+        ],
+        ...(params.mtu ? { mtu: params.mtu } : {}),
+        ...(params.multiplexing ? { multiplexing: { level: params.multiplexing } } : {}),
+        ...(params.handshakeMode ? { handshakeMode: params.handshakeMode } : {}),
+      },
+    ],
+    activeProfile: "lsm-ping",
+    rpcPort: 0,
+    socks5Port: socksPort,
+    loggingLevel: "ERROR",
+  };
+}
+
+/**
+ * Per-user проверка mieru через официальный клиент: `mieru run` читает конфиг из
+ * MIERU_CONFIG_JSON_FILE (без записи в ~/.config/mieru) и поднимает socks5 — дальше та же
+ * 204-проба curl-ом. Ключ mieru зависит от времени: часы мастера и ноды должны расходиться
+ * не больше чем на ~4 минуты, иначе проба честно упадёт.
+ */
+function pingThroughMieru(params: MieruParams, timeoutMs: number): Promise<PingResult> {
+  return pingThroughLocalProxy(
+    {
+      name: "mieru",
+      buildConfig: (socksPort) => buildMieruClientConfig(params, socksPort),
+      spawn: (configFile) => ({
+        argv: ["mieru", "run"],
+        env: { ...process.env, MIERU_CONFIG_JSON_FILE: configFile },
+      }),
+    },
+    timeoutMs,
+  );
 }
 
 /**
@@ -347,7 +506,8 @@ async function pingNaiveTunnel(
 
 /**
  * Per-user проверка соединения. identity — та же карта, что рендерит подписка
- * (resolvedIdentityFor): uuid для vless, {user}/{pass} для naive, {sskey} для ss.
+ * (resolvedIdentityFor): uuid для vless, {user}/{pass} для naive, {sskey} для ss,
+ * {user}/{mpass} для mieru.
  */
 export async function pingHttp(
   template: string,
@@ -380,6 +540,16 @@ export async function pingHttp(
       },
       timeoutMs,
     );
+  }
+
+  if (kind === "mieru") {
+    // Шаблон может брать креды из любых плейсхолдеров — резолвим его так же, как подписка,
+    // и разбираем уже готовую ссылку.
+    const mieru = parseMieruLink(resolveTemplate(template, identity));
+    if (!mieru) return { ok: false, latencyMs: null, error: "failed to parse server template" };
+    if (!mieru.user || !mieru.pass) return { ok: false, latencyMs: null, error: "missing mieru credentials" };
+    if (!checkToolOnPath("mieru")) return { ok: false, latencyMs: null, error: "mieru not found on PATH" };
+    return pingThroughMieru(mieru, timeoutMs);
   }
 
   const params = parseVlessParams(template);

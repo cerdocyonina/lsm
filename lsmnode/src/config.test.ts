@@ -22,6 +22,18 @@ describe("createBackendFromSpec", () => {
     expect(b.kind).toBe("shadowsocks");
   });
 
+  test("mieru → MieruBackend (kind mieru)", () => {
+    const b = createBackendFromSpec("mieru", {
+      kind: "mieru",
+      baseConfig: { portBindings: [{ portRange: "8444-8453", protocol: "TCP" }] },
+    });
+    expect(b.kind).toBe("mieru");
+  });
+
+  test("mieru без portBindings — ошибка с именем бэкенда", () => {
+    expect(() => createBackendFromSpec("mieru", { kind: "mieru", baseConfig: {} })).toThrow(/backend "mieru".*portBindings/);
+  });
+
   test("неизвестный kind — ошибка", () => {
     expect(() => createBackendFromSpec("x", { kind: "wireguard" })).toThrow(/unknown kind/);
   });

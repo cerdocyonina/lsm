@@ -37,6 +37,24 @@ describe("subscription render", () => {
     expect(links[1]).toMatch(/^naive\+https:\/\/main\.alice:[A-Za-z0-9_-]{22}@h:443#n$/);
   });
 
+  test("mieru-шаблон: {user} + отдельный {mpass}, хост из {ip} ноды, параметры не трогаются", () => {
+    const nodeId = storage.addNode("m1", "http://5.6.7.8:9000/mieru", "sek", 0, owner, 0, "mieru").id;
+    storage.addServer(
+      "main",
+      "mieru-1",
+      "mierus://{user}:{mpass}@{ip}?profile=default&port=8444-8453&protocol=TCP#mieru",
+      1000,
+      owner,
+      nodeId,
+    );
+    const [link] = renderSubscription(storage, "tok");
+    expect(link).toMatch(
+      /^mierus:\/\/main\.alice:[A-Za-z0-9_-]{22}@5\.6\.7\.8\?profile=default&port=8444-8453&protocol=TCP#mieru$/,
+    );
+    const creds = storage.listUsers("main", owner)[0]!.credentials;
+    expect(link).toContain(`:${creds.mpass}@`);
+  });
+
   test("пароль стабилен между запросами подписки", () => {
     storage.addServer("main", "s1", "naive+https://{user}:{pass}@h:443#n", 1000, owner);
     expect(renderSubscription(storage, "tok")).toEqual(renderSubscription(storage, "tok"));
