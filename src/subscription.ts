@@ -1,4 +1,5 @@
 import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
+import { encodeMieruLink } from "./mieru-link";
 import { applyServerPlaceholders, resolveTemplate, templatePlaceholders } from "./placeholders";
 import { encodeShadowsocksLink } from "./ss-link";
 import type { ServerRecord, Storage, UserRecord } from "./storage";
@@ -28,6 +29,7 @@ export function renderSubscriptionLinks(storage: Storage, user: UserRecord): str
   const credentials = ensureUserCredentials(storage, user, required);
   const identity = resolvedIdentityFor(user, credentials);
   // ss-шаблоны хранятся с плоским userinfo, чтобы подставился {sskey}; encodeShadowsocksLink
-  // затем кодирует userinfo в base64url (SIP002). Для остальных схем это no-op.
-  return templates.map((template) => encodeShadowsocksLink(resolveTemplate(template, identity)));
+  // затем кодирует userinfo в base64url (SIP002). encodeMieruLink percent-кодирует query
+  // mierus://-ссылки (profile=🇩🇪 DE 2 можно писать как есть). Для остальных схем оба — no-op.
+  return templates.map((template) => encodeMieruLink(encodeShadowsocksLink(resolveTemplate(template, identity))));
 }

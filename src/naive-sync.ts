@@ -11,6 +11,17 @@ export type NaiveUser = { user: string; pass: string };
 const NAIVE_CRED_RE = /^[A-Za-z0-9._-]+$/;
 
 /**
+ * Целевой список для декларативной ноды. profiles — откуда взялись юзеры (сколько ушло из
+ * каждого профиля): синк, нажатый в одном профиле, честно пушит всех, кто сидит на ноде,
+ * и панель показывает эту разбивку, чтобы число не выглядело «синкнулись чужие профили».
+ */
+export type DeclarativeUsers = {
+  users: NaiveUser[];
+  skipped: string[];
+  profiles: { name: string; users: number }[];
+};
+
+/**
  * Полный декларативный список юзеров для ноды — ОБЪЕДИНЕНИЕ юзеров ВСЕХ профилей, чей сервер
  * привязан к этой ноде. Синк декларативный (нода заменяет весь конфиг целиком), поэтому список
  * одного профиля затёр бы остальные — надо слать всех, кто попадает на ноду через любой профиль.
@@ -30,26 +41,30 @@ function buildDeclarativeUsersForNode(
   ownerId: number,
   credKey: string,
   validSecret: (secret: string) => boolean,
-): { users: NaiveUser[]; skipped: string[] } {
+): DeclarativeUsers {
   const valid: NaiveUser[] = [];
   const skipped: string[] = [];
+  const profiles: DeclarativeUsers["profiles"] = [];
   for (const profile of storage.listProfiles(ownerId)) {
     const usesNode = storage
       .listServerRecords(profile.name, ownerId)
       .some((server) => server.nodeId === nodeId);
     if (!usesNode) continue;
 
+    let pushed = 0;
     for (const user of storage.listUsers(profile.name, ownerId)) {
       const login = naiveLogin(profile.name, user.clientName);
       const secret = ensureUserCredentials(storage, user, [credKey])[credKey]!;
       if (NAIVE_CRED_RE.test(login) && validSecret(secret)) {
         valid.push({ user: login, pass: secret });
+        pushed++;
       } else {
         skipped.push(`${profile.name}/${user.clientName}`);
       }
     }
+    profiles.push({ name: profile.name, users: pushed });
   }
-  return { users: valid, skipped };
+  return { users: valid, skipped, profiles };
 }
 
 /** Naive-список (login <profile>.<clientName> + base64url-пароль, всё в строгом charset). */
@@ -57,7 +72,7 @@ export function buildNaiveUsersForNode(
   storage: Storage,
   nodeId: number,
   ownerId: number,
-): { users: NaiveUser[]; skipped: string[] } {
+): DeclarativeUsers {
   return buildDeclarativeUsersForNode(storage, nodeId, ownerId, "pass", (s) => NAIVE_CRED_RE.test(s));
 }
 
@@ -66,7 +81,7 @@ export function buildShadowsocksUsersForNode(
   storage: Storage,
   nodeId: number,
   ownerId: number,
-): { users: NaiveUser[]; skipped: string[] } {
+): DeclarativeUsers {
   // sskey генерится нами как стандартный base64 → валиден по построению; проверять не нужно.
   return buildDeclarativeUsersForNode(storage, nodeId, ownerId, "sskey", () => true);
 }
@@ -81,7 +96,7 @@ export function buildMieruUsersForNode(
   storage: Storage,
   nodeId: number,
   ownerId: number,
-): { users: NaiveUser[]; skipped: string[] } {
+): DeclarativeUsers {
   return buildDeclarativeUsersForNode(storage, nodeId, ownerId, "mpass", (s) => NAIVE_CRED_RE.test(s));
 }
 

@@ -8,7 +8,13 @@ import {
 import type { LoginRateLimiter } from "./admin-rate-limit";
 import { parseDumpOrThrow } from "./app-config";
 import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
-import { buildMieruUsersForNode, buildNaiveUsersForNode, buildShadowsocksUsersForNode, syncNaiveNode } from "./naive-sync";
+import {
+  buildMieruUsersForNode,
+  buildNaiveUsersForNode,
+  buildShadowsocksUsersForNode,
+  type DeclarativeUsers,
+  syncNaiveNode,
+} from "./naive-sync";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import { templateNeedsNode, templatePlaceholders } from "./placeholders";
 import { buildMultiProfileDump, buildProfileDump } from "./storage";
@@ -263,7 +269,7 @@ function buildDeclarativeUsers(
   storage: Storage,
   node: NodeRecord,
   ownerId: number,
-): { users: { user: string; pass: string }[]; skipped: string[] } {
+): DeclarativeUsers {
   switch (node.type) {
     case "shadowsocks":
       return buildShadowsocksUsersForNode(storage, node.id, ownerId);
@@ -1020,15 +1026,19 @@ export async function handleAdminApiRequest(
     if (!node) return adminErrorResponse(404, `Node not found`);
 
     // Naive/shadowsocks/mieru nodes take the whole list in one declarative push — per-user
-    // conflict strategies don't apply, so skip that machinery entirely.
+    // conflict strategies don't apply, so skip that machinery entirely. The push carries the
+    // users of EVERY profile with a server on this node (this profile's alone would revoke
+    // the rest); `profiles` breaks the count down so the panel can say where it comes from.
     if (isDeclarativeNode(node)) {
-      const { users: declUsers, skipped } = buildDeclarativeUsers(storage, node, adminUserId);
+      const { users: declUsers, skipped, profiles } = buildDeclarativeUsers(storage, node, adminUserId);
       const res = await syncNaiveNode(node, declUsers);
       if (res.error) return adminErrorResponse(502, res.error);
       return noStoreResponse(
         jsonResponse({
           synced: res.synced,
           failed: skipped.length,
+          node: node.name,
+          profiles,
           results: [
             ...declUsers.map((u) => ({ clientName: u.user, result: "added" })),
             ...skipped.map((clientName) => ({ clientName, result: "skipped" })),

@@ -52,6 +52,27 @@ describe("buildNaiveUsersForNode", () => {
     expect(users.map((u) => u.user)).toEqual(["main.alice"]);
   });
 
+  test("profiles: разбивка по профилям — только профили с сервером на ноде, без пропущенных юзеров", () => {
+    const other = storage.addNode("solo", "http://y:9000", "sek", 0, owner, 0, "naive").id;
+    storage.addServer("main", "s-main", NAIVE, 0, owner, nodeId);
+    storage.addServer("par", "s-par", NAIVE, 0, owner, nodeId);
+    storage.addServer("pul", "s-pul", NAIVE, 0, owner, other);
+    storage.addUser("main", "alice", "t1", "u1", 1000, owner);
+    storage.addUser("main", "bad@name", "t2", "u2", 1001, owner); // невалидный логин → skipped
+    storage.addUser("par", "bob", "t3", "u3", 1002, owner);
+    storage.addUser("par", "carol", "t4", "u4", 1003, owner);
+    storage.addUser("pul", "dave", "t5", "u5", 1004, owner);
+
+    const { users, skipped, profiles } = buildNaiveUsersForNode(storage, nodeId, owner);
+    // Порядок — как у listProfiles (порядок профилей в панели), поэтому сравниваем без него.
+    expect([...profiles].sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+      { name: "main", users: 1 },
+      { name: "par", users: 2 },
+    ]);
+    expect(profiles.reduce((sum, p) => sum + p.users, 0)).toBe(users.length);
+    expect(skipped).toEqual(["main/bad@name"]);
+  });
+
   test("пароль persist-ится и стабилен между вызовами — тот же, что отдаст подписка", () => {
     storage.addServer("main", "s-main", NAIVE, 0, owner, nodeId);
     storage.addUser("main", "alice", "t1", "u1", 1000, owner);
@@ -73,7 +94,7 @@ describe("buildNaiveUsersForNode", () => {
   });
 
   test("нет привязанных профилей — пустой результат", () => {
-    expect(buildNaiveUsersForNode(storage, nodeId, owner)).toEqual({ users: [], skipped: [] });
+    expect(buildNaiveUsersForNode(storage, nodeId, owner)).toEqual({ users: [], skipped: [], profiles: [] });
   });
 });
 

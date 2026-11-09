@@ -2,6 +2,7 @@ import { rm, writeFile } from "node:fs/promises";
 import { connect, createServer, isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { encodeMieruLink } from "./mieru-link";
 import { resolveTemplate } from "./placeholders";
 import { runWithConcurrency } from "./utils";
 
@@ -144,12 +145,15 @@ export type MieruParams = {
  *   mierus://<user>:<pass>@<host>?profile=<name>&port=<N|A-B>&protocol=<TCP|UDP>[&port=..&protocol=..]
  * port/protocol повторяются парами по индексу. traffic-pattern намеренно игнорируем: это
  * клиентская маскировка, с сервером он совпадать не обязан, а пробе он не нужен.
+ *
+ * Сначала ссылка проходит тот же encodeMieruLink, что и подписка: сырой profile со '&' или
+ * пробелами не должен сдвинуть разбор port/protocol — проба видит ровно то, что получит клиент.
  */
 export function parseMieruLink(link: string): MieruParams | null {
   if (!link.startsWith("mierus://")) return null;
   let url: URL;
   try {
-    url = new URL(link);
+    url = new URL(encodeMieruLink(link));
   } catch {
     return null;
   }

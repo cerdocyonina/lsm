@@ -301,9 +301,14 @@ const PLACEHOLDER_HELP = (
       </div>
       <div className="admin-code-wrap">
         <code>
-          mierus://{"{user}"}:{"{mpass}"}@{"{ip}"}?profile=default&amp;port=8444-8453&amp;protocol=TCP#node-4
+          mierus://{"{user}"}:{"{mpass}"}@{"{ip}"}?profile=🇩🇪 Node 4&amp;port=8444-8453&amp;protocol=TCP#🇩🇪 Node 4
         </code>
       </div>
+      <p className="mb-0 mt-2 text-body-secondary">
+        mieru-клиенты показывают имя из <code>profile=</code>, а не из <code>#</code>. Его можно писать
+        как есть (эмодзи, пробелы, скобки) — в подписке оно закодируется само. <code>#</code> внутри
+        имени пиши как <code>%23</code>.
+      </p>
       <p className="mb-0 mt-2 text-body-secondary">
         Неизвестный плейсхолдер подставится пустой строкой — проверяй имена.
       </p>
@@ -725,15 +730,24 @@ export function ServersPanel({
                             </span>
                           );
                         }
+                        // naive/ss/mieru nodes get the users of every profile with a server on
+                        // them, so the count can exceed this profile's size — show where it comes from.
+                        const shared = r.profiles && r.profiles.length > 1 ? r.profiles : null;
+                        const breakdown = shared
+                          ? ` (whole node: ${shared.map((p) => `${p.name} ${p.users}`).join(" · ")})`
+                          : "";
+                        const hint = shared
+                          ? `"${r.node ?? "This node"}" is shared by several profiles and always receives all of their users: pushing only this profile would revoke the others.`
+                          : undefined;
                         return r.failed > 0 ? (
-                          <span className="text-warning small d-flex align-items-center gap-1">
+                          <span className="text-warning small d-flex align-items-center gap-1" title={hint}>
                             <TbCircleCheck size={13} />
-                            {r.synced} synced, {r.failed} failed
+                            {r.synced} synced, {r.failed} failed{breakdown}
                           </span>
                         ) : (
-                          <span className="text-success small d-flex align-items-center gap-1">
+                          <span className="text-success small d-flex align-items-center gap-1" title={hint}>
                             <TbCircleCheck size={13} />
-                            {r.synced} synced
+                            {r.synced} synced{breakdown}
                           </span>
                         );
                       })()}

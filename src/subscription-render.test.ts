@@ -55,6 +55,20 @@ describe("subscription render", () => {
     expect(link).toContain(`:${creds.mpass}@`);
   });
 
+  test("mieru: человекочитаемый profile из шаблона уходит в подписку percent-закодированным", () => {
+    storage.addServer(
+      "main",
+      "mieru-1",
+      "mierus://{user}:{mpass}@h?profile=🇩🇪 DE 2 [Mieru]&port=8444-8453&protocol=TCP#🇩🇪 DE 2 [Mieru]",
+      1000,
+      owner,
+    );
+    const [link] = renderSubscription(storage, "tok");
+    expect(link).toMatch(
+      /^mierus:\/\/main\.alice:[A-Za-z0-9_-]{22}@h\?profile=%F0%9F%87%A9%F0%9F%87%AA%20DE%202%20%5BMieru%5D&port=8444-8453&protocol=TCP#🇩🇪 DE 2 \[Mieru\]$/,
+    );
+  });
+
   test("пароль стабилен между запросами подписки", () => {
     storage.addServer("main", "s1", "naive+https://{user}:{pass}@h:443#n", 1000, owner);
     expect(renderSubscription(storage, "tok")).toEqual(renderSubscription(storage, "tok"));

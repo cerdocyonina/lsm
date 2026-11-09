@@ -130,6 +130,12 @@ describe("parseMieruLink", () => {
     expect(parseMieruLink("mierus://u:p@[2001:db8::1]?profile=d&port=8444&protocol=TCP")?.host).toBe("2001:db8::1");
   });
 
+  test("сырой profile со '&' и пробелами не сбивает разбор port/protocol", () => {
+    expect(parseMieruLink("mierus://u:p@h?profile=DE & NL [Mieru]&port=8444-8453&protocol=TCP#t")?.bindings).toEqual([
+      { portRange: "8444-8453", protocol: "TCP" },
+    ]);
+  });
+
   test("число port и protocol не совпадает — null", () => {
     expect(parseMieruLink("mierus://u:p@h?profile=d&port=8444&port=8445&protocol=TCP")).toBeNull();
   });
