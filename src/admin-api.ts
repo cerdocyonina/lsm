@@ -227,6 +227,7 @@ function mapUsers(storage: Storage, profileId: string, ownerId: number, baseUrl:
     subscriptionToken: user.subscriptionToken,
     subscriptionUrl: createSubscriptionUrl(baseUrl, user.subscriptionToken),
     createdAt: user.createdAt,
+    lastFetchedAt: user.lastFetchedAt,
   }));
 }
 

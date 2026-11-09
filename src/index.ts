@@ -94,6 +94,15 @@ async function handleRequest(req: Request): Promise<Response> {
       return new Response("Service unavailable", { status: 503 });
     }
 
+    // Телеметрия, а не часть выдачи: если запись не удалась (например, лок БД),
+    // подписку всё равно отдаём.
+    try {
+      storage.recordSubscriptionFetch(userRecord.subscriptionToken, Date.now());
+    } catch (error) {
+      logError(error);
+      logger.warn(`failed to record sub fetch for user "${userRecord.clientName}"`);
+    }
+
     logger.info(
       `served sub for user "${userRecord.clientName}": ${req.method} ${redactedPath}`,
     );

@@ -44,6 +44,39 @@ describe("user credentials", () => {
   });
 });
 
+describe("subscription fetch tracking", () => {
+  let storage: SqliteStorage;
+  let owner: number;
+
+  beforeEach(() => {
+    storage = newStorage();
+    owner = ownerId(storage);
+    storage.addUser("main", "alice", "tok-alice", "uuid-alice", 1000, owner);
+  });
+
+  test("новый юзер — ни разу не забирал подписку", () => {
+    expect(storage.listUsers("main", owner)[0]!.lastFetchedAt).toBeNull();
+    expect(storage.getUserBySubscriptionToken("tok-alice")!.lastFetchedAt).toBeNull();
+  });
+
+  test("recordSubscriptionFetch пишет время и перезаписывает его", () => {
+    expect(storage.recordSubscriptionFetch("tok-alice", 5000)).toBe(true);
+    expect(storage.listUsers("main", owner)[0]!.lastFetchedAt).toBe(5000);
+    storage.recordSubscriptionFetch("tok-alice", 9000);
+    expect(storage.getUserBySubscriptionToken("tok-alice")!.lastFetchedAt).toBe(9000);
+  });
+
+  test("переименование юзера не сбрасывает время", () => {
+    storage.recordSubscriptionFetch("tok-alice", 5000);
+    storage.renameUser("main", "alice", "alice2", owner);
+    expect(storage.listUsers("main", owner)[0]!.lastFetchedAt).toBe(5000);
+  });
+
+  test("неизвестный токен — false", () => {
+    expect(storage.recordSubscriptionFetch("nope", 5000)).toBe(false);
+  });
+});
+
 describe("node type", () => {
   let storage: SqliteStorage;
   let owner: number;

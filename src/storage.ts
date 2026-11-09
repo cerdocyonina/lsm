@@ -24,6 +24,8 @@ export type UserRecord = {
   userUuid: string;
   credentials: Record<string, string>;
   createdAt: number;
+  /** Когда подписку последний раз успешно отдали клиенту (ms epoch); null — ни разу. */
+  lastFetchedAt: number | null;
 };
 
 export type ServerRecord = {
@@ -72,6 +74,7 @@ export interface Storage {
   renameUser(profileName: string, oldName: string, newName: string, ownerId: number): boolean;
   setUserUuid(profileName: string, clientName: string, userUuid: string, ownerId: number): boolean;
   setUserCredentials(profileName: string, clientName: string, credentials: Record<string, string>, ownerId: number): boolean;
+  recordSubscriptionFetch(subscriptionToken: string, fetchedAt: number): boolean;
   removeUser(profileName: string, clientName: string, ownerId: number): boolean;
 
   // Server methods (all scoped by ownerId via profile)
@@ -122,7 +125,27 @@ export class SqliteStorage implements Storage {
   public constructor(path: string, private readonly primaryAdminUsername: string) {
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec("PRAGMA foreign_keys = ON;");
+    // БД делят два процесса (sub-сервер и админка), а sub-сервер пишет на каждой
+    // выдаче подписки (last_fetched_at). Без таймаута конкурентная запись сразу
+    // падает с SQLITE_BUSY вместо того, чтобы подождать освобождения лока.
+    this.db.exec("PRAGMA busy_timeout = 5000;");
     this.initialize();
+  }
+
+  /**
+   * ALTER TABLE ... ADD COLUMN, idempotent across processes. The sub server and the admin
+   * server share this DB and usually start together, so the other process may add the
+   * column between our PRAGMA check and the ALTER — that's success, not a startup crash.
+   */
+  private addColumnIfMissing(table: string, column: string, definition: string): void {
+    const cols = this.db.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (cols.some((c) => c.name === column)) return;
+    try {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("duplicate column name")) return;
+      throw err;
+    }
   }
 
   private initialize(): void {
@@ -190,12 +213,7 @@ export class SqliteStorage implements Storage {
     `);
 
     // 4. Migration: add node_id to servers if not present
-    const serverCols = this.db.query("PRAGMA table_info(servers)").all() as { name: string }[];
-    if (!serverCols.some((c) => c.name === "node_id")) {
-      this.db.exec(
-        "ALTER TABLE servers ADD COLUMN node_id INTEGER REFERENCES nodes(id) ON DELETE SET NULL",
-      );
-    }
+    this.addColumnIfMissing("servers", "node_id", "INTEGER REFERENCES nodes(id) ON DELETE SET NULL");
 
     // 5. Migration: add owner_id to profiles (recreate table to change UNIQUE constraint)
     const profileCols = this.db.query("PRAGMA table_info(profiles)").all() as { name: string }[];
@@ -257,17 +275,14 @@ export class SqliteStorage implements Storage {
 
     // 6a. Migration: per-user credential bag for named placeholders ({user}, {pass}, ...).
     // user_uuid stays where it is and remains the source for {uuid}.
-    const userCols = this.db.query("PRAGMA table_info(users)").all() as { name: string }[];
-    if (!userCols.some((c) => c.name === "credentials")) {
-      this.db.exec("ALTER TABLE users ADD COLUMN credentials TEXT NOT NULL DEFAULT '{}'");
-    }
+    this.addColumnIfMissing("users", "credentials", "TEXT NOT NULL DEFAULT '{}'");
 
-    // 6b. Migration: node provider type. Re-query — migration 6 may have just
+    // 6b. Migration: node provider type. Checked after migration 6, which may have just
     // recreated the nodes table without this column.
-    const nodeColsAfterMigration = this.db.query("PRAGMA table_info(nodes)").all() as { name: string }[];
-    if (!nodeColsAfterMigration.some((c) => c.name === "type")) {
-      this.db.exec("ALTER TABLE nodes ADD COLUMN type TEXT NOT NULL DEFAULT 'xui'");
-    }
+    this.addColumnIfMissing("nodes", "type", "TEXT NOT NULL DEFAULT 'xui'");
+
+    // 6c. Migration: last successful subscription fetch per user (nullable — "never").
+    this.addColumnIfMissing("users", "last_fetched_at", "INTEGER");
 
     // 7. Seed "main" profile for primary admin if not present
     const primaryAdminId = (
@@ -484,7 +499,7 @@ export class SqliteStorage implements Storage {
       .query(
         `SELECT p.name AS profileName, p.owner_id AS ownerId, u.client_name AS clientName,
          u.subscription_token AS subscriptionToken, u.user_uuid AS userUuid,
-         u.credentials AS credentials, u.created_at AS createdAt
+         u.credentials AS credentials, u.created_at AS createdAt, u.last_fetched_at AS lastFetchedAt
          FROM users u JOIN profiles p ON p.id = u.profile_id
          WHERE p.name = ?1 AND p.owner_id = ?2 ORDER BY u.created_at DESC, u.client_name`,
       )
@@ -497,7 +512,7 @@ export class SqliteStorage implements Storage {
       .query(
         `SELECT p.name AS profileName, p.owner_id AS ownerId, u.client_name AS clientName,
          u.subscription_token AS subscriptionToken, u.user_uuid AS userUuid,
-         u.credentials AS credentials, u.created_at AS createdAt
+         u.credentials AS credentials, u.created_at AS createdAt, u.last_fetched_at AS lastFetchedAt
          FROM users u JOIN profiles p ON p.id = u.profile_id
          WHERE u.subscription_token = ?1`,
       )
@@ -574,6 +589,13 @@ export class SqliteStorage implements Storage {
       return result.changes > 0;
     });
     return tx() as boolean;
+  }
+
+  public recordSubscriptionFetch(subscriptionToken: string, fetchedAt: number): boolean {
+    const result = this.db
+      .query("UPDATE users SET last_fetched_at = ?1 WHERE subscription_token = ?2")
+      .run(fetchedAt, subscriptionToken);
+    return result.changes > 0;
   }
 
   public removeUser(profileName: string, clientName: string, ownerId: number): boolean {

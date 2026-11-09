@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Paginator } from "./Paginator";
+import { SelectionBar } from "./SelectionBar";
 
 import {
   Alert,
@@ -196,7 +197,7 @@ type ServersPanelProps = {
   setServerForm: (next: ServerFormState) => void;
   selectedServers: Set<string>;
   onToggleServer: (name: string) => void;
-  onToggleAllServers: (visibleNames: string[]) => void;
+  onSelectServers: (next: Set<string>) => void;
   pingSelectionMode: boolean;
   onTogglePingSelection: () => void;
 };
@@ -329,7 +330,7 @@ export function ServersPanel({
   setServerForm,
   selectedServers,
   onToggleServer,
-  onToggleAllServers,
+  onSelectServers,
   pingSelectionMode,
   onTogglePingSelection,
 }: ServersPanelProps) {
@@ -338,7 +339,6 @@ export function ServersPanel({
   const [pageSize, setPageSize] = useState(25);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const dragSrcIdx = useRef<number | null>(null);
-  const selectAllRef = useRef<HTMLInputElement>(null);
   const [syncStrategy, setSyncStrategy] = useState<SyncConflictStrategy>("overwrite");
   const [syncingServer, setSyncingServer] = useState<string | null>(null);
   const [syncResults, setSyncResults] = useState<Record<string, NodeSyncUsersResult | null>>({});
@@ -380,20 +380,6 @@ export function ServersPanel({
   // filtered/paginated away, not just when pageSize's literal value is 0 ("All"). A small
   // list (fits on one page at the default page size) was wrongly hidden before this fix.
   const isDraggable = paginatedServers.length === servers.length;
-
-  const allFilteredSelected =
-    paginatedServers.length > 0 &&
-    paginatedServers.every((s) => selectedServers.has(s.name));
-  const someFilteredSelected = paginatedServers.some((s) =>
-    selectedServers.has(s.name),
-  );
-
-  useEffect(() => {
-    if (selectAllRef.current) {
-      selectAllRef.current.indeterminate =
-        someFilteredSelected && !allFilteredSelected;
-    }
-  }, [someFilteredSelected, allFilteredSelected]);
 
   function handleDragStart(index: number) {
     dragSrcIdx.current = index;
@@ -608,22 +594,19 @@ export function ServersPanel({
               onChange={(e) => setSearch(e.target.value)}
             />
           </Form.Group>
-          {pingSelectionMode && (
-            <Form.Check
-              ref={selectAllRef}
-              type="checkbox"
-              id="server-select-all"
-              label="All"
-              checked={allFilteredSelected}
-              onChange={() =>
-                onToggleAllServers(paginatedServers.map((s) => s.name))
-              }
-              disabled={filteredServers.length === 0}
-              title="Select / deselect all visible servers for ping"
-              className="mb-0 text-nowrap"
-            />
-          )}
         </div>
+
+        {pingSelectionMode && (
+          <SelectionBar
+            id="server-select-all"
+            noun="servers"
+            allNames={servers.map((s) => s.name)}
+            matchingNames={filteredServers.map((s) => s.name)}
+            filterActive={search.trim().length > 0}
+            selected={selectedServers}
+            onChange={onSelectServers}
+          />
+        )}
 
         <ListGroup variant="flush">
           {paginatedServers.map((server, index) => (

@@ -1,6 +1,7 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Button, Card, Form, InputGroup, ListGroup } from "react-bootstrap";
 import { Paginator } from "./Paginator";
+import { SelectionBar } from "./SelectionBar";
 import {
   TbClipboard,
   TbQrcode,
@@ -12,6 +13,100 @@ import {
 import type { SyncResult, UserFormState, UserRecord } from "../types";
 import { ActionIconButton } from "./ActionIconButton";
 import QRModal from "./QRModal";
+
+type UserSort =
+  | "created-desc"
+  | "created-asc"
+  | "name-asc"
+  | "name-desc"
+  | "fetched-desc"
+  | "fetched-asc";
+
+const USER_SORT_OPTIONS: { value: UserSort; label: string }[] = [
+  { value: "created-desc", label: "Newest first" },
+  { value: "created-asc", label: "Oldest first" },
+  { value: "name-asc", label: "Name A → Z" },
+  { value: "name-desc", label: "Name Z → A" },
+  { value: "fetched-desc", label: "Recently fetched" },
+  { value: "fetched-asc", label: "Not fetched longest" },
+];
+
+const SORT_STORAGE_KEY = "lsm.users.sort";
+
+function loadUserSort(): UserSort {
+  try {
+    const saved = localStorage.getItem(SORT_STORAGE_KEY);
+    if (USER_SORT_OPTIONS.some((o) => o.value === saved)) return saved as UserSort;
+  } catch {
+    // storage unavailable (private mode etc.) — fall back to the default
+  }
+  return "created-desc";
+}
+
+function saveUserSort(sort: UserSort) {
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, sort);
+  } catch {
+    // non-essential convenience
+  }
+}
+
+const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function compareUsers(a: UserRecord, b: UserRecord, sort: UserSort): number {
+  switch (sort) {
+    case "created-asc":
+      return a.createdAt - b.createdAt;
+    case "name-asc":
+      return nameCollator.compare(a.clientName, b.clientName);
+    case "name-desc":
+      return nameCollator.compare(b.clientName, a.clientName);
+    case "fetched-desc":
+      // never-fetched users go last
+      return (b.lastFetchedAt ?? -1) - (a.lastFetchedAt ?? -1) || b.createdAt - a.createdAt;
+    case "fetched-asc":
+      // never-fetched users go first: they're the likeliest to be unused
+      return (a.lastFetchedAt ?? -1) - (b.lastFetchedAt ?? -1) || b.createdAt - a.createdAt;
+    case "created-desc":
+    default:
+      return b.createdAt - a.createdAt;
+  }
+}
+
+function formatDateTime(ts: number): string {
+  return new Date(ts).toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatAgo(ts: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - ts) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 60) return `${days} d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 24) return `${months} mo ago`;
+  return `${Math.floor(days / 365)} y ago`;
+}
+
+/** Current time, re-rendering every minute so "N min ago" labels don't go stale. */
+function useNow(intervalMs = 60_000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
 
 type UsersPanelProps = {
   editingUser: UserRecord | null;
@@ -27,7 +122,7 @@ type UsersPanelProps = {
   setUserForm: (next: UserFormState) => void;
   selectedUsers: Set<string>;
   onToggleUser: (clientName: string) => void;
-  onToggleAllUsers: (visibleNames: string[]) => void;
+  onSelectUsers: (next: Set<string>) => void;
   pingSelectionMode: boolean;
 };
 
@@ -45,7 +140,7 @@ export function UsersPanel({
   setUserForm,
   selectedUsers,
   onToggleUser,
-  onToggleAllUsers,
+  onSelectUsers,
   pingSelectionMode,
 }: UsersPanelProps) {
   const [qrModalShown, setQrModalShown] = useState(false);
@@ -54,37 +149,29 @@ export function UsersPanel({
   const [syncingUser, setSyncingUser] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const selectAllRef = useRef<HTMLInputElement>(null);
+  const [sort, setSort] = useState<UserSort>(loadUserSort);
+  const now = useNow();
 
   const UUID_PATTERN =
     "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
-  const sortedUsers = [...users].sort((a, b) => b.createdAt - a.createdAt);
-  const filteredUsers = search.trim()
+  const query = search.trim().toLowerCase();
+  const sortedUsers = [...users].sort((a, b) => compareUsers(a, b, sort));
+  const filteredUsers = query
     ? sortedUsers.filter(
         (u) =>
-          u.clientName.toLowerCase().includes(search.toLowerCase()) ||
-          u.userUuid.toLowerCase().includes(search.toLowerCase()),
+          u.clientName.toLowerCase().includes(query) ||
+          u.userUuid.toLowerCase().includes(query),
       )
     : sortedUsers;
 
-  // Reset to page 1 when search or page size changes
-  useEffect(() => { setPage(1); }, [search, pageSize]);
+  // Reset to page 1 when search, sort or page size changes
+  useEffect(() => { setPage(1); }, [search, sort, pageSize]);
 
   const paginatedUsers =
     pageSize === 0
       ? filteredUsers
       : filteredUsers.slice((page - 1) * pageSize, page * pageSize);
-
-  const allFilteredSelected =
-    filteredUsers.length > 0 && filteredUsers.every((u) => selectedUsers.has(u.clientName));
-  const someFilteredSelected = filteredUsers.some((u) => selectedUsers.has(u.clientName));
-
-  useEffect(() => {
-    if (selectAllRef.current) {
-      selectAllRef.current.indeterminate = someFilteredSelected && !allFilteredSelected;
-    }
-  }, [someFilteredSelected, allFilteredSelected]);
 
   const regenerateUserUuid = () => {
     setUserForm({
@@ -168,7 +255,7 @@ export function UsersPanel({
 
           <hr className="my-4" />
 
-          <div className="d-flex align-items-center gap-2 mb-3">
+          <div className="d-flex flex-wrap align-items-center gap-2 mb-3">
             <Form.Group className="flex-grow-1 mb-0" controlId="user-search">
               <Form.Control
                 type="search"
@@ -177,20 +264,36 @@ export function UsersPanel({
                 onChange={(e) => setSearch(e.target.value)}
               />
             </Form.Group>
-            {pingSelectionMode && (
-              <Form.Check
-                ref={selectAllRef}
-                type="checkbox"
-                id="user-select-all"
-                label="All"
-                checked={allFilteredSelected}
-                onChange={() => onToggleAllUsers(filteredUsers.map((u) => u.clientName))}
-                disabled={filteredUsers.length === 0}
-                title="Select / deselect all visible users for ping"
-                className="mb-0 text-nowrap"
-              />
-            )}
+            <Form.Select
+              aria-label="Sort users"
+              title="Sort users"
+              className="w-auto"
+              value={sort}
+              onChange={(e) => {
+                const next = e.target.value as UserSort;
+                setSort(next);
+                saveUserSort(next);
+              }}
+            >
+              {USER_SORT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </Form.Select>
           </div>
+
+          {pingSelectionMode && (
+            <SelectionBar
+              id="user-select-all"
+              noun="users"
+              allNames={users.map((u) => u.clientName)}
+              matchingNames={filteredUsers.map((u) => u.clientName)}
+              filterActive={query.length > 0}
+              selected={selectedUsers}
+              onChange={onSelectUsers}
+            />
+          )}
 
           <ListGroup variant="flush">
             {paginatedUsers.map((user) => (
@@ -231,18 +334,25 @@ export function UsersPanel({
                         {user.subscriptionUrl}
                       </a>
                     </div>
-                    <div className="admin-meta">
-                      <small className="text-muted">
-                        {new Date(user.createdAt).toLocaleString("ru-RU", {
-                          day: "2-digit",
-                          month: "2-digit",
-                          year: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                          hour12: false,
-                        })}
+                    <div className="admin-meta d-flex flex-wrap column-gap-2">
+                      <small className="text-muted" title="Created">
+                        {formatDateTime(user.createdAt)}
                       </small>
+                      {user.lastFetchedAt !== null ? (
+                        <small
+                          className="text-muted"
+                          title={`Subscription last fetched ${formatDateTime(user.lastFetchedAt)}`}
+                        >
+                          · fetched {formatAgo(user.lastFetchedAt, now)}
+                        </small>
+                      ) : (
+                        <small
+                          className="text-body-tertiary fst-italic"
+                          title="Subscription has not been fetched since tracking was added"
+                        >
+                          · never fetched
+                        </small>
+                      )}
                     </div>
                   </div>
 

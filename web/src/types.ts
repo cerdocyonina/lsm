@@ -22,6 +22,8 @@ export type UserRecord = {
   subscriptionToken: string;
   subscriptionUrl: string;
   createdAt: number;
+  /** Last time the subscription was served to a client (ms epoch); null = never. */
+  lastFetchedAt: number | null;
 };
 
 export type ServerRecord = {
