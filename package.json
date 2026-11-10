@@ -41,5 +41,5 @@
     "typescript": "^5"
   },
   "main": "dist/index.js",
-  "version": "1.5.1"
+  "version": "1.6.0"
 }
