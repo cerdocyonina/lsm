@@ -35,7 +35,18 @@ export type Inventory = {
   profiles: ProfileRecord[];
   memberships: Membership[];
 };
-type InventoryResponse = Inventory & { id?: number; syncResults?: SyncOutcome[] };
+type InventoryResponse = Inventory & {
+  id?: number;
+  syncResults?: SyncOutcome[];
+  /** Services the save changed access on; pushed right after, in the background. */
+  pendingSync?: number[];
+};
+
+/** Services are hidden in the UI, so results are named after the servers using them. */
+function serverName(nodeId: number, inv: Inventory, fallback = String(nodeId)): string {
+  const servers = inv.connections.filter((c) => c.nodeId === nodeId).map((c) => c.name);
+  return servers.length ? servers.join(" + ") : (inv.services.find((s) => s.id === nodeId)?.name ?? fallback);
+}
 
 export type ServerTarget = {
   hostId: number;
@@ -105,7 +116,10 @@ export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
     if (enabled) void reload().catch((e) => toast.error(e instanceof Error ? e.message : String(e)));
   }, [enabled, reload]);
 
-  /** Runs one inventory request. `key` marks what is busy (a chip, a row, a dialog). */
+  /**
+   * Runs one inventory save. `key` marks what is busy (a chip, a row, a dialog) — only
+   * until the DB write is done. Pushing users to agents follows in the background.
+   */
   async function mutate(
     key: string,
     path: string,
@@ -113,27 +127,43 @@ export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
     method = "POST",
   ): Promise<InventoryResponse> {
     setBusy(key);
+    let r: InventoryResponse;
     try {
-      const r = await api<InventoryResponse>(path, {
+      r = await api<InventoryResponse>(path, {
         method,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       setData(r);
-      report(r.syncResults ?? [], r);
       await onChanged();
-      return r;
     } finally {
       setBusy(null);
     }
+    if (r.pendingSync?.length) void push(r.pendingSync, r);
+    return r;
   }
 
-  function report(raw: SyncOutcome[], next: Inventory) {
+  /** Pushes the current user lists to these services, reporting progress as a toast. */
+  async function push(ids: number[], known: Inventory = data) {
+    const names = ids.map((id) => serverName(id, known)).join(", ");
+    const loading = toast.loading(`Pushing users to ${names}…`);
+    try {
+      const r = await api<InventoryResponse>("/inventory/sync", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      });
+      toast.dismiss(loading);
+      report(r.syncResults ?? [], known);
+      // Re-read instead of using r: a later save may have landed while this push ran.
+      await reload();
+      await onChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e), { id: loading });
+    }
+  }
+
+  function report(raw: SyncOutcome[], known: Inventory) {
     if (!raw.length) return;
-    // Services are hidden in the UI; name results after the servers that use them.
-    const results = raw.map((r) => {
-      const servers = next.connections.filter((c) => c.nodeId === r.nodeId).map((c) => c.name);
-      return servers.length ? { ...r, name: servers.join(" + ") } : r;
-    });
+    const results = raw.map((r) => ({ ...r, name: serverName(r.nodeId, known, r.name) }));
     const failed = results.filter((r) => !r.ok);
     if (!failed.length) {
       toast.success(
@@ -155,9 +185,7 @@ export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
             className="btn btn-sm btn-outline-dark mt-2"
             onClick={() => {
               toast.dismiss(t.id);
-              void mutate("sync", "/inventory/sync", { ids: failed.map((r) => r.nodeId) }).catch((e) =>
-                toast.error(e instanceof Error ? e.message : String(e)),
-              );
+              void push(failed.map((r) => r.nodeId), known);
             }}
           >
             Retry
@@ -218,6 +246,7 @@ export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
     busy,
     reload,
     refresh,
+    push,
     mutate,
     attempt,
     saveServer,

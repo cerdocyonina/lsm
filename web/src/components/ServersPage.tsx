@@ -154,9 +154,8 @@ export function ServersPage({ inv }: { inv: InventoryApi }) {
               <ActionIconButton
                 variant="outline-secondary"
                 label={`Push users to ${c.name}'s backend now`}
-                icon={inv.busy === `sync:${service.id}` ? <Spinner size="sm" /> : <TbRefresh size={16} />}
-                disabled={inv.busy !== null}
-                onClick={() => void inv.attempt(`sync:${service.id}`, "/inventory/sync", { ids: [service.id] })}
+                icon={<TbRefresh size={16} />}
+                onClick={() => void inv.push([service.id])}
               />
             )}
             <ActionIconButton
@@ -304,7 +303,7 @@ export function ServersPage({ inv }: { inv: InventoryApi }) {
                     <Button
                       size="sm"
                       variant="outline-secondary"
-                      onClick={() => void inv.attempt(`sync:${s.id}`, "/inventory/sync", { ids: [s.id] })}
+                      onClick={() => void inv.push([s.id])}
                     >
                       Retry push
                     </Button>

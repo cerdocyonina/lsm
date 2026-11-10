@@ -105,18 +105,18 @@ export function saveConnectionWithProfiles(
           )
       : [];
     const ids = new Set<number>();
-    if (previous && previousProfiles.length) {
+    // Name or template edits don't change anyone's access, so they need no push.
+    if (previous && previousProfiles.length && previous.nodeId !== p.nodeId) {
       if (previous.nodeId !== null) {
         ids.add(previous.nodeId);
-        if (previous.nodeId !== p.nodeId)
-          for (const profile of previousProfiles)
-            for (const u of storage.listUsers(profile.name, owner))
-              storage.queueRemoval(
-                previous.nodeId,
-                u.clientName,
-                u.userUuid,
-                owner,
-              );
+        for (const profile of previousProfiles)
+          for (const u of storage.listUsers(profile.name, owner))
+            storage.queueRemoval(
+              previous.nodeId,
+              u.clientName,
+              u.userUuid,
+              owner,
+            );
       }
       if (p.nodeId !== null) ids.add(p.nodeId);
     }
@@ -339,7 +339,7 @@ export function applyAssignments(
       const wasIncluded = storage
         .listServerRecords(a.profile, owner)
         .some((c) => c.connectionId === a.connectionId);
-      if (connection.nodeId !== null && (a.included || wasIncluded)) {
+      if (connection.nodeId !== null && a.included !== wasIncluded) {
         ids.add(connection.nodeId);
         if (!a.included)
           removed.set(connection.nodeId, [

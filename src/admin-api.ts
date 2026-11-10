@@ -380,6 +380,39 @@ async function testHost(
   };
 }
 
+/** True when an existing host gets a different agent URL or secret. */
+function agentMoved(
+  storage: Storage,
+  ownerId: number,
+  host: { id: number | null; url: string; secret: string },
+): boolean {
+  if (host.id === null) return false;
+  const before = storage.exportHosts(ownerId).find((h) => h.id === host.id);
+  if (!before) return false;
+  return (
+    before.url !== host.url.replace(/\/$/, "") ||
+    (host.secret !== "" && host.secret !== before.secret)
+  );
+}
+
+/** Services on the host that at least one profile uses. */
+function usedServicesOnHost(
+  storage: Storage,
+  ownerId: number,
+  hostId: number,
+): number[] {
+  const used = new Set(
+    storage
+      .listProfiles(ownerId)
+      .flatMap((p) => storage.listServerRecords(p.name, ownerId))
+      .map((s) => s.nodeId),
+  );
+  return storage
+    .listNodes(ownerId)
+    .filter((n) => n.hostId === hostId && used.has(n.id))
+    .map((n) => n.id);
+}
+
 function isDeclarativeNode(node: NodeRecord): boolean {
   return (
     node.type === "naive" ||
@@ -791,6 +824,9 @@ export async function handleAdminApiRequest(
       const action = adminPathname.slice("/inventory/".length);
       let id: number | undefined;
       let syncResults: Awaited<ReturnType<typeof syncInventory>> = [];
+      // Saves return as soon as the DB is updated; the UI pushes these services afterwards
+      // via /inventory/sync, so a slow or dead agent never holds up an edit.
+      let pendingSync: number[] = [];
       if (action === "discover") {
         const p = await parseJson(req, hostSchema);
         if (p instanceof Response) return p;
@@ -844,6 +880,7 @@ export async function handleAdminApiRequest(
         );
         if (p instanceof Response) return p;
         const ids: number[] = [];
+        const moved = agentMoved(storage, adminUserId, p.host);
         storage.transaction(() => {
           id = storage.saveHost(
             p.host.id,
@@ -878,42 +915,15 @@ export async function handleAdminApiRequest(
             if (service.profiles.length) ids.push(nodeId);
           }
         });
-        if (p.host.id !== null)
-          for (const profile of storage.listProfiles(adminUserId))
-            for (const node of storage.listNodesForProfile(
-              profile.name,
-              adminUserId,
-            ))
-              if (node.hostId === id) ids.push(node.id);
-        syncResults = await syncInventory(storage, adminUserId, ids);
+        if (moved) ids.push(...usedServicesOnHost(storage, adminUserId, id!));
+        pendingSync = [...new Set(ids)];
       } else if (action === "hosts") {
         const p = await parseJson(req, hostSchema);
         if (p instanceof Response) return p;
+        // A rename touches nothing on the agent; only a new address or secret needs a push.
+        const moved = agentMoved(storage, adminUserId, p);
         id = storage.saveHost(p.id, p.name, p.url, p.secret, adminUserId);
-        if (p.id !== null) {
-          const used = new Set(
-            storage
-              .listConnections(adminUserId)
-              .filter((c) =>
-                storage
-                  .listProfiles(adminUserId)
-                  .some((p) =>
-                    storage
-                      .listServerRecords(p.name, adminUserId)
-                      .some((s) => s.connectionId === c.id),
-                  ),
-              )
-              .map((c) => c.nodeId),
-          );
-          syncResults = await syncInventory(
-            storage,
-            adminUserId,
-            storage
-              .listNodes(adminUserId)
-              .filter((n) => n.hostId === id && used.has(n.id))
-              .map((n) => n.id),
-          );
-        }
+        if (moved) pendingSync = usedServicesOnHost(storage, adminUserId, id);
       } else if (action === "services") {
         const p = await parseJson(req, serviceSchema);
         if (p instanceof Response) return p;
@@ -926,8 +936,7 @@ export async function handleAdminApiRequest(
           p.inboundId,
           adminUserId,
         );
-        if (p.id !== null)
-          syncResults = await syncInventory(storage, adminUserId, [id]);
+        if (p.id !== null) pendingSync = [id];
       } else if (action === "connections") {
         const p = await parseJson(
           req,
@@ -938,23 +947,18 @@ export async function handleAdminApiRequest(
         if (p instanceof Response) return p;
         const saved = saveConnectionWithProfiles(storage, adminUserId, p);
         id = saved.id;
-        syncResults = await syncInventory(storage, adminUserId, [...saved.ids]);
+        pendingSync = [...saved.ids];
       } else if (action === "servers") {
         const p = await parseJson(req, serverSchema);
         if (p instanceof Response) return p;
         const saved = saveServer(storage, adminUserId, p);
         id = saved.id;
-        syncResults = await syncInventory(storage, adminUserId, [...saved.ids]);
+        pendingSync = [...saved.ids];
       } else if (action === "assignments") {
         const p = await parseJson(req, assignmentsSchema);
         if (p instanceof Response) return p;
-        const changed = applyAssignments(storage, adminUserId, p);
-        syncResults = await syncInventory(
-          storage,
-          adminUserId,
-          changed.ids,
-          changed.removed,
-        );
+        // 3x-ui revocations are queued in the DB here, so a later push still performs them.
+        pendingSync = applyAssignments(storage, adminUserId, p).ids;
       } else if (action === "sync") {
         const p = await parseJson(
           req,
@@ -963,13 +967,18 @@ export async function handleAdminApiRequest(
         if (p instanceof Response) return p;
         syncResults = await syncInventory(storage, adminUserId, p.ids);
       } else return adminErrorResponse(404, "Unknown inventory action");
-      // A service whose last push failed keeps its row so the revocation can be retried.
-      storage.pruneUnusedServices(
-        adminUserId,
-        syncResults.filter((r) => !r.ok).map((r) => r.nodeId),
-      );
+      // An unused service stays until a push to it succeeds, so revocations aren't lost.
+      storage.pruneUnusedServices(adminUserId, [
+        ...pendingSync,
+        ...syncResults.filter((r) => !r.ok).map((r) => r.nodeId),
+      ]);
       return noStoreResponse(
-        jsonResponse({ ...inventory(storage, adminUserId), id, syncResults }),
+        jsonResponse({
+          ...inventory(storage, adminUserId),
+          id,
+          syncResults,
+          pendingSync,
+        }),
       );
     } catch (e) {
       return adminErrorResponse(
@@ -991,11 +1000,8 @@ export async function handleAdminApiRequest(
           throw new Error("Remove or reassign the service's connections first");
         storage.removeNode(id, adminUserId);
       }
-      let syncResults: Awaited<ReturnType<typeof syncInventory>> = [];
+      let pendingSync: number[] = [];
       if (kind === "connections") {
-        const nodeId = storage
-          .listConnections(adminUserId)
-          .find((c) => c.id === id)?.nodeId;
         const removals = storage
           .listProfiles(adminUserId)
           .filter((p) =>
@@ -1008,20 +1014,15 @@ export async function handleAdminApiRequest(
           assignments: removals,
         });
         storage.deleteConnection(id, adminUserId);
-        if (nodeId != null)
-          syncResults = await syncInventory(
-            storage,
-            adminUserId,
-            changed.ids,
-            changed.removed,
-          );
-        storage.pruneUnusedServices(
-          adminUserId,
-          syncResults.filter((r) => !r.ok).map((r) => r.nodeId),
-        );
+        pendingSync = changed.ids;
+        storage.pruneUnusedServices(adminUserId, pendingSync);
       }
       return noStoreResponse(
-        jsonResponse({ ...inventory(storage, adminUserId), syncResults }),
+        jsonResponse({
+          ...inventory(storage, adminUserId),
+          syncResults: [],
+          pendingSync,
+        }),
       );
     } catch (e) {
       return adminErrorResponse(

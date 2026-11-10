@@ -64,11 +64,18 @@ function setup() {
     if (!r) throw new Error("Missing response");
     return { status: r.status, body: (await r.json()) as any };
   }
-  return { storage, owner, request };
+  /** Save, then push what the save reported — the same two steps the UI takes. */
+  async function saveAndSync(path: string, body?: unknown, method?: string) {
+    const saved = await request(path, body, method);
+    if (saved.status !== 200 || !saved.body.pendingSync?.length) return saved;
+    const synced = await request("/inventory/sync", { ids: saved.body.pendingSync });
+    return { ...saved, body: { ...synced.body, id: saved.body.id } };
+  }
+  return { storage, owner, request, saveAndSync };
 }
 describe("inventory API", () => {
   test("setup commits one host, three services and nine memberships and syncs all existing users", async () => {
-    const { storage, owner, request } = setup();
+    const { storage, owner, request, saveAndSync } = setup();
     const calls: any[] = [];
     const agent = Bun.serve({
       hostname: "127.0.0.1",
@@ -82,7 +89,7 @@ describe("inventory API", () => {
       },
     });
     cleanup.push(() => agent.stop(true));
-    const r = await request("/inventory/setup", {
+    const r = await saveAndSync("/inventory/setup", {
       host: { name: "Germany", url: agent.url.origin, secret: "s" },
       services: [
         ["naive", "naive"],
@@ -272,18 +279,18 @@ describe("server endpoint (services folded into servers)", () => {
   }
 
   test("servers reuse the host's backend binding, follow retargets and drop unused bindings", async () => {
-    const { storage, owner, request } = setup();
+    const { storage, owner, request, saveAndSync } = setup();
     const a = agent();
     const hostId = storage.saveHost(null, "de", a.url, "s", owner);
     const target = { hostId, type: "naive", path: "/naive" };
-    const one = await request("/inventory/servers", {
+    const one = await saveAndSync("/inventory/servers", {
       name: "de-naive",
       template: "naive+https://{user}:{pass}@de.example:443#DE",
       target,
       profiles: ["main"],
     });
     expect(one.status).toBe(200);
-    const two = await request("/inventory/servers", {
+    const two = await saveAndSync("/inventory/servers", {
       name: "de-naive-alt",
       template: "naive+https://{user}:{pass}@alt.example:443#DE alt",
       target,
@@ -296,7 +303,7 @@ describe("server endpoint (services folded into servers)", () => {
     });
 
     // Moving the first server to another backend: both bindings exist and both get pushed.
-    const moved = await request("/inventory/servers", {
+    const moved = await saveAndSync("/inventory/servers", {
       id: one.body.id,
       name: "de-mieru",
       template: "mierus://{user}:{mpass}@{ip}?port=1#DE",
@@ -312,6 +319,20 @@ describe("server endpoint (services folded into servers)", () => {
       storage.listServerRecords("main", owner).map((s) => s.name),
     ).toEqual(["de-mieru"]);
 
+    // Renaming the host or editing a template changes nobody's access: no push at all.
+    const pushes = a.pushes.length;
+    const renamed = await request("/inventory/hosts", { id: hostId, name: "nivfop", url: a.url });
+    expect(renamed.body.pendingSync).toEqual([]);
+    const edited = await request("/inventory/servers", {
+      id: two.body.id,
+      name: "de-naive-alt",
+      template: "naive+https://{user}:{pass}@alt.example:443#renamed",
+      target,
+      profiles: ["work"],
+    });
+    expect(edited.body.pendingSync).toEqual([]);
+    expect(a.pushes.length).toBe(pushes);
+
     // Same path with another protocol is a mistake, not a new binding.
     const clash = await request("/inventory/servers", {
       name: "bad",
@@ -322,7 +343,7 @@ describe("server endpoint (services folded into servers)", () => {
     expect(clash.body.error).toContain("already used");
 
     // Deleting the last server on /naive revokes its users and forgets the binding.
-    const del = await request(
+    const del = await saveAndSync(
       `/inventory/connections/${two.body.id}`,
       undefined,
       "DELETE",

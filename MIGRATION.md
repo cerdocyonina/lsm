@@ -11,6 +11,8 @@ On first start, 1.7 runs a one-time cleanup (`PRAGMA user_version` 0 → 1):
 
 Copies used twice by one profile, and unused copies, are left alone. Deleting a host now deletes its servers too (locally; nothing is sent to the agent).
 
+Saves no longer wait for agents. `POST /inventory/{servers,hosts,assignments,setup,…}` and `DELETE /inventory/connections/:id` write to the DB and answer with `pendingSync` (service IDs whose user list changed); the admin UI then calls `POST /inventory/sync` with those IDs in the background. Renames and template edits produce no push at all; a host only re-pushes when its agent URL or secret changes.
+
 ## 1.6
 
 The master now stores hosts (agent access), services (backend/inbound bindings), shared connection templates, and profile memberships separately. The CLI and its build output were removed; import/export and diagnostics remain available in the web admin.
