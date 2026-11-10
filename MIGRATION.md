@@ -1,5 +1,18 @@
 # Shared connections migration
 
+## 1.7: servers instead of services/connections
+
+The admin UI now shows two things only: **hosts** (lsmnode agents) and **servers** (one subscription link each, optionally synced through a host backend). Services still exist in the database, but they are created, reused and removed automatically from each server's "Sync users via agent" settings. A service left without servers is removed after its last push succeeds. If that push failed, the host card lists it with **Retry push** / **Forget**.
+
+On first start, 1.7 runs a one-time cleanup (`PRAGMA user_version` 0 → 1):
+
+- Connections on the same service whose templates differ only after `#`, and which are used by different profiles, are merged into the oldest one. Each other profile keeps its label as a per-profile override, so clients see the same names (the override is percent-encoded in the link).
+- Per-profile entry names are aligned with the server name where that doesn't collide.
+
+Copies used twice by one profile, and unused copies, are left alone. Deleting a host now deletes its servers too (locally; nothing is sent to the agent).
+
+## 1.6
+
 The master now stores hosts (agent access), services (backend/inbound bindings), shared connection templates, and profile memberships separately. The CLI and its build output were removed; import/export and diagnostics remain available in the web admin.
 
 ## Updating the master

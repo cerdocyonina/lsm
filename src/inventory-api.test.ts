@@ -246,3 +246,122 @@ describe("inventory API", () => {
     expect(storage.pendingRemovals(node.id, owner)).toHaveLength(0);
   });
 });
+
+describe("server endpoint (services folded into servers)", () => {
+  function agent() {
+    const pushes: { path: string; users: string[] }[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (req) => {
+        const path = new URL(req.url).pathname;
+        if (path.endsWith("/health"))
+          return Response.json({
+            ok: true,
+            version: "9.9.9",
+            caddy: { ok: true },
+            mieru: { ok: path.startsWith("/mieru") ? false : true, error: "down" },
+          });
+        const body = (await req.json()) as { users: { user: string }[] };
+        pushes.push({ path, users: body.users.map((u) => u.user).sort() });
+        return Response.json({ synced: body.users.length });
+      },
+    });
+    cleanup.push(() => server.stop(true));
+    return { url: server.url.origin, pushes };
+  }
+
+  test("servers reuse the host's backend binding, follow retargets and drop unused bindings", async () => {
+    const { storage, owner, request } = setup();
+    const a = agent();
+    const hostId = storage.saveHost(null, "de", a.url, "s", owner);
+    const target = { hostId, type: "naive", path: "/naive" };
+    const one = await request("/inventory/servers", {
+      name: "de-naive",
+      template: "naive+https://{user}:{pass}@de.example:443#DE",
+      target,
+      profiles: ["main"],
+    });
+    expect(one.status).toBe(200);
+    const two = await request("/inventory/servers", {
+      name: "de-naive-alt",
+      template: "naive+https://{user}:{pass}@alt.example:443#DE alt",
+      target,
+      profiles: ["work"],
+    });
+    expect(two.body.services).toHaveLength(1);
+    expect(a.pushes.at(-1)).toEqual({
+      path: "/naive/sync-users",
+      users: ["main.alice", "work.alice"],
+    });
+
+    // Moving the first server to another backend: both bindings exist and both get pushed.
+    const moved = await request("/inventory/servers", {
+      id: one.body.id,
+      name: "de-mieru",
+      template: "mierus://{user}:{mpass}@{ip}?port=1#DE",
+      target: { hostId, type: "mieru", path: "/mieru" },
+      profiles: ["main"],
+    });
+    expect(moved.body.services).toHaveLength(2);
+    expect(a.pushes.slice(-2).map((p) => p.path).sort()).toEqual([
+      "/mieru/sync-users",
+      "/naive/sync-users",
+    ]);
+    expect(
+      storage.listServerRecords("main", owner).map((s) => s.name),
+    ).toEqual(["de-mieru"]);
+
+    // Same path with another protocol is a mistake, not a new binding.
+    const clash = await request("/inventory/servers", {
+      name: "bad",
+      template: "x",
+      target: { hostId, type: "shadowsocks", path: "/naive" },
+    });
+    expect(clash.status).toBe(400);
+    expect(clash.body.error).toContain("already used");
+
+    // Deleting the last server on /naive revokes its users and forgets the binding.
+    const del = await request(
+      `/inventory/connections/${two.body.id}`,
+      undefined,
+      "DELETE",
+    );
+    expect(a.pushes.at(-1)).toEqual({ path: "/naive/sync-users", users: [] });
+    expect(del.body.services.map((s: any) => s.backendPath)).toEqual(["/mieru"]);
+
+    const test = await request(`/inventory/hosts/${hostId}/test`, {});
+    expect(test.body.version).toBe("9.9.9");
+    expect(test.body.services).toEqual([
+      expect.objectContaining({ ok: false, error: "down" }),
+    ]);
+  });
+
+  test("{ip} needs a host, and deleting a host removes its servers locally", async () => {
+    const { storage, owner, request } = setup();
+    const noHost = await request("/inventory/servers", {
+      name: "x",
+      template: "vless://{uuid}@{ip}:443",
+      target: null,
+    });
+    expect(noHost.status).toBe(400);
+    const hostId = storage.saveHost(null, "gone", "http://127.0.0.1:9", "s", owner);
+    await request("/inventory/servers", {
+      name: "x",
+      template: "vless://{uuid}@{ip}:443",
+      target: { hostId, type: "xui", path: "", inboundId: 2 },
+    });
+    const plain = await request("/inventory/servers", {
+      name: "plain",
+      template: "vless://{uuid}@1.2.3.4:443",
+      target: null,
+      profiles: ["main"],
+    });
+    expect(plain.status).toBe(200);
+    const r = await request(`/inventory/hosts/${hostId}`, undefined, "DELETE");
+    expect(r.status).toBe(200);
+    expect(r.body.hosts).toHaveLength(0);
+    expect(r.body.services).toHaveLength(0);
+    expect(r.body.connections.map((c: any) => c.name)).toEqual(["plain"]);
+  });
+});

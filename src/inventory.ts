@@ -46,6 +46,124 @@ export const connectionSchema = z
     (c) => !c.template.includes("{ip}") || c.nodeId !== null,
     "{ip} requires a managed service",
   );
+const nodeTypeSchema = z.enum(["xui", "naive", "shadowsocks", "mieru"]);
+/** What the admin UI edits: a link template plus, optionally, the agent backend it syncs users to. */
+export const serverSchema = z
+  .object({
+    id: z.number().int().positive().nullable().default(null),
+    name: z.string().trim().min(1),
+    template: z.string().trim().min(1),
+    target: z
+      .object({
+        hostId: z.number().int().positive(),
+        type: nodeTypeSchema,
+        path: z
+          .string()
+          .regex(/^(\/[A-Za-z0-9_-]+)*$/, "Path looks like /naive or is empty")
+          .default(""),
+        inboundId: z.number().int().nonnegative().default(0),
+      })
+      .refine(
+        (t) => t.type !== "xui" || t.inboundId > 0,
+        "3x-ui requires an inbound ID",
+      )
+      .nullable()
+      .default(null),
+    profiles: z.array(z.string()).optional(),
+  })
+  .refine(
+    (s) => !s.template.includes("{ip}") || s.target !== null,
+    "{ip} takes the address from a host; pick one or write the address",
+  );
+
+/**
+ * Saves a connection and, when `profiles` is given, makes it exactly that set. Returns the
+ * services whose user lists changed (previous one included when the server moved).
+ */
+export function saveConnectionWithProfiles(
+  storage: Storage,
+  owner: number,
+  p: {
+    id: number | null;
+    name: string;
+    template: string;
+    nodeId: number | null;
+    profiles?: string[];
+  },
+): { id: number; ids: Set<number> } {
+  return storage.transaction(() => {
+    const previous = storage
+      .listConnections(owner)
+      .find((c) => c.id === p.id);
+    const previousProfiles = previous
+      ? storage
+          .listProfiles(owner)
+          .filter((profile) =>
+            storage
+              .listServerRecords(profile.name, owner)
+              .some((c) => c.connectionId === previous.id),
+          )
+      : [];
+    const ids = new Set<number>();
+    if (previous && previousProfiles.length) {
+      if (previous.nodeId !== null) {
+        ids.add(previous.nodeId);
+        if (previous.nodeId !== p.nodeId)
+          for (const profile of previousProfiles)
+            for (const u of storage.listUsers(profile.name, owner))
+              storage.queueRemoval(
+                previous.nodeId,
+                u.clientName,
+                u.userUuid,
+                owner,
+              );
+      }
+      if (p.nodeId !== null) ids.add(p.nodeId);
+    }
+    const id = storage.saveConnection(
+      p.id,
+      p.name,
+      p.template,
+      p.nodeId,
+      owner,
+    );
+    if (p.profiles) {
+      for (const profile of p.profiles)
+        if (!storage.getProfile(profile, owner))
+          throw new Error("Unknown profile");
+      const changed = applyAssignments(storage, owner, {
+        assignments: storage.listProfiles(owner).map((profile) => ({
+          connectionId: id,
+          profile: profile.name,
+          included: p.profiles!.includes(profile.name),
+        })),
+      });
+      changed.ids.forEach((n) => ids.add(n));
+    }
+    return { id, ids };
+  });
+}
+
+export function saveServer(
+  storage: Storage,
+  owner: number,
+  p: z.infer<typeof serverSchema>,
+): { id: number; ids: Set<number> } {
+  return storage.transaction(() => {
+    const nodeId = p.target
+      ? storage.findOrCreateService(
+          p.target.hostId,
+          p.target.type,
+          p.target.path,
+          p.target.type === "xui" ? p.target.inboundId : 0,
+          p.name,
+          owner,
+        )
+      : null;
+    return saveConnectionWithProfiles(storage, owner, { ...p, nodeId });
+  });
+}
+
 export const assignmentsSchema = z.object({
   assignments: z
     .array(

@@ -17,6 +17,9 @@ import {
   connectionSchema,
   hostSchema,
   inventory,
+  saveConnectionWithProfiles,
+  saveServer,
+  serverSchema,
   serviceSchema,
   syncInventory,
 } from "./inventory";
@@ -319,6 +322,64 @@ function mapNodes(storage: Storage, ownerId: number) {
 }
 
 /** Ноды-«декларативы» (весь список пушится разом): naive, shadowsocks и mieru. */
+type Health = {
+  ok?: boolean;
+  version?: string;
+  error?: string;
+  xui?: { ok: boolean; error?: string };
+  caddy?: { ok: boolean; error?: string };
+  shadowsocks?: { ok: boolean; error?: string };
+  mieru?: { ok: boolean; error?: string };
+};
+async function fetchHealth(url: string, secret: string): Promise<Health> {
+  try {
+    const res = await fetch(`${url}/health`, {
+      headers: { Authorization: `Bearer ${secret}` },
+      signal: AbortSignal.timeout(10000),
+      tls: { rejectUnauthorized: false },
+    } as RequestInit);
+    const data = (await res.json()) as Health;
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    return data;
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+/** One agent, many backends: report its version once and each backend's own provider check. */
+async function testHost(
+  host: { url: string; secret: string },
+  services: NodeRecord[],
+) {
+  if (!services.length) {
+    const h = await fetchHealth(host.url, host.secret);
+    return { ok: h.ok === true, version: h.version, error: h.error, services: [] };
+  }
+  const results = await Promise.all(
+    services.map(async (n) => {
+      const h = await fetchHealth(n.url, host.secret);
+      const provider = {
+        xui: h.xui,
+        naive: h.caddy,
+        shadowsocks: h.shadowsocks,
+        mieru: h.mieru,
+      }[n.type];
+      return {
+        nodeId: n.id,
+        name: n.name,
+        version: h.version,
+        ok: h.ok === true && provider?.ok !== false,
+        error: h.error ?? provider?.error,
+      };
+    }),
+  );
+  return {
+    ok: results.every((r) => r.ok),
+    version: results.find((r) => r.version)?.version,
+    error: results.every((r) => !r.ok) ? results[0]?.error : undefined,
+    services: results.map(({ version, ...r }) => r),
+  };
+}
+
 function isDeclarativeNode(node: NodeRecord): boolean {
   return (
     node.type === "naive" ||
@@ -710,6 +771,21 @@ export async function handleAdminApiRequest(
   // Shared infrastructure, scoped to the signed-in administrator.
   if (adminPathname === "/inventory" && req.method === "GET")
     return noStoreResponse(jsonResponse(inventory(storage, adminUserId)));
+  const hostTest = adminPathname.match(/^\/inventory\/hosts\/(\d+)\/test$/);
+  if (hostTest && req.method === "POST") {
+    const host = storage
+      .exportHosts(adminUserId)
+      .find((h) => h.id === Number(hostTest[1]));
+    if (!host) return adminErrorResponse(404, "Unknown host");
+    return noStoreResponse(
+      jsonResponse(
+        await testHost(
+          host,
+          storage.listNodes(adminUserId).filter((n) => n.hostId === host.id),
+        ),
+      ),
+    );
+  }
   if (adminPathname.startsWith("/inventory/") && req.method === "POST") {
     try {
       const action = adminPathname.slice("/inventory/".length);
@@ -777,13 +853,12 @@ export async function handleAdminApiRequest(
             adminUserId,
           );
           for (const service of p.services) {
-            const nodeId = storage.saveService(
-              null,
+            const nodeId = storage.findOrCreateService(
               id,
-              service.name,
-              service.path,
               service.type,
-              service.inboundId,
+              service.path,
+              service.type === "xui" ? service.inboundId : 0,
+              service.name,
               adminUserId,
             );
             const connectionId = storage.saveConnection(
@@ -861,57 +936,15 @@ export async function handleAdminApiRequest(
           }),
         );
         if (p instanceof Response) return p;
-        const previous = storage
-          .listConnections(adminUserId)
-          .find((c) => c.id === p.id);
-        const previousProfiles = previous
-          ? storage
-              .listProfiles(adminUserId)
-              .filter((profile) =>
-                storage
-                  .listServerRecords(profile.name, adminUserId)
-                  .some((c) => c.connectionId === previous.id),
-              )
-          : [];
-        const ids = new Set<number>();
-        storage.transaction(() => {
-          if (previous && previousProfiles.length) {
-            if (previous.nodeId !== null) {
-              ids.add(previous.nodeId);
-              if (previous.nodeId !== p.nodeId)
-                for (const profile of previousProfiles)
-                  for (const u of storage.listUsers(profile.name, adminUserId))
-                    storage.queueRemoval(
-                      previous.nodeId,
-                      u.clientName,
-                      u.userUuid,
-                      adminUserId,
-                    );
-            }
-            if (p.nodeId !== null) ids.add(p.nodeId);
-          }
-          id = storage.saveConnection(
-            p.id,
-            p.name,
-            p.template,
-            p.nodeId,
-            adminUserId,
-          );
-          if (p.profiles) {
-            for (const profile of p.profiles)
-              if (!storage.getProfile(profile, adminUserId))
-                throw new Error("Unknown profile");
-            const changed = applyAssignments(storage, adminUserId, {
-              assignments: storage.listProfiles(adminUserId).map((profile) => ({
-                connectionId: id!,
-                profile: profile.name,
-                included: p.profiles!.includes(profile.name),
-              })),
-            });
-            changed.ids.forEach((n) => ids.add(n));
-          }
-        });
-        syncResults = await syncInventory(storage, adminUserId, [...ids]);
+        const saved = saveConnectionWithProfiles(storage, adminUserId, p);
+        id = saved.id;
+        syncResults = await syncInventory(storage, adminUserId, [...saved.ids]);
+      } else if (action === "servers") {
+        const p = await parseJson(req, serverSchema);
+        if (p instanceof Response) return p;
+        const saved = saveServer(storage, adminUserId, p);
+        id = saved.id;
+        syncResults = await syncInventory(storage, adminUserId, [...saved.ids]);
       } else if (action === "assignments") {
         const p = await parseJson(req, assignmentsSchema);
         if (p instanceof Response) return p;
@@ -930,6 +963,11 @@ export async function handleAdminApiRequest(
         if (p instanceof Response) return p;
         syncResults = await syncInventory(storage, adminUserId, p.ids);
       } else return adminErrorResponse(404, "Unknown inventory action");
+      // A service whose last push failed keeps its row so the revocation can be retried.
+      storage.pruneUnusedServices(
+        adminUserId,
+        syncResults.filter((r) => !r.ok).map((r) => r.nodeId),
+      );
       return noStoreResponse(
         jsonResponse({ ...inventory(storage, adminUserId), id, syncResults }),
       );
@@ -977,6 +1015,10 @@ export async function handleAdminApiRequest(
             changed.ids,
             changed.removed,
           );
+        storage.pruneUnusedServices(
+          adminUserId,
+          syncResults.filter((r) => !r.ok).map((r) => r.nodeId),
+        );
       }
       return noStoreResponse(
         jsonResponse({ ...inventory(storage, adminUserId), syncResults }),

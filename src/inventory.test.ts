@@ -224,3 +224,87 @@ describe("shared connections and migration", () => {
     expect(bodies.at(-1).users.map((u: any) => u.user)).toEqual(["work.bob"]);
   });
 });
+
+describe("label-variant merge (schema v1)", () => {
+  function legacyDb(rows: [profile: number, name: string, template: string][]) {
+    const dir = mkdtempSync(join(tmpdir(), "lsm-merge-"));
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    const file = join(dir, "legacy.sqlite");
+    const db = new Database(file);
+    db.exec(`
+      CREATE TABLE admin_users(id INTEGER PRIMARY KEY,username TEXT UNIQUE,password_hash TEXT,is_primary INTEGER,created_at INTEGER);
+      INSERT INTO admin_users VALUES(1,'admin','env:',1,1);
+      CREATE TABLE profiles(id INTEGER PRIMARY KEY,owner_id INTEGER,name TEXT,created_at INTEGER,UNIQUE(owner_id,name));
+      INSERT INTO profiles VALUES(1,1,'main',1),(2,1,'par',1),(3,1,'pul',1);
+      CREATE TABLE nodes(id INTEGER PRIMARY KEY,owner_id INTEGER,name TEXT UNIQUE,url TEXT,secret TEXT,inbound_id INTEGER,type TEXT,created_at INTEGER);
+      INSERT INTO nodes VALUES(1,1,'garfop','http://gar:9000','s',1,'xui',1);
+      CREATE TABLE servers(profile_id INTEGER,name TEXT,sort_order INTEGER,template TEXT,created_at INTEGER,node_id INTEGER,PRIMARY KEY(profile_id,name));
+      CREATE TABLE users(profile_id INTEGER,client_name TEXT,user_uuid TEXT,subscription_token TEXT UNIQUE,credentials TEXT,created_at INTEGER,last_fetched_at INTEGER,PRIMARY KEY(profile_id,client_name));
+    `);
+    for (const p of [1, 2, 3])
+      db.query("INSERT INTO users VALUES(?,?,?,?,'{}',1,NULL)").run(
+        p,
+        "alice",
+        `uuid-${p}`,
+        `token-${p}`,
+      );
+    rows.forEach(([p, name, template], i) =>
+      db
+        .query("INSERT INTO servers VALUES(?,?,?,?,1,1)")
+        .run(p, name, i, template),
+    );
+    db.close();
+    return file;
+  }
+  const labels = (s: SqliteStorage) =>
+    s
+      .listProfiles(1)
+      .map((p) =>
+        renderSubscriptionLinks(s, s.listUsers(p.name, 1)[0]!).map((l) =>
+          decodeURIComponent(l.split("#")[1]!),
+        ),
+      );
+
+  test("copies differing only by #label become one server with per-profile labels", () => {
+    const base = "vless://{uuid}@{ip}:443?type=tcp&security=reality";
+    const file = legacyDb([
+      [1, "garfop", `${base}#🇩🇪 DE 0`],
+      [2, "garfop", `${base}#🇩🇪 DE 0 (основной)`],
+      [3, "garfop-pul", `${base}#🇩🇪 DE 0 (main)`],
+    ]);
+    let s = new SqliteStorage(file, "admin");
+    expect(s.listConnections(1)).toHaveLength(1);
+    expect(labels(s)).toEqual([
+      ["🇩🇪 DE 0"],
+      ["🇩🇪 DE 0 (основной)"],
+      ["🇩🇪 DE 0 (main)"],
+    ]);
+    expect(s.listServerRecords("main", 1)[0]!.displayName).toBeNull();
+    // Internal entry names are aligned with the server name.
+    expect(s.listServerRecords("pul", 1)[0]!.name).toBe("garfop");
+    s.close();
+
+    // Runs once: a deliberate label-only copy made later is not folded on restart.
+    s = new SqliteStorage(file, "admin");
+    const copy = s.saveConnection(null, "copy", `${base}#Other`, 1, 1);
+    s.createProfile("fresh", 1, 1);
+    s.assignConnection(copy, "fresh", true, 1);
+    s.close();
+    s = new SqliteStorage(file, "admin");
+    expect(s.listConnections(1)).toHaveLength(2);
+    s.close();
+  });
+
+  test("copies used twice by the same profile stay separate", () => {
+    const file = legacyDb([
+      [1, "a", "vless://{uuid}@{ip}:443#A"],
+      [1, "b", "vless://{uuid}@{ip}:443#B"],
+      [2, "a", "vless://{uuid}@{ip}:443#A2"],
+    ]);
+    const s = new SqliteStorage(file, "admin");
+    cleanup.push(() => s.close());
+    // "a"(main) absorbs "a"(par); "b" shares main with it, so it stays its own server.
+    expect(s.listConnections(1)).toHaveLength(2);
+    expect(labels(s)).toEqual([["A", "B"], ["A2"], []]);
+  });
+});

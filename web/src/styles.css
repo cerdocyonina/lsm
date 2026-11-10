@@ -68,3 +68,42 @@ code {
     gap: 0.25rem;
   }
 }
+
+/* Servers page: server info | profile chips | actions */
+.server-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) auto;
+  gap: 0.75rem 1rem;
+  align-items: center;
+}
+
+/* Profile page: [select] [reorder] info | actions */
+.profile-server-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.profile-server-row.with-select {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+}
+
+.min-w-0 {
+  min-width: 0;
+}
+
+.no-caret::after {
+  display: none;
+}
+
+@media (max-width: 767.98px) {
+  .server-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .server-row > :nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}

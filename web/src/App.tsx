@@ -34,11 +34,12 @@ import {
 } from "./api";
 import { AccountPanel } from "./components/AccountPanel";
 import { AdminUsersPanel } from "./components/AdminUsersPanel";
-import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
-import { InventoryPanel } from "./components/InventoryPanel";
 import { LoginPage } from "./components/LoginPage";
+import { ProfileServersPanel } from "./components/ProfileServersPanel";
 import { ProfileTabs } from "./components/ProfileTabs";
+import { ServersPage } from "./components/ServersPage";
 import { UsersPanel } from "./components/UsersPanel";
+import { useInventory } from "./inventory";
 import type {
   AdminUserRecord,
   ClientHttpPingResult,
@@ -142,6 +143,15 @@ export default function App() {
   const [activePage, setActivePage] = useState<
     "main" | "nodes" | "admin-users" | "account"
   >("main");
+
+  // Shared server catalog; mutations refresh the profile view (users, ping lists) too.
+  const inventory = useInventory(session !== null, async () => {
+    await loadNodes();
+    await refreshAfterMutation();
+  });
+  useEffect(() => {
+    if (session) void inventory.reload().catch(() => {});
+  }, [profiles]);
 
   async function loadProfiles(): Promise<ProfileRecord[]> {
     const payload = await api<{ profiles: ProfileRecord[] }>("/profiles");
@@ -828,12 +838,7 @@ export default function App() {
             onDeleteAdminUser={handleDeleteAdminUser}
           />
         ) : activePage === "nodes" ? (
-          <InventoryPanel
-            onChanged={async () => {
-              await loadNodes();
-              await refreshAfterMutation();
-            }}
-          />
+          <ServersPage inv={inventory} />
         ) : (
           <Row className="g-4 mb-4">
             <Col xl={5}>
@@ -865,23 +870,17 @@ export default function App() {
               />
             </Col>
             <Col xl={7}>
-              <InventoryPanel
-                revision={JSON.stringify([profiles, servers])}
+              <ProfileServersPanel
                 profile={activeProfileId}
-                onChanged={async () => {
-                  await loadNodes();
-                  await refreshAfterMutation();
-                }}
-              />
-              <DiagnosticsPanel
-                servers={servers}
+                inv={inventory}
                 icmp={icmpResults}
                 http={httpResults}
                 pinging={pinging}
                 selectionMode={pingSelectionMode}
                 selected={selectedServers}
-                onToggleSelection={() => setPingSelectionMode((v) => !v)}
+                onToggleSelectionMode={() => setPingSelectionMode((v) => !v)}
                 onToggleServer={toggleServer}
+                onSelectServers={setSelectedServers}
                 onPing={pingAllServers}
               />
             </Col>
@@ -953,7 +952,7 @@ export default function App() {
           </Modal.Title>
         </Modal.Header>
         <Modal.Body>
-          <p className="mb-1">Also remove from nodes:</p>
+          <p className="mb-1">Also remove from these agents:</p>
           {nodes
             .filter((n) => servers.some((s) => s.nodeId === n.id))
             .map((n) => (
@@ -961,7 +960,10 @@ export default function App() {
                 key={n.id}
                 type="checkbox"
                 id={`del-node-${n.id}`}
-                label={n.name}
+                label={servers
+                  .filter((s) => s.nodeId === n.id)
+                  .map((s) => s.name)
+                  .join(", ")}
                 checked={deleteNodeIds.has(n.id)}
                 onChange={() =>
                   setDeleteNodeIds((prev) => {
@@ -1002,7 +1004,7 @@ export default function App() {
                 void performDeleteUser(deletingUserName, [...deleteNodeIds]);
             }}
           >
-            {deletingUser ? "Deleting…" : "LSM + nodes"}
+            {deletingUser ? "Deleting…" : "LSM + agents"}
           </Button>
         </Modal.Footer>
       </Modal>

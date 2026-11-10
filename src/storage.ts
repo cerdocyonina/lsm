@@ -114,6 +114,17 @@ export interface Storage {
     inboundId: number,
     ownerId: number,
   ): number;
+  /** Reuses the host's service bound to the same backend (path + inbound for 3x-ui) or creates one. */
+  findOrCreateService(
+    hostId: number,
+    type: NodeType,
+    path: string,
+    inboundId: number,
+    preferredName: string,
+    ownerId: number,
+  ): number;
+  /** Services are an implementation detail of servers; drop the ones nothing points at anymore. */
+  pruneUnusedServices(ownerId: number, keep?: Iterable<number>): void;
   // Admin user methods
   getPrimaryAdmin(): AdminUserRecord;
   getAdminUserByUsername(username: string): AdminUserRecord | null;
@@ -253,6 +264,18 @@ export interface Storage {
   mergeAllFromMultiProfileDump(dump: MultiProfileDump, ownerId: number): void;
 
   close(): void;
+}
+
+/** Decoded #label of a template, or null when it has none. */
+export function fragmentOf(template: string): string | null {
+  const hash = template.indexOf("#");
+  if (hash === -1) return null;
+  const raw = template.slice(hash + 1);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 /** Мешок кредов хранится как JSON-текст; битое значение не должно ронять раздачу. */
@@ -543,6 +566,15 @@ export class SqliteStorage implements Storage {
               .run(row.profile_id, id, row.name, row.sort_order);
           }
           this.db.exec("DROP TABLE servers");
+        }
+        // One-time cleanup of the 1.6.0 migration (schema version 0 → 1).
+        const { user_version } = this.db
+          .query("PRAGMA user_version")
+          .get() as { user_version: number };
+        if (user_version < 1) {
+          this.mergeLabelVariants();
+          this.normalizeMembershipNames();
+          this.db.exec("PRAGMA user_version = 1");
         }
       })
       .immediate();
@@ -1202,6 +1234,9 @@ export class SqliteStorage implements Storage {
           )
           .run(ownerId, name, template, nodeId, Date.now()).lastInsertRowid,
       );
+    const before = this.db
+      .query("SELECT name FROM connections WHERE id=?1 AND owner_id=?2")
+      .get(id, ownerId) as { name: string } | null;
     if (
       !this.db
         .query(
@@ -1210,6 +1245,15 @@ export class SqliteStorage implements Storage {
         .run(name, template, nodeId, id, ownerId).changes
     )
       throw new Error("Unknown connection");
+    // Profile entries that still carry the server's name follow a rename; custom ones stay.
+    if (before && before.name !== name) {
+      const profiles = this.db
+        .query(
+          "SELECT profile_id AS profileId FROM profile_connections WHERE connection_id=?1 AND name=?2",
+        )
+        .all(id, before.name) as { profileId: number }[];
+      for (const p of profiles) this.renameMembership(p.profileId, id, name);
+    }
     return id;
   }
   public deleteConnection(id: number, ownerId: number): void {
@@ -1251,6 +1295,90 @@ export class SqliteStorage implements Storage {
         `INSERT INTO profile_connections(profile_id,connection_id,name,sort_order) VALUES (?1,?2,?3,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM profile_connections WHERE profile_id=?1))`,
       )
       .run(pid, id, name);
+  }
+
+  /**
+   * The 1.6.0 migration shared connections only on an exact template match, so a server
+   * whose profiles differed just by the #label stayed split into one copy per profile.
+   * Fold such copies into the oldest one and keep each profile's label as its link-name
+   * override. Copies that share a profile, or that nobody uses, are left alone.
+   */
+  private mergeLabelVariants(): void {
+    const rows = this.db
+      .query(
+        "SELECT id, owner_id AS owner, node_id AS nodeId, template FROM connections ORDER BY id",
+      )
+      .all() as {
+      id: number;
+      owner: number;
+      nodeId: number | null;
+      template: string;
+    }[];
+    const groups = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const hash = row.template.indexOf("#");
+      const base = hash === -1 ? row.template : row.template.slice(0, hash);
+      const key = JSON.stringify([row.owner, row.nodeId, base]);
+      groups.set(key, [...(groups.get(key) ?? []), row]);
+    }
+    const membersOf = (id: number) =>
+      this.db
+        .query(
+          "SELECT profile_id AS profileId, display_name AS displayName FROM profile_connections WHERE connection_id=?1",
+        )
+        .all(id) as { profileId: number; displayName: string | null }[];
+    for (const [canonical, ...rest] of groups.values()) {
+      if (!canonical || !rest.length) continue;
+      const label = fragmentOf(canonical.template);
+      const used = new Set(membersOf(canonical.id).map((m) => m.profileId));
+      for (const other of rest) {
+        const members = membersOf(other.id);
+        const otherLabel = fragmentOf(other.template);
+        if (!members.length || members.some((m) => used.has(m.profileId)))
+          continue;
+        // Without a fragment there is no label to carry over as an override.
+        if (otherLabel === null && label !== null) continue;
+        for (const m of members) {
+          if (m.displayName === null && otherLabel !== label)
+            this.db
+              .query(
+                "UPDATE profile_connections SET display_name=?1 WHERE profile_id=?2 AND connection_id=?3",
+              )
+              .run(otherLabel, m.profileId, other.id);
+          this.db
+            .query(
+              "UPDATE profile_connections SET connection_id=?1 WHERE profile_id=?2 AND connection_id=?3",
+            )
+            .run(canonical.id, m.profileId, other.id);
+          used.add(m.profileId);
+        }
+        this.db.query("DELETE FROM connections WHERE id=?1").run(other.id);
+      }
+    }
+  }
+
+  /** Per-profile entry names are internal keys now; align them with the server name where free. */
+  private normalizeMembershipNames(): void {
+    const rows = this.db
+      .query(
+        "SELECT m.profile_id AS profileId, m.connection_id AS connectionId, c.name FROM profile_connections m JOIN connections c ON c.id=m.connection_id WHERE m.name<>c.name",
+      )
+      .all() as { profileId: number; connectionId: number; name: string }[];
+    for (const r of rows) this.renameMembership(r.profileId, r.connectionId, r.name);
+  }
+
+  /** Renames one profile entry unless another entry of that profile already has the name. */
+  private renameMembership(
+    profileId: number,
+    connectionId: number,
+    name: string,
+  ): void {
+    this.db
+      .query(
+        `UPDATE profile_connections SET name=?1 WHERE profile_id=?2 AND connection_id=?3
+         AND NOT EXISTS (SELECT 1 FROM profile_connections WHERE profile_id=?2 AND name=?1)`,
+      )
+      .run(name, profileId, connectionId);
   }
 
   private normalizeHosts(): void {
@@ -1329,12 +1457,75 @@ export class SqliteStorage implements Storage {
       throw new Error("Unknown host");
     return id;
   }
+  /** Deletes the host with its servers. Nothing is sent to the agent. */
   public deleteHost(id: number, ownerId: number): void {
-    if (this.listNodes(ownerId).some((n) => n.hostId === id))
-      throw new Error("Remove the host's services first");
-    this.db
-      .query("DELETE FROM hosts WHERE id=?1 AND owner_id=?2")
-      .run(id, ownerId);
+    this.db.transaction(() => {
+      // connections.node_id is ON DELETE SET NULL; without this the host's servers would
+      // silently turn into agent-less links instead of going away with the host.
+      this.db
+        .query(
+          "DELETE FROM connections WHERE owner_id=?2 AND node_id IN (SELECT id FROM nodes WHERE host_id=?1 AND owner_id=?2)",
+        )
+        .run(id, ownerId);
+      this.db
+        .query("DELETE FROM nodes WHERE host_id=?1 AND owner_id=?2")
+        .run(id, ownerId);
+      this.db
+        .query("DELETE FROM hosts WHERE id=?1 AND owner_id=?2")
+        .run(id, ownerId);
+    })();
+  }
+  public findOrCreateService(
+    hostId: number,
+    type: NodeType,
+    path: string,
+    inboundId: number,
+    preferredName: string,
+    ownerId: number,
+  ): number {
+    const existing = this.listNodes(ownerId).find(
+      (n) =>
+        n.hostId === hostId &&
+        n.backendPath === path &&
+        (n.type !== "xui" || type !== "xui" || n.inboundId === inboundId),
+    );
+    if (existing) {
+      if (existing.type !== type)
+        throw new Error(
+          `Backend ${path || "(default)"} on this host is already used by a ${existing.type} server`,
+        );
+      return existing.id;
+    }
+    // nodes.name is globally unique (legacy constraint), so suffix on collision.
+    let name = preferredName;
+    for (
+      let n = 2;
+      this.db.query("SELECT 1 FROM nodes WHERE name=?1").get(name);
+      n++
+    )
+      name = `${preferredName}-${n}`;
+    return this.saveService(
+      null,
+      hostId,
+      name,
+      path,
+      type,
+      inboundId,
+      ownerId,
+    );
+  }
+  public pruneUnusedServices(ownerId: number, keep: Iterable<number> = []): void {
+    const kept = new Set(keep);
+    const unused = this.db
+      .query(
+        `SELECT id FROM nodes n WHERE owner_id=?1
+         AND NOT EXISTS (SELECT 1 FROM connections c WHERE c.node_id=n.id)
+         AND NOT EXISTS (SELECT 1 FROM pending_node_removals r WHERE r.node_id=n.id)`,
+      )
+      .all(ownerId) as { id: number }[];
+    for (const { id } of unused)
+      if (!kept.has(id))
+        this.db.query("DELETE FROM nodes WHERE id=?1").run(id);
   }
   public saveService(
     id: number | null,
