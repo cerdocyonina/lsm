@@ -111,6 +111,7 @@ export async function syncNaiveNode(
   try {
     const res = await fetch(`${node.url}/sync-users`, {
       method: "POST",
+      signal: AbortSignal.timeout(20000),
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${node.secret}` },
       body: JSON.stringify({ users }),
       tls: { rejectUnauthorized: false },

@@ -1,4 +1,11 @@
-import { FormEvent, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  FormEvent,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   Alert,
   Badge,
@@ -14,28 +21,33 @@ import {
 } from "react-bootstrap";
 import toast from "react-hot-toast";
 import { TbDownload, TbPencil, TbTrash, TbUpload } from "react-icons/tb";
-import { api, createAdminUser, deleteAdminUser, exportAll, exportProfile, fetchAdminUsers, importAll, importProfile, profilePath } from "./api";
+import {
+  api,
+  createAdminUser,
+  deleteAdminUser,
+  exportAll,
+  exportProfile,
+  fetchAdminUsers,
+  importAll,
+  importProfile,
+  profilePath,
+} from "./api";
 import { AccountPanel } from "./components/AccountPanel";
 import { AdminUsersPanel } from "./components/AdminUsersPanel";
+import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
+import { InventoryPanel } from "./components/InventoryPanel";
 import { LoginPage } from "./components/LoginPage";
-import { NodesPanel } from "./components/NodesPanel";
 import { ProfileTabs } from "./components/ProfileTabs";
-import { ServersPanel } from "./components/ServersPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import type {
   AdminUserRecord,
   ClientHttpPingResult,
-  NodeFormState,
   NodeRecord,
-  NodeSyncUsersResult,
-  NodeTestResult,
   PingResponse,
   ProfileRecord,
-  ServerFormState,
   ServerIcmpResult,
   ServerRecord,
   Session,
-  SyncConflictStrategy,
   SyncResult,
   UserFormState,
   UserRecord,
@@ -43,10 +55,6 @@ import type {
 
 function emptyUserForm(): UserFormState {
   return { clientName: "", userUuid: crypto.randomUUID() };
-}
-
-function emptyServerForm(): ServerFormState {
-  return { name: "", template: "", nodeId: null };
 }
 
 /**
@@ -64,7 +72,8 @@ function reconcileSelection(
   const allKnownSelected = [...known].every((n) => prev.has(n));
   const next = new Set<string>();
   for (const name of names) {
-    if (prev.has(name) || (allKnownSelected && !known.has(name))) next.add(name);
+    if (prev.has(name) || (allKnownSelected && !known.has(name)))
+      next.add(name);
   }
   return next;
 }
@@ -103,12 +112,8 @@ export default function App() {
   const [adminUsers, setAdminUsers] = useState<AdminUserRecord[]>([]);
   const [loginPending, setLoginPending] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
-  const [savingServer, setSavingServer] = useState(false);
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm);
-  const [serverForm, setServerForm] =
-    useState<ServerFormState>(emptyServerForm);
   const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
-  const [editingServer, setEditingServer] = useState<ServerRecord | null>(null);
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [icmpResults, setIcmpResults] = useState<ServerIcmpResult[]>([]);
   const [httpResults, setHttpResults] = useState<ClientHttpPingResult[]>([]);
@@ -134,7 +139,9 @@ export default function App() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
-  const [activePage, setActivePage] = useState<"main" | "nodes" | "admin-users" | "account">("main");
+  const [activePage, setActivePage] = useState<
+    "main" | "nodes" | "admin-users" | "account"
+  >("main");
 
   async function loadProfiles(): Promise<ProfileRecord[]> {
     const payload = await api<{ profiles: ProfileRecord[] }>("/profiles");
@@ -164,12 +171,16 @@ export default function App() {
     const userNames = userPayload.users.map((u) => u.clientName);
     const prevKnownUsers = knownUserNames.current;
     knownUserNames.current = new Set(userNames);
-    setSelectedUsers((prev) => reconcileSelection(prev, prevKnownUsers, userNames));
+    setSelectedUsers((prev) =>
+      reconcileSelection(prev, prevKnownUsers, userNames),
+    );
 
     const serverNames = serverPayload.servers.map((s) => s.name);
     const prevKnownServers = knownServerNames.current;
     knownServerNames.current = new Set(serverNames);
-    setSelectedServers((prev) => reconcileSelection(prev, prevKnownServers, serverNames));
+    setSelectedServers((prev) =>
+      reconcileSelection(prev, prevKnownServers, serverNames),
+    );
   }
 
   useEffect(() => {
@@ -183,7 +194,10 @@ export default function App() {
         setSession(currentSession);
         const loaders: Promise<unknown>[] = [loadProfiles(), loadNodes()];
         if (currentSession.isPrimary) loaders.push(loadAdminUsers());
-        const [loadedProfiles] = await Promise.all(loaders) as [ProfileRecord[], ...unknown[]];
+        const [loadedProfiles] = (await Promise.all(loaders)) as [
+          ProfileRecord[],
+          ...unknown[],
+        ];
         const initialProfile = loadedProfiles[0]?.name ?? "main";
         setActiveProfileId(initialProfile);
         await loadDashboard(initialProfile);
@@ -209,9 +223,7 @@ export default function App() {
     setIcmpResults([]);
     setHttpResults([]);
     setEditingUser(null);
-    setEditingServer(null);
     setUserForm(emptyUserForm());
-    setServerForm(emptyServerForm());
     setSelectedUsers(new Set());
     setSelectedServers(new Set());
     knownUserNames.current = new Set();
@@ -256,7 +268,10 @@ export default function App() {
       setSession(currentSession);
       const loaders2: Promise<unknown>[] = [loadProfiles(), loadNodes()];
       if (currentSession.isPrimary) loaders2.push(loadAdminUsers());
-      const [loadedProfiles2] = await Promise.all(loaders2) as [ProfileRecord[], ...unknown[]];
+      const [loadedProfiles2] = (await Promise.all(loaders2)) as [
+        ProfileRecord[],
+        ...unknown[],
+      ];
       const initialProfile = loadedProfiles2[0]?.name ?? "main";
       setActiveProfileId(initialProfile);
       await loadDashboard(initialProfile);
@@ -275,7 +290,6 @@ export default function App() {
     setServers([]);
     setAdminUsers([]);
     setEditingUser(null);
-    setEditingServer(null);
     setDashboardError(null);
   }
 
@@ -291,14 +305,17 @@ export default function App() {
   }
 
   async function handleDeleteAdminUser(id: number, username: string) {
-    if (!window.confirm(`Delete panel user "${username}" and all their data?`)) return;
+    if (!window.confirm(`Delete panel user "${username}" and all their data?`))
+      return;
     await deleteAdminUser(id);
     setAdminUsers((prev) => prev.filter((u) => u.id !== id));
     toast.success(`Panel user "${username}" deleted`);
   }
 
   function downloadJson(data: unknown, filename: string) {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -314,7 +331,9 @@ export default function App() {
       const data = await exportProfile(activeProfileId);
       downloadJson(data, `${activeProfileId}.json`);
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : "Export failed.");
+      setDashboardError(
+        error instanceof Error ? error.message : "Export failed.",
+      );
     }
   }
 
@@ -323,7 +342,9 @@ export default function App() {
       const data = await exportAll();
       downloadJson(data, "lsm-export.json");
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : "Export failed.");
+      setDashboardError(
+        error instanceof Error ? error.message : "Export failed.",
+      );
     }
   }
 
@@ -435,16 +456,25 @@ export default function App() {
           userForm.clientName,
         );
       } else {
-        const payload = await api<{ users: UserRecord[]; syncResults?: SyncResult[] }>(
-          profilePath(activeProfileId, "/users"),
-          { method: "POST", body: JSON.stringify(userForm) },
-        );
+        const payload = await api<{
+          users: UserRecord[];
+          syncResults?: SyncResult[];
+        }>(profilePath(activeProfileId, "/users"), {
+          method: "POST",
+          body: JSON.stringify(userForm),
+        });
         if (payload.syncResults && payload.syncResults.length > 0) {
-          const failures = payload.syncResults.filter((r) => r.result === "failed");
+          const failures = payload.syncResults.filter(
+            (r) => r.result === "failed",
+          );
           if (failures.length > 0) {
-            toast.error(`User added, but sync failed on: ${failures.map((f) => f.nodeName ?? f.nodeId).join(", ")}`);
+            toast.error(
+              `User added, but sync failed on: ${failures.map((f) => f.nodeName ?? f.nodeId).join(", ")}`,
+            );
           } else {
-            toast.success(`User added & synced to ${payload.syncResults.length} node(s)`);
+            toast.success(
+              `User added & synced to ${payload.syncResults.length} node(s)`,
+            );
           }
           setUserForm(emptyUserForm());
           setEditingUser(null);
@@ -467,66 +497,29 @@ export default function App() {
     }
   }
 
-  async function submitServerForm(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSavingServer(true);
-    setDashboardError(null);
-    const wasEditing = editingServer !== null;
-
-    try {
-      if (editingServer) {
-        await api(
-          profilePath(
-            activeProfileId,
-            `/servers/${encodeURIComponent(editingServer.name)}`,
-          ),
-          {
-            method: "PATCH",
-            body: JSON.stringify(serverForm),
-          },
-        );
-        carrySelectionOverRename(
-          knownServerNames,
-          setSelectedServers,
-          editingServer.name,
-          serverForm.name,
-        );
-      } else {
-        await api(profilePath(activeProfileId, "/servers"), {
-          method: "POST",
-          body: JSON.stringify(serverForm),
-        });
-      }
-
-      setServerForm(emptyServerForm());
-      setEditingServer(null);
-      await refreshAfterMutation();
-      toast.success(wasEditing ? "Server saved" : "Server added");
-    } catch (error) {
-      setDashboardError(
-        error instanceof Error ? error.message : "Failed to save server.",
-      );
-    } finally {
-      setSavingServer(false);
-    }
-  }
-
   async function performDeleteUser(clientName: string, nodeIds: number[]) {
     setDeletingUser(true);
     try {
-      const url = profilePath(activeProfileId, `/users/${encodeURIComponent(clientName)}`);
+      const url = profilePath(
+        activeProfileId,
+        `/users/${encodeURIComponent(clientName)}`,
+      );
       if (nodeIds.length > 0) {
         const payload = await api<{ syncResults: SyncResult[] }>(url, {
           method: "DELETE",
           body: JSON.stringify({ nodeIds }),
         });
-        const failures = payload.syncResults.filter((r) => r.result === "failed");
+        const failures = payload.syncResults.filter(
+          (r) => r.result === "failed",
+        );
         if (failures.length > 0) {
           toast.error(
             `User deleted, but removal failed on: ${failures.map((f) => f.nodeName ?? f.nodeId).join(", ")}`,
           );
         } else {
-          toast.success(`User deleted and removed from ${payload.syncResults.length} node(s)`);
+          toast.success(
+            `User deleted and removed from ${payload.syncResults.length} node(s)`,
+          );
         }
       } else {
         await api(url, { method: "DELETE" });
@@ -534,7 +527,9 @@ export default function App() {
       }
       await refreshAfterMutation();
     } catch (error) {
-      setDashboardError(error instanceof Error ? error.message : "Failed to delete user.");
+      setDashboardError(
+        error instanceof Error ? error.message : "Failed to delete user.",
+      );
     } finally {
       setDeletingUser(false);
       setShowDeleteUserModal(false);
@@ -561,109 +556,28 @@ export default function App() {
   async function handleResyncUser(clientName: string): Promise<SyncResult[]> {
     try {
       const payload = await api<{ syncResults: SyncResult[] }>(
-        profilePath(activeProfileId, `/users/${encodeURIComponent(clientName)}/sync`),
+        profilePath(
+          activeProfileId,
+          `/users/${encodeURIComponent(clientName)}/sync`,
+        ),
         { method: "POST" },
       );
       const failures = payload.syncResults.filter((r) => r.result === "failed");
       if (failures.length > 0) {
-        toast.error(`Sync failed on: ${failures.map((f) => f.nodeName ?? f.nodeId).join(", ")}`);
+        toast.error(
+          `Sync failed on: ${failures.map((f) => f.nodeName ?? f.nodeId).join(", ")}`,
+        );
       } else if (payload.syncResults.length === 0) {
         toast("No nodes configured", { icon: "ℹ️" });
       } else {
-        toast.success(`"${clientName}" resynced to ${payload.syncResults.length} node(s)`);
+        toast.success(
+          `"${clientName}" resynced to ${payload.syncResults.length} node(s)`,
+        );
       }
       return payload.syncResults;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Resync failed.");
       return [];
-    }
-  }
-
-  async function handleAddNode(form: NodeFormState) {
-    await api<{ nodes: NodeRecord[] }>("/nodes", {
-      method: "POST",
-      body: JSON.stringify({
-        name: form.name,
-        url: form.url,
-        secret: form.secret,
-        type: form.type,
-        // naive/ss-ноды не имеют инбаунда; поле формы пустое, parseInt дал бы NaN.
-        inboundId: form.type === "xui" ? parseInt(form.inboundId, 10) : 0,
-      }),
-    });
-    await loadNodes();
-    toast.success(`Node "${form.name}" added`);
-  }
-
-  async function handleUpdateNode(id: number, form: NodeFormState) {
-    const body: Record<string, unknown> = {
-      name: form.name,
-      url: form.url,
-      type: form.type,
-      inboundId: form.type === "xui" ? parseInt(form.inboundId, 10) : 0,
-    };
-    if (form.secret) body.secret = form.secret;
-    await api<{ nodes: NodeRecord[] }>(`/nodes/${id}`, { method: "PATCH", body: JSON.stringify(body) });
-    await loadNodes();
-    toast.success("Node updated");
-  }
-
-  async function handleDeleteNode(id: number, name: string) {
-    if (!window.confirm(`Remove node "${name}"?`)) return;
-    await api(`/nodes/${id}`, { method: "DELETE" });
-    await loadNodes();
-    toast.success("Node deleted");
-  }
-
-  async function handleTestNode(id: number): Promise<NodeTestResult> {
-    return api<NodeTestResult>(`/nodes/${id}/test`, { method: "POST" });
-  }
-
-  async function handleSyncUsersToServer(serverName: string, strategy: SyncConflictStrategy): Promise<NodeSyncUsersResult> {
-    return api<NodeSyncUsersResult>(
-      profilePath(activeProfileId, `/servers/${encodeURIComponent(serverName)}/sync-users`),
-      { method: "POST", body: JSON.stringify({ onConflict: strategy }) },
-    );
-  }
-
-  async function reorderServers(names: string[]) {
-    const nameToRecord = new Map(servers.map((s) => [s.name, s]));
-    setServers(
-      names.map((name, i) => ({ ...nameToRecord.get(name)!, sortOrder: i })),
-    );
-
-    try {
-      await api(profilePath(activeProfileId, "/servers/order"), {
-        method: "PUT",
-        body: JSON.stringify({ order: names }),
-      });
-      await refreshAfterMutation();
-    } catch (error) {
-      await refreshAfterMutation();
-      setDashboardError(
-        error instanceof Error ? error.message : "Failed to reorder servers.",
-      );
-    }
-  }
-
-  async function deleteServer(name: string) {
-    if (!window.confirm(`Remove server "${name}"?`)) {
-      return;
-    }
-
-    try {
-      await api(
-        profilePath(activeProfileId, `/servers/${encodeURIComponent(name)}`),
-        {
-          method: "DELETE",
-        },
-      );
-      await refreshAfterMutation();
-      toast.success("Server deleted");
-    } catch (error) {
-      setDashboardError(
-        error instanceof Error ? error.message : "Failed to delete server.",
-      );
     }
   }
 
@@ -701,7 +615,8 @@ export default function App() {
         if (selectedServers.size < servers.length)
           body.servers = [...selectedServers];
         if (icmpOnly) body.strategy = "icmp";
-        else if (selectedUsers.size < users.length) body.users = [...selectedUsers];
+        else if (selectedUsers.size < users.length)
+          body.users = [...selectedUsers];
       }
       const serverCount = pingSelectionMode
         ? selectedServers.size
@@ -770,24 +685,40 @@ export default function App() {
         <Container>
           <Navbar.Brand className="fw-semibold">
             LSM Admin
-            <Badge bg="secondary" className="fw-normal ms-2" style={{ fontSize: "0.65em", verticalAlign: "middle" }}>
+            <Badge
+              bg="secondary"
+              className="fw-normal ms-2"
+              style={{ fontSize: "0.65em", verticalAlign: "middle" }}
+            >
               v{__APP_VERSION__}
             </Badge>
           </Navbar.Brand>
           <Nav className="me-auto ms-3">
-            <Nav.Link active={activePage === "main"} onClick={() => setActivePage("main")}>
-              Users &amp; Servers
+            <Nav.Link
+              active={activePage === "main"}
+              onClick={() => setActivePage("main")}
+            >
+              Profiles
             </Nav.Link>
-            <Nav.Link active={activePage === "nodes"} onClick={() => setActivePage("nodes")}>
-              Nodes
+            <Nav.Link
+              active={activePage === "nodes"}
+              onClick={() => setActivePage("nodes")}
+            >
+              Servers
             </Nav.Link>
             {session.isPrimary && (
-              <Nav.Link active={activePage === "admin-users"} onClick={() => setActivePage("admin-users")}>
+              <Nav.Link
+                active={activePage === "admin-users"}
+                onClick={() => setActivePage("admin-users")}
+              >
                 Panel Users
               </Nav.Link>
             )}
             {!session.isPrimary && (
-              <Nav.Link active={activePage === "account"} onClick={() => setActivePage("account")}>
+              <Nav.Link
+                active={activePage === "account"}
+                onClick={() => setActivePage("account")}
+              >
                 My Account
               </Nav.Link>
             )}
@@ -796,7 +727,11 @@ export default function App() {
             <span className="text-body-secondary small">
               Signed in as <strong>{session.username}</strong>
             </span>
-            <Button variant="outline-secondary" size="sm" onClick={handleExportAll}>
+            <Button
+              variant="outline-secondary"
+              size="sm"
+              onClick={handleExportAll}
+            >
               <TbDownload size={13} className="me-1" />
               Export all
             </Button>
@@ -821,52 +756,56 @@ export default function App() {
       )}
 
       {activePage === "main" && (
-      <Container fluid="lg" className="pt-3 pb-1">
-        <div className="d-flex align-items-center gap-2 flex-wrap">
-          <span className="text-body-secondary small me-1">
-            Profile: <strong>{activeProfileId}</strong>
-          </span>
-          <div className="d-flex gap-1">
-            <Button
-              variant="outline-secondary"
-              size="sm"
-              onClick={() => {
-                setRenameProfileName(activeProfileId);
-                setShowRenameProfile(true);
-              }}
-            >
-              <TbPencil size={13} className="me-1" />
-              Rename
-            </Button>
-            <Button
-              variant="outline-danger"
-              size="sm"
-              onClick={() => setShowDeleteProfile(true)}
-            >
-              <TbTrash size={13} className="me-1" />
-              Delete
-            </Button>
+        <Container fluid="lg" className="pt-3 pb-1">
+          <div className="d-flex align-items-center gap-2 flex-wrap">
+            <span className="text-body-secondary small me-1">
+              Profile: <strong>{activeProfileId}</strong>
+            </span>
+            <div className="d-flex gap-1">
+              <Button
+                variant="outline-secondary"
+                size="sm"
+                onClick={() => {
+                  setRenameProfileName(activeProfileId);
+                  setShowRenameProfile(true);
+                }}
+              >
+                <TbPencil size={13} className="me-1" />
+                Rename
+              </Button>
+              <Button
+                variant="outline-danger"
+                size="sm"
+                onClick={() => setShowDeleteProfile(true)}
+              >
+                <TbTrash size={13} className="me-1" />
+                Delete
+              </Button>
+            </div>
+            <div className="d-flex gap-1 ms-2 border-start ps-2">
+              <Button
+                variant="outline-secondary"
+                size="sm"
+                onClick={handleExportProfile}
+              >
+                <TbDownload size={13} className="me-1" />
+                Export
+              </Button>
+              <Button
+                variant="outline-secondary"
+                size="sm"
+                onClick={() => {
+                  setImportFile(null);
+                  setImportError(null);
+                  setShowImportModal(true);
+                }}
+              >
+                <TbUpload size={13} className="me-1" />
+                Import
+              </Button>
+            </div>
           </div>
-          <div className="d-flex gap-1 ms-2 border-start ps-2">
-            <Button variant="outline-secondary" size="sm" onClick={handleExportProfile}>
-              <TbDownload size={13} className="me-1" />
-              Export
-            </Button>
-            <Button
-              variant="outline-secondary"
-              size="sm"
-              onClick={() => {
-                setImportFile(null);
-                setImportError(null);
-                setShowImportModal(true);
-              }}
-            >
-              <TbUpload size={13} className="me-1" />
-              Import
-            </Button>
-          </div>
-        </div>
-      </Container>
+        </Container>
       )}
 
       <Container fluid="lg" className="py-4">
@@ -877,7 +816,10 @@ export default function App() {
         ) : null}
 
         {activePage === "account" && !session.isPrimary ? (
-          <AccountPanel session={session} onUsernameChanged={handleUsernameChanged} />
+          <AccountPanel
+            session={session}
+            onUsernameChanged={handleUsernameChanged}
+          />
         ) : activePage === "admin-users" && session.isPrimary ? (
           <AdminUsersPanel
             session={session}
@@ -886,79 +828,64 @@ export default function App() {
             onDeleteAdminUser={handleDeleteAdminUser}
           />
         ) : activePage === "nodes" ? (
-          <NodesPanel
-            nodes={nodes}
-            onAddNode={handleAddNode}
-            onUpdateNode={handleUpdateNode}
-            onDeleteNode={handleDeleteNode}
-            onTestNode={handleTestNode}
+          <InventoryPanel
+            onChanged={async () => {
+              await loadNodes();
+              await refreshAfterMutation();
+            }}
           />
         ) : (
-        <Row className="g-4 mb-4">
-          <Col xl={6}>
-            <UsersPanel
-              editingUser={editingUser}
-              onCancelEdit={() => {
-                setEditingUser(null);
-                setUserForm(emptyUserForm());
-              }}
-              onCopyLink={copyText}
-              onDeleteUser={deleteUser}
-              onResyncUser={handleResyncUser}
-              onEditUser={(user) => {
-                setEditingUser(user);
-                setUserForm({
-                  clientName: user.clientName,
-                  userUuid: user.userUuid,
-                });
-              }}
-              onSubmit={submitUserForm}
-              savingUser={savingUser}
-              userForm={userForm}
-              users={users}
-              setUserForm={setUserForm}
-              selectedUsers={selectedUsers}
-              onToggleUser={toggleUser}
-              onSelectUsers={setSelectedUsers}
-              pingSelectionMode={pingSelectionMode}
-            />
-          </Col>
-          <Col xl={6}>
-            <ServersPanel
-              nodes={nodes}
-              editingServer={editingServer}
-              onCancelEdit={() => {
-                setEditingServer(null);
-                setServerForm(emptyServerForm());
-              }}
-              onDeleteServer={deleteServer}
-              onEditServer={(server) => {
-                setEditingServer(server);
-                setServerForm({
-                  name: server.name,
-                  template: server.template,
-                  nodeId: server.nodeId,
-                });
-              }}
-              httpResults={httpResults}
-              icmpResults={icmpResults}
-              onPingAll={pingAllServers}
-              onReorder={reorderServers}
-              onSubmit={submitServerForm}
-              pinging={pinging}
-              savingServer={savingServer}
-              serverForm={serverForm}
-              servers={servers}
-              setServerForm={setServerForm}
-              selectedServers={selectedServers}
-              onToggleServer={toggleServer}
-              onSelectServers={setSelectedServers}
-              pingSelectionMode={pingSelectionMode}
-              onTogglePingSelection={() => setPingSelectionMode((v) => !v)}
-              onSyncUsersToServer={handleSyncUsersToServer}
-            />
-          </Col>
-        </Row>
+          <Row className="g-4 mb-4">
+            <Col xl={5}>
+              <UsersPanel
+                editingUser={editingUser}
+                onCancelEdit={() => {
+                  setEditingUser(null);
+                  setUserForm(emptyUserForm());
+                }}
+                onCopyLink={copyText}
+                onDeleteUser={deleteUser}
+                onResyncUser={handleResyncUser}
+                onEditUser={(user) => {
+                  setEditingUser(user);
+                  setUserForm({
+                    clientName: user.clientName,
+                    userUuid: user.userUuid,
+                  });
+                }}
+                onSubmit={submitUserForm}
+                savingUser={savingUser}
+                userForm={userForm}
+                users={users}
+                setUserForm={setUserForm}
+                selectedUsers={selectedUsers}
+                onToggleUser={toggleUser}
+                onSelectUsers={setSelectedUsers}
+                pingSelectionMode={pingSelectionMode}
+              />
+            </Col>
+            <Col xl={7}>
+              <InventoryPanel
+                revision={JSON.stringify([profiles, servers])}
+                profile={activeProfileId}
+                onChanged={async () => {
+                  await loadNodes();
+                  await refreshAfterMutation();
+                }}
+              />
+              <DiagnosticsPanel
+                servers={servers}
+                icmp={icmpResults}
+                http={httpResults}
+                pinging={pinging}
+                selectionMode={pingSelectionMode}
+                selected={selectedServers}
+                onToggleSelection={() => setPingSelectionMode((v) => !v)}
+                onToggleServer={toggleServer}
+                onPing={pingAllServers}
+              />
+            </Col>
+          </Row>
         )}
       </Container>
 
@@ -1021,7 +948,9 @@ export default function App() {
         size="sm"
       >
         <Modal.Header closeButton>
-          <Modal.Title className="h6">Delete &ldquo;{deletingUserName}&rdquo;</Modal.Title>
+          <Modal.Title className="h6">
+            Delete &ldquo;{deletingUserName}&rdquo;
+          </Modal.Title>
         </Modal.Header>
         <Modal.Body>
           <p className="mb-1">Also remove from nodes:</p>
@@ -1058,7 +987,8 @@ export default function App() {
             size="sm"
             disabled={deletingUser}
             onClick={() => {
-              if (deletingUserName) void performDeleteUser(deletingUserName, []);
+              if (deletingUserName)
+                void performDeleteUser(deletingUserName, []);
             }}
           >
             LSM only
@@ -1068,7 +998,8 @@ export default function App() {
             size="sm"
             disabled={deletingUser || deleteNodeIds.size === 0}
             onClick={() => {
-              if (deletingUserName) void performDeleteUser(deletingUserName, [...deleteNodeIds]);
+              if (deletingUserName)
+                void performDeleteUser(deletingUserName, [...deleteNodeIds]);
             }}
           >
             {deletingUser ? "Deleting…" : "LSM + nodes"}
@@ -1084,11 +1015,17 @@ export default function App() {
         size="sm"
       >
         <Modal.Header closeButton>
-          <Modal.Title className="h6">Import into &ldquo;{activeProfileId}&rdquo;</Modal.Title>
+          <Modal.Title className="h6">
+            Import into &ldquo;{activeProfileId}&rdquo;
+          </Modal.Title>
         </Modal.Header>
         <Modal.Body>
           {importError && (
-            <Alert variant="danger" dismissible onClose={() => setImportError(null)}>
+            <Alert
+              variant="danger"
+              dismissible
+              onClose={() => setImportError(null)}
+            >
               {importError}
             </Alert>
           )}
@@ -1098,23 +1035,31 @@ export default function App() {
               type="file"
               accept=".json,application/json"
               size="sm"
-              onChange={(e) => setImportFile((e.target as HTMLInputElement).files?.[0] ?? null)}
+              onChange={(e) =>
+                setImportFile((e.target as HTMLInputElement).files?.[0] ?? null)
+              }
             />
             <Form.Text className="text-body-secondary">
-              Single-profile exports and legacy configs are merged into the current profile.
-              Multi-profile dumps restore all profiles.
+              Single-profile exports and legacy configs are merged into the
+              current profile. Multi-profile dumps restore all profiles.
             </Form.Text>
           </Form.Group>
         </Modal.Body>
         <Modal.Footer>
-          <Button variant="secondary" size="sm" onClick={() => setShowImportModal(false)}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setShowImportModal(false)}
+          >
             Cancel
           </Button>
           <Button
             variant="primary"
             size="sm"
             disabled={!importFile || importing}
-            onClick={() => { if (importFile) void handleImport(importFile); }}
+            onClick={() => {
+              if (importFile) void handleImport(importFile);
+            }}
           >
             {importing ? "Importing…" : "Import"}
           </Button>

@@ -27,6 +27,7 @@ export type UserRecord = {
 };
 
 export type ServerRecord = {
+  connectionId?: number;
   name: string;
   sortOrder: number;
   template: string;
@@ -37,6 +38,8 @@ export type ServerRecord = {
 export type NodeType = "xui" | "naive" | "shadowsocks" | "mieru";
 
 export type NodeRecord = {
+  hostId?: number;
+  backendPath?: string;
   id: number;
   name: string;
   url: string;
@@ -60,20 +63,6 @@ export type NodeTestResult = {
 export type UserFormState = {
   clientName: string;
   userUuid: string;
-};
-
-export type ServerFormState = {
-  name: string;
-  template: string;
-  nodeId: number | null;
-};
-
-export type NodeFormState = {
-  name: string;
-  url: string;
-  secret: string;
-  inboundId: string;
-  type: NodeType;
 };
 
 export type SyncResult = {

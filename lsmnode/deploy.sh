@@ -87,27 +87,42 @@ if [[ -z "$SHARED_SECRET" ]]; then
 fi
 
 echo ""
-echo "--- 3x-UI connection ---"
-XUI_HOST="$(ask XUI_HOST "Host URL (e.g. https://1.2.3.4:2053)")"
-XUI_USER="$(ask XUI_USER "Username")"
-XUI_PASSWORD="$(ask_secret XUI_PASSWORD "Password")"
-
-if [[ -z "$XUI_HOST" || -z "$XUI_USER" || -z "$XUI_PASSWORD" ]]; then
-  echo "error: 3x-UI host, username, and password are all required" >&2; exit 1
+# Keep an existing multi-backend deployment intact. Re-running the installer must
+# never turn a naive/ss2022/mieru host back into the legacy xui-only configuration.
+BACKENDS_CONFIG="$(get_existing BACKENDS_CONFIG)"
+PROVIDER="$(get_existing PROVIDER)"
+if [[ -n "$BACKENDS_CONFIG" ]]; then
+  echo ">>> keeping multi-backend configuration: $BACKENDS_CONFIG"
+else
+  PROVIDER="${PROVIDER:-xui}"
+  if [[ "$PROVIDER" == "xui" ]]; then
+    XUI_HOST="$(ask XUI_HOST "3x-ui URL")"
+    XUI_USER="$(ask XUI_USER "3x-ui username")"
+    XUI_PASSWORD="$(ask_secret XUI_PASSWORD "3x-ui password")"
+    if [[ -z "$XUI_HOST" || -z "$XUI_USER" || -z "$XUI_PASSWORD" ]]; then
+      echo "error: 3x-ui host, username, and password are required" >&2; exit 1
+    fi
+  elif [[ "$PROVIDER" != "naive" ]]; then
+    echo "error: use BACKENDS_CONFIG for this provider" >&2; exit 1
+  fi
 fi
 
-echo ""
-
-# ---------------------------------------------------------------------------
-# 3. Write .env (owned by current user, no sudo needed)
-# ---------------------------------------------------------------------------
-cat > "$ENV_FILE" <<EOF
-PORT=$PORT
-SHARED_SECRET=$SHARED_SECRET
-XUI_HOST=$XUI_HOST
-XUI_USER=$XUI_USER
-XUI_PASSWORD=$XUI_PASSWORD
-EOF
+# Update just the requested keys; preserve all other provider settings and comments.
+[[ ! -f "$ENV_FILE" ]] || cp -p "$ENV_FILE" "$ENV_FILE.before-host-refactor"
+ENV_FILE="$ENV_FILE" LSM_PORT="$PORT" LSM_SECRET="$SHARED_SECRET" \
+LSM_XUI_HOST="${XUI_HOST:-}" LSM_XUI_USER="${XUI_USER:-}" LSM_XUI_PASSWORD="${XUI_PASSWORD:-}" \
+"$BUN" -e '
+  const file=process.env.ENV_FILE;
+  let text=await Bun.file(file).exists()?await Bun.file(file).text():"";
+  const values={PORT:process.env.LSM_PORT,SHARED_SECRET:process.env.LSM_SECRET};
+  if(process.env.LSM_XUI_HOST)Object.assign(values,{XUI_HOST:process.env.LSM_XUI_HOST,XUI_USER:process.env.LSM_XUI_USER,XUI_PASSWORD:process.env.LSM_XUI_PASSWORD});
+  for(const [key,value] of Object.entries(values)){
+    const line=key+"="+value;
+    const re=new RegExp("^"+key+"=.*$","m");
+    text=re.test(text)?text.replace(re,()=>line):text.trimEnd()+"\n"+line+"\n";
+  }
+  await Bun.write(file,text);
+'
 chmod 600 "$ENV_FILE"
 echo ">>> wrote $ENV_FILE"
 
@@ -117,6 +132,7 @@ echo ">>> wrote $ENV_FILE"
 echo ">>> installing dependencies..."
 cd "$REPO_DIR"
 "$BUN" install --frozen-lockfile
+"$BUN" --env-file="$ENV_FILE" run "$SCRIPT_DIR/src/check-config.ts"
 echo ""
 
 # ---------------------------------------------------------------------------

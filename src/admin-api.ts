@@ -7,7 +7,19 @@ import {
 } from "./admin-auth";
 import type { LoginRateLimiter } from "./admin-rate-limit";
 import { parseDumpOrThrow } from "./app-config";
-import { ensureUserCredentials, resolvedIdentityFor } from "./ensure-credentials";
+import {
+  ensureUserCredentials,
+  resolvedIdentityFor,
+} from "./ensure-credentials";
+import {
+  applyAssignments,
+  assignmentsSchema,
+  connectionSchema,
+  hostSchema,
+  inventory,
+  serviceSchema,
+  syncInventory,
+} from "./inventory";
 import {
   buildMieruUsersForNode,
   buildNaiveUsersForNode,
@@ -17,9 +29,9 @@ import {
 } from "./naive-sync";
 import { checkHttpPingRequirements, pingAllHttp, pingAllIcmp } from "./ping";
 import { templateNeedsNode, templatePlaceholders } from "./placeholders";
+import type { NodeRecord, ProfileRecord, Storage } from "./storage";
 import { buildMultiProfileDump, buildProfileDump } from "./storage";
 import { resolveServerTemplates } from "./subscription";
-import type { NodeRecord, ProfileRecord, Storage } from "./storage";
 
 const loginSchema = z.object({
   username: z.string().min(1),
@@ -27,7 +39,13 @@ const loginSchema = z.object({
 });
 
 const createProfileSchema = z.object({
-  name: z.string().min(1).regex(/^[a-z0-9_-]+$/, "Profile name must be lowercase alphanumeric, hyphens, or underscores"),
+  name: z
+    .string()
+    .min(1)
+    .regex(
+      /^[a-z0-9_-]+$/,
+      "Profile name must be lowercase alphanumeric, hyphens, or underscores",
+    ),
 });
 
 const updateProfileSchema = z.object({
@@ -69,12 +87,17 @@ const pingServersSchema = z.object({
 
 const updateServerSchema = z
   .object({
+    displayName: z.string().trim().nullable().optional(),
     name: z.string().min(1).optional(),
     template: z.string().min(1).optional(),
     nodeId: z.number().int().positive().nullable().optional(),
   })
   .refine(
-    (input) => input.name !== undefined || input.template !== undefined || input.nodeId !== undefined,
+    (input) =>
+      input.displayName !== undefined ||
+      input.name !== undefined ||
+      input.template !== undefined ||
+      input.nodeId !== undefined,
     { message: "Provide at least one server field to update." },
   );
 
@@ -109,20 +132,31 @@ export const updateNodeSchema = z
       input.inboundId !== undefined,
     { message: "Provide at least one node field to update." },
   )
-  .refine((input) => input.type !== "xui" || input.inboundId === undefined || input.inboundId >= 1, {
-    message: "inboundId >= 1 is required for xui nodes",
-    path: ["inboundId"],
-  });
+  .refine(
+    (input) =>
+      input.type !== "xui" ||
+      input.inboundId === undefined ||
+      input.inboundId >= 1,
+    {
+      message: "inboundId >= 1 is required for xui nodes",
+      path: ["inboundId"],
+    },
+  );
 
 const syncUsersSchema = z.object({
-  onConflict: z.enum(["skip", "overwrite", "keep-both", "safe"]).default("overwrite"),
+  onConflict: z
+    .enum(["skip", "overwrite", "keep-both", "safe"])
+    .default("overwrite"),
 });
 
 const createAdminUserSchema = z.object({
   username: z
     .string()
     .min(1)
-    .regex(/^[a-z0-9_-]+$/, "Username must be lowercase alphanumeric, hyphens, or underscores"),
+    .regex(
+      /^[a-z0-9_-]+$/,
+      "Username must be lowercase alphanumeric, hyphens, or underscores",
+    ),
   password: z.string().min(8, "Password must be at least 8 characters"),
 });
 
@@ -131,10 +165,16 @@ const updateAccountSchema = z
     username: z
       .string()
       .min(1)
-      .regex(/^[a-z0-9_-]+$/, "Username must be lowercase alphanumeric, hyphens, or underscores")
+      .regex(
+        /^[a-z0-9_-]+$/,
+        "Username must be lowercase alphanumeric, hyphens, or underscores",
+      )
       .optional(),
     currentPassword: z.string().min(1).optional(),
-    newPassword: z.string().min(8, "Password must be at least 8 characters").optional(),
+    newPassword: z
+      .string()
+      .min(8, "Password must be at least 8 characters")
+      .optional(),
   })
   .refine((d) => d.username !== undefined || d.newPassword !== undefined, {
     message: "Provide at least one field to update.",
@@ -161,9 +201,15 @@ function adminErrorResponse(status: number, message: string): Response {
 }
 
 /** {ip} берётся из URL ноды — без ноды ссылка ушла бы юзерам с пустым хостом. */
-function ipWithoutNodeError(template: string, nodeId: number | null): Response | null {
+function ipWithoutNodeError(
+  template: string,
+  nodeId: number | null,
+): Response | null {
   if (nodeId !== null || !templateNeedsNode(template)) return null;
-  return adminErrorResponse(400, "Template uses {ip}, which is taken from the assigned node's URL — assign a node.");
+  return adminErrorResponse(
+    400,
+    "Template uses {ip}, which is taken from the assigned node's URL — assign a node.",
+  );
 }
 
 async function parseJson<T>(
@@ -218,7 +264,11 @@ async function requirePrimaryAdmin(
   return auth;
 }
 
-function requireProfile(storage: Storage, profileId: string, ownerId: number): ProfileRecord | Response {
+function requireProfile(
+  storage: Storage,
+  profileId: string,
+  ownerId: number,
+): ProfileRecord | Response {
   const profile = storage.getProfile(profileId, ownerId);
   if (!profile) {
     return adminErrorResponse(404, `Unknown profile: ${profileId}`);
@@ -226,7 +276,12 @@ function requireProfile(storage: Storage, profileId: string, ownerId: number): P
   return profile;
 }
 
-function mapUsers(storage: Storage, profileId: string, ownerId: number, baseUrl: string) {
+function mapUsers(
+  storage: Storage,
+  profileId: string,
+  ownerId: number,
+  baseUrl: string,
+) {
   return storage.listUsers(profileId, ownerId).map((user) => ({
     clientName: user.clientName,
     userUuid: user.userUuid,
@@ -244,12 +299,16 @@ function mapServers(storage: Storage, profileId: string, ownerId: number) {
     template: server.template,
     createdAt: server.createdAt,
     nodeId: server.nodeId,
+    connectionId: server.connectionId,
+    displayName: server.displayName,
   }));
 }
 
 function mapNodes(storage: Storage, ownerId: number) {
   return storage.listNodes(ownerId).map((n) => ({
     id: n.id,
+    hostId: n.hostId,
+    backendPath: n.backendPath,
     name: n.name,
     url: n.url,
     type: n.type,
@@ -261,7 +320,11 @@ function mapNodes(storage: Storage, ownerId: number) {
 
 /** Ноды-«декларативы» (весь список пушится разом): naive, shadowsocks и mieru. */
 function isDeclarativeNode(node: NodeRecord): boolean {
-  return node.type === "naive" || node.type === "shadowsocks" || node.type === "mieru";
+  return (
+    node.type === "naive" ||
+    node.type === "shadowsocks" ||
+    node.type === "mieru"
+  );
 }
 
 /** Целевой список юзеров для декларативной ноды — по её типу выбираем нужный кред. */
@@ -293,13 +356,24 @@ async function syncUserToNodes(
       // desired list and let the node re-render its config.
       if (isDeclarativeNode(node)) {
         if (!naiveContext) {
-          return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "declarative node requires profile context" };
+          return {
+            nodeId: node.id,
+            nodeName: node.name,
+            result: "failed",
+            msg: "declarative node requires profile context",
+          };
         }
         // Union across every profile bound to this node — the node replaces its whole
         // config, so pushing one profile's list would clobber the others.
-        const { users, skipped } = buildDeclarativeUsers(naiveContext.storage, node, naiveContext.ownerId);
+        const { users, skipped } = buildDeclarativeUsers(
+          naiveContext.storage,
+          node,
+          naiveContext.ownerId,
+        );
         const res = await syncNaiveNode(node, users);
-        const skipMsg = skipped.length ? `skipped invalid names: ${skipped.join(", ")}` : undefined;
+        const skipMsg = skipped.length
+          ? `skipped invalid names: ${skipped.join(", ")}`
+          : undefined;
         return {
           nodeId: node.id,
           nodeName: node.name,
@@ -315,11 +389,21 @@ async function syncUserToNodes(
             "Content-Type": "application/json",
             Authorization: `Bearer ${node.secret}`,
           },
-          body: JSON.stringify({ email, uuid, inboundId: node.inboundId, onConflict }),
+          body: JSON.stringify({
+            email,
+            uuid,
+            inboundId: node.inboundId,
+            onConflict,
+          }),
           tls: { rejectUnauthorized: false },
         } as RequestInit);
         const data = (await res.json()) as { result: string; msg?: string };
-        return { nodeId: node.id, nodeName: node.name, result: data.result, msg: data.msg };
+        return {
+          nodeId: node.id,
+          nodeName: node.name,
+          result: data.result,
+          msg: data.msg,
+        };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { nodeId: node.id, nodeName: node.name, result: "failed", msg };
@@ -339,13 +423,24 @@ async function deleteUserFromNodes(
       // current list is exactly "delete" for a declarative backend.
       if (isDeclarativeNode(node)) {
         if (!naiveContext) {
-          return { nodeId: node.id, nodeName: node.name, result: "failed", msg: "declarative node requires profile context" };
+          return {
+            nodeId: node.id,
+            nodeName: node.name,
+            result: "failed",
+            msg: "declarative node requires profile context",
+          };
         }
         // Union across every profile bound to this node — the node replaces its whole
         // config, so pushing one profile's list would clobber the others.
-        const { users, skipped } = buildDeclarativeUsers(naiveContext.storage, node, naiveContext.ownerId);
+        const { users, skipped } = buildDeclarativeUsers(
+          naiveContext.storage,
+          node,
+          naiveContext.ownerId,
+        );
         const res = await syncNaiveNode(node, users);
-        const skipMsg = skipped.length ? `skipped invalid names: ${skipped.join(", ")}` : undefined;
+        const skipMsg = skipped.length
+          ? `skipped invalid names: ${skipped.join(", ")}`
+          : undefined;
         return {
           nodeId: node.id,
           nodeName: node.name,
@@ -365,7 +460,12 @@ async function deleteUserFromNodes(
           tls: { rejectUnauthorized: false },
         } as RequestInit);
         const data = (await res.json()) as { result: string; msg?: string };
-        return { nodeId: node.id, nodeName: node.name, result: data.result, msg: data.msg };
+        return {
+          nodeId: node.id,
+          nodeName: node.name,
+          result: data.result,
+          msg: data.msg,
+        };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { nodeId: node.id, nodeName: node.name, result: "failed", msg };
@@ -375,7 +475,9 @@ async function deleteUserFromNodes(
 }
 
 // Extracts profileId and the sub-path under /profiles/:profileId
-function extractProfileRoute(pathname: string): { profileId: string; subPath: string } | null {
+function extractProfileRoute(
+  pathname: string,
+): { profileId: string; subPath: string } | null {
   const match = pathname.match(/^\/profiles\/([^/]+)(\/.*)?$/);
   if (!match) return null;
   return {
@@ -425,14 +527,24 @@ export async function handleAdminApiRequest(
       const response = noStoreResponse(
         errorResponse(429, "Too many login attempts. Try again later."),
       );
-      response.headers.set("Retry-After", String(loginStatus.retryAfterSeconds));
+      response.headers.set(
+        "Retry-After",
+        String(loginStatus.retryAfterSeconds),
+      );
       return response;
     }
 
-    const adminUserId = await verifyAdminCredentials(parsed.username, parsed.password, storage);
+    const adminUserId = await verifyAdminCredentials(
+      parsed.username,
+      parsed.password,
+      storage,
+    );
 
     if (adminUserId === null) {
-      const failedAttempt = loginRateLimiter.recordFailure(clientIp, parsed.username);
+      const failedAttempt = loginRateLimiter.recordFailure(
+        clientIp,
+        parsed.username,
+      );
       const statusCode = failedAttempt.allowed ? 401 : 429;
       const response = noStoreResponse(
         errorResponse(
@@ -456,7 +568,11 @@ export async function handleAdminApiRequest(
     const adminUserRecord = storage.getAdminUserById(adminUserId)!;
     return noStoreResponse(
       jsonResponse(
-        { ok: true, username: adminUserRecord.username, isPrimary: adminUserRecord.isPrimary },
+        {
+          ok: true,
+          username: adminUserRecord.username,
+          isPrimary: adminUserRecord.isPrimary,
+        },
         {
           headers: {
             "Set-Cookie": createSessionCookie(adminUserId),
@@ -487,7 +603,10 @@ export async function handleAdminApiRequest(
     }
 
     return noStoreResponse(
-      jsonResponse({ username: adminUser.username, isPrimary: adminUser.isPrimary }),
+      jsonResponse({
+        username: adminUser.username,
+        isPrimary: adminUser.isPrimary,
+      }),
     );
   }
 
@@ -500,7 +619,9 @@ export async function handleAdminApiRequest(
   if (adminPathname === "/admin-users" && req.method === "GET") {
     const primaryCheck = await requirePrimaryAdmin(req, storage);
     if (primaryCheck instanceof Response) return primaryCheck;
-    return noStoreResponse(jsonResponse({ adminUsers: storage.listAdminUsers() }));
+    return noStoreResponse(
+      jsonResponse({ adminUsers: storage.listAdminUsers() }),
+    );
   }
 
   if (adminPathname === "/admin-users" && req.method === "POST") {
@@ -514,11 +635,14 @@ export async function handleAdminApiRequest(
     try {
       storage.createAdminUser(parsed.username, passwordHash, Date.now());
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to create admin user.";
+      const message =
+        error instanceof Error ? error.message : "Failed to create admin user.";
       return adminErrorResponse(400, message);
     }
 
-    return noStoreResponse(jsonResponse({ adminUsers: storage.listAdminUsers() }, { status: 201 }));
+    return noStoreResponse(
+      jsonResponse({ adminUsers: storage.listAdminUsers() }, { status: 201 }),
+    );
   }
 
   const adminUserMatch = adminPathname.match(/^\/admin-users\/(\d+)$/);
@@ -549,34 +673,327 @@ export async function handleAdminApiRequest(
     const adminUser = storage.getAdminUserById(adminUserId);
     if (!adminUser) return adminErrorResponse(401, "Unauthorized.");
     if (adminUser.isPrimary) {
-      return adminErrorResponse(403, "Primary admin credentials are managed via environment variables.");
+      return adminErrorResponse(
+        403,
+        "Primary admin credentials are managed via environment variables.",
+      );
     }
 
     const parsed = await parseJson(req, updateAccountSchema);
     if (parsed instanceof Response) return noStoreResponse(parsed);
 
     if (parsed.newPassword !== undefined) {
-      const match = await Bun.password.verify(parsed.currentPassword!, adminUser.passwordHash);
-      if (!match) return adminErrorResponse(400, "Current password is incorrect.");
+      const match = await Bun.password.verify(
+        parsed.currentPassword!,
+        adminUser.passwordHash,
+      );
+      if (!match)
+        return adminErrorResponse(400, "Current password is incorrect.");
     }
 
     const updates: { username?: string; passwordHash?: string } = {};
     if (parsed.username !== undefined) updates.username = parsed.username;
-    if (parsed.newPassword !== undefined) updates.passwordHash = await Bun.password.hash(parsed.newPassword);
+    if (parsed.newPassword !== undefined)
+      updates.passwordHash = await Bun.password.hash(parsed.newPassword);
 
     try {
       storage.updateAdminUser(adminUserId, updates);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to update account.";
+      const message =
+        error instanceof Error ? error.message : "Failed to update account.";
       return adminErrorResponse(400, message);
     }
 
     return noStoreResponse(new Response(null, { status: 204 }));
   }
 
+  // Shared infrastructure, scoped to the signed-in administrator.
+  if (adminPathname === "/inventory" && req.method === "GET")
+    return noStoreResponse(jsonResponse(inventory(storage, adminUserId)));
+  if (adminPathname.startsWith("/inventory/") && req.method === "POST") {
+    try {
+      const action = adminPathname.slice("/inventory/".length);
+      let id: number | undefined;
+      let syncResults: Awaited<ReturnType<typeof syncInventory>> = [];
+      if (action === "discover") {
+        const p = await parseJson(req, hostSchema);
+        if (p instanceof Response) return p;
+        const saved = p.id
+          ? storage.exportHosts(adminUserId).find((h) => h.id === p.id)
+          : null;
+        const secret = p.secret || saved?.secret;
+        if (!secret) throw new Error("Agent secret is required");
+        const response = await fetch(`${p.url.replace(/\/$/, "")}/backends`, {
+          headers: { Authorization: `Bearer ${secret}` },
+          signal: AbortSignal.timeout(10000),
+          tls: { rejectUnauthorized: false },
+        } as RequestInit);
+        if (!response.ok)
+          throw new Error(
+            "Backend discovery requires an updated lsmnode. Services can also be added manually.",
+          );
+        const discovered = z
+          .object({
+            backends: z.array(
+              z.object({
+                name: z.string(),
+                kind: z.enum(["xui", "naive", "shadowsocks", "mieru"]),
+                path: z.string().regex(/^(\/[A-Za-z0-9_-]+)*$/),
+              }),
+            ),
+          })
+          .parse(await response.json());
+        return noStoreResponse(jsonResponse(discovered));
+      } else if (action === "setup") {
+        const p = await parseJson(
+          req,
+          z.object({
+            host: hostSchema,
+            services: z
+              .array(
+                z
+                  .object(serviceSchema.shape)
+                  .omit({ hostId: true })
+                  .extend({
+                    template: z.string().trim().min(1),
+                    profiles: z.array(z.string()),
+                  })
+                  .refine(
+                    (s) => s.type !== "xui" || s.inboundId > 0,
+                    "3x-ui requires an inbound ID",
+                  ),
+              )
+              .min(1),
+          }),
+        );
+        if (p instanceof Response) return p;
+        const ids: number[] = [];
+        storage.transaction(() => {
+          id = storage.saveHost(
+            p.host.id,
+            p.host.name,
+            p.host.url,
+            p.host.secret,
+            adminUserId,
+          );
+          for (const service of p.services) {
+            const nodeId = storage.saveService(
+              null,
+              id,
+              service.name,
+              service.path,
+              service.type,
+              service.inboundId,
+              adminUserId,
+            );
+            const connectionId = storage.saveConnection(
+              null,
+              service.name,
+              service.template,
+              nodeId,
+              adminUserId,
+            );
+            for (const profile of service.profiles)
+              storage.assignConnection(
+                connectionId,
+                profile,
+                true,
+                adminUserId,
+              );
+            if (service.profiles.length) ids.push(nodeId);
+          }
+        });
+        if (p.host.id !== null)
+          for (const profile of storage.listProfiles(adminUserId))
+            for (const node of storage.listNodesForProfile(
+              profile.name,
+              adminUserId,
+            ))
+              if (node.hostId === id) ids.push(node.id);
+        syncResults = await syncInventory(storage, adminUserId, ids);
+      } else if (action === "hosts") {
+        const p = await parseJson(req, hostSchema);
+        if (p instanceof Response) return p;
+        id = storage.saveHost(p.id, p.name, p.url, p.secret, adminUserId);
+        if (p.id !== null) {
+          const used = new Set(
+            storage
+              .listConnections(adminUserId)
+              .filter((c) =>
+                storage
+                  .listProfiles(adminUserId)
+                  .some((p) =>
+                    storage
+                      .listServerRecords(p.name, adminUserId)
+                      .some((s) => s.connectionId === c.id),
+                  ),
+              )
+              .map((c) => c.nodeId),
+          );
+          syncResults = await syncInventory(
+            storage,
+            adminUserId,
+            storage
+              .listNodes(adminUserId)
+              .filter((n) => n.hostId === id && used.has(n.id))
+              .map((n) => n.id),
+          );
+        }
+      } else if (action === "services") {
+        const p = await parseJson(req, serviceSchema);
+        if (p instanceof Response) return p;
+        id = storage.saveService(
+          p.id,
+          p.hostId,
+          p.name,
+          p.path,
+          p.type,
+          p.inboundId,
+          adminUserId,
+        );
+        if (p.id !== null)
+          syncResults = await syncInventory(storage, adminUserId, [id]);
+      } else if (action === "connections") {
+        const p = await parseJson(
+          req,
+          connectionSchema.safeExtend({
+            profiles: z.array(z.string()).optional(),
+          }),
+        );
+        if (p instanceof Response) return p;
+        const previous = storage
+          .listConnections(adminUserId)
+          .find((c) => c.id === p.id);
+        const previousProfiles = previous
+          ? storage
+              .listProfiles(adminUserId)
+              .filter((profile) =>
+                storage
+                  .listServerRecords(profile.name, adminUserId)
+                  .some((c) => c.connectionId === previous.id),
+              )
+          : [];
+        const ids = new Set<number>();
+        storage.transaction(() => {
+          if (previous && previousProfiles.length) {
+            if (previous.nodeId !== null) {
+              ids.add(previous.nodeId);
+              if (previous.nodeId !== p.nodeId)
+                for (const profile of previousProfiles)
+                  for (const u of storage.listUsers(profile.name, adminUserId))
+                    storage.queueRemoval(
+                      previous.nodeId,
+                      u.clientName,
+                      u.userUuid,
+                      adminUserId,
+                    );
+            }
+            if (p.nodeId !== null) ids.add(p.nodeId);
+          }
+          id = storage.saveConnection(
+            p.id,
+            p.name,
+            p.template,
+            p.nodeId,
+            adminUserId,
+          );
+          if (p.profiles) {
+            for (const profile of p.profiles)
+              if (!storage.getProfile(profile, adminUserId))
+                throw new Error("Unknown profile");
+            const changed = applyAssignments(storage, adminUserId, {
+              assignments: storage.listProfiles(adminUserId).map((profile) => ({
+                connectionId: id!,
+                profile: profile.name,
+                included: p.profiles!.includes(profile.name),
+              })),
+            });
+            changed.ids.forEach((n) => ids.add(n));
+          }
+        });
+        syncResults = await syncInventory(storage, adminUserId, [...ids]);
+      } else if (action === "assignments") {
+        const p = await parseJson(req, assignmentsSchema);
+        if (p instanceof Response) return p;
+        const changed = applyAssignments(storage, adminUserId, p);
+        syncResults = await syncInventory(
+          storage,
+          adminUserId,
+          changed.ids,
+          changed.removed,
+        );
+      } else if (action === "sync") {
+        const p = await parseJson(
+          req,
+          z.object({ ids: z.array(z.number().int().positive()) }),
+        );
+        if (p instanceof Response) return p;
+        syncResults = await syncInventory(storage, adminUserId, p.ids);
+      } else return adminErrorResponse(404, "Unknown inventory action");
+      return noStoreResponse(
+        jsonResponse({ ...inventory(storage, adminUserId), id, syncResults }),
+      );
+    } catch (e) {
+      return adminErrorResponse(
+        400,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+  const inventoryDelete = adminPathname.match(
+    /^\/inventory\/(hosts|services|connections)\/(\d+)$/,
+  );
+  if (inventoryDelete && req.method === "DELETE") {
+    try {
+      const id = Number(inventoryDelete[2]);
+      const kind = inventoryDelete[1];
+      if (kind === "hosts") storage.deleteHost(id, adminUserId);
+      if (kind === "services") {
+        if (storage.listConnections(adminUserId).some((c) => c.nodeId === id))
+          throw new Error("Remove or reassign the service's connections first");
+        storage.removeNode(id, adminUserId);
+      }
+      let syncResults: Awaited<ReturnType<typeof syncInventory>> = [];
+      if (kind === "connections") {
+        const nodeId = storage
+          .listConnections(adminUserId)
+          .find((c) => c.id === id)?.nodeId;
+        const removals = storage
+          .listProfiles(adminUserId)
+          .filter((p) =>
+            storage
+              .listServerRecords(p.name, adminUserId)
+              .some((c) => c.connectionId === id),
+          )
+          .map((p) => ({ connectionId: id, profile: p.name, included: false }));
+        const changed = applyAssignments(storage, adminUserId, {
+          assignments: removals,
+        });
+        storage.deleteConnection(id, adminUserId);
+        if (nodeId != null)
+          syncResults = await syncInventory(
+            storage,
+            adminUserId,
+            changed.ids,
+            changed.removed,
+          );
+      }
+      return noStoreResponse(
+        jsonResponse({ ...inventory(storage, adminUserId), syncResults }),
+      );
+    } catch (e) {
+      return adminErrorResponse(
+        400,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+
   // Profile list and create
   if (adminPathname === "/profiles" && req.method === "GET") {
-    return noStoreResponse(jsonResponse({ profiles: storage.listProfiles(adminUserId) }));
+    return noStoreResponse(
+      jsonResponse({ profiles: storage.listProfiles(adminUserId) }),
+    );
   }
 
   if (adminPathname === "/profiles" && req.method === "POST") {
@@ -588,18 +1005,24 @@ export async function handleAdminApiRequest(
     try {
       storage.createProfile(parsed.name, adminUserId, Date.now());
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to create profile.";
+      const message =
+        error instanceof Error ? error.message : "Failed to create profile.";
       return adminErrorResponse(400, message);
     }
 
     return noStoreResponse(
-      jsonResponse({ profiles: storage.listProfiles(adminUserId) }, { status: 201 }),
+      jsonResponse(
+        { profiles: storage.listProfiles(adminUserId) },
+        { status: 201 },
+      ),
     );
   }
 
   // Node routes (scoped by owner)
   if (adminPathname === "/nodes" && req.method === "GET") {
-    return noStoreResponse(jsonResponse({ nodes: mapNodes(storage, adminUserId) }));
+    return noStoreResponse(
+      jsonResponse({ nodes: mapNodes(storage, adminUserId) }),
+    );
   }
 
   if (adminPathname === "/nodes" && req.method === "POST") {
@@ -608,14 +1031,26 @@ export async function handleAdminApiRequest(
 
     let node;
     try {
-      node = storage.addNode(parsed.name, parsed.url, parsed.secret, parsed.inboundId, adminUserId, Date.now(), parsed.type);
+      node = storage.addNode(
+        parsed.name,
+        parsed.url,
+        parsed.secret,
+        parsed.inboundId,
+        adminUserId,
+        Date.now(),
+        parsed.type,
+      );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to add node.";
+      const message =
+        error instanceof Error ? error.message : "Failed to add node.";
       return adminErrorResponse(400, message);
     }
 
     return noStoreResponse(
-      jsonResponse({ nodes: mapNodes(storage, adminUserId), node: { id: node.id } }, { status: 201 }),
+      jsonResponse(
+        { nodes: mapNodes(storage, adminUserId), node: { id: node.id } },
+        { status: 201 },
+      ),
     );
   }
 
@@ -633,14 +1068,19 @@ export async function handleAdminApiRequest(
         const effectiveType = parsed.type ?? existing.type;
         const effectiveInboundId = parsed.inboundId ?? existing.inboundId;
         if (effectiveType === "xui" && effectiveInboundId < 1) {
-          return adminErrorResponse(400, "inboundId >= 1 is required for xui nodes");
+          return adminErrorResponse(
+            400,
+            "inboundId >= 1 is required for xui nodes",
+          );
         }
       }
 
       const updated = storage.updateNode(nodeId, adminUserId, parsed);
       if (!updated) return adminErrorResponse(404, `Unknown node: ${nodeId}`);
 
-      return noStoreResponse(jsonResponse({ nodes: mapNodes(storage, adminUserId) }));
+      return noStoreResponse(
+        jsonResponse({ nodes: mapNodes(storage, adminUserId) }),
+      );
     }
 
     if (nodeSubPath === "/" && req.method === "DELETE") {
@@ -686,7 +1126,6 @@ export async function handleAdminApiRequest(
         return noStoreResponse(jsonResponse({ ok: false, error: msg }));
       }
     }
-
   }
 
   // Export all profiles
@@ -708,7 +1147,10 @@ export async function handleAdminApiRequest(
     try {
       parsed = parseDumpOrThrow(body);
     } catch (error) {
-      return adminErrorResponse(400, error instanceof Error ? error.message : "Invalid format.");
+      return adminErrorResponse(
+        400,
+        error instanceof Error ? error.message : "Invalid format.",
+      );
     }
 
     if (parsed.kind !== "multi-profile") {
@@ -738,12 +1180,18 @@ export async function handleAdminApiRequest(
         return noStoreResponse(parsed);
       }
 
-      const renamed = storage.renameProfile(profileId, parsed.name, adminUserId);
+      const renamed = storage.renameProfile(
+        profileId,
+        parsed.name,
+        adminUserId,
+      );
       if (!renamed) {
         return adminErrorResponse(404, `Unknown profile: ${profileId}`);
       }
 
-      return noStoreResponse(jsonResponse({ profiles: storage.listProfiles(adminUserId) }));
+      return noStoreResponse(
+        jsonResponse({ profiles: storage.listProfiles(adminUserId) }),
+      );
     }
 
     if (req.method === "DELETE") {
@@ -783,17 +1231,28 @@ export async function handleAdminApiRequest(
     try {
       parsed = parseDumpOrThrow(body);
     } catch (error) {
-      return adminErrorResponse(400, error instanceof Error ? error.message : "Invalid format.");
+      return adminErrorResponse(
+        400,
+        error instanceof Error ? error.message : "Invalid format.",
+      );
     }
 
     if (parsed.kind === "multi-profile") {
-      return adminErrorResponse(400, "Multi-profile dumps must be imported via POST /import.");
+      return adminErrorResponse(
+        400,
+        "Multi-profile dumps must be imported via POST /import.",
+      );
     }
 
     if (parsed.kind === "single-profile") {
       storage.mergeProfileFromFullDump(profileId, parsed.data, adminUserId);
     } else {
-      storage.mergeProfileFromLegacyConfig(profileId, parsed.data, subLinkSecret, adminUserId);
+      storage.mergeProfileFromLegacyConfig(
+        profileId,
+        parsed.data,
+        subLinkSecret,
+        adminUserId,
+      );
     }
 
     return noStoreResponse(new Response(null, { status: 204 }));
@@ -802,7 +1261,9 @@ export async function handleAdminApiRequest(
   // Users
   if (subPath === "/users" && req.method === "GET") {
     return noStoreResponse(
-      jsonResponse({ users: mapUsers(storage, profileId, adminUserId, baseUrl) }),
+      jsonResponse({
+        users: mapUsers(storage, profileId, adminUserId, baseUrl),
+      }),
     );
   }
 
@@ -822,23 +1283,35 @@ export async function handleAdminApiRequest(
         adminUserId,
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to add user.";
+      const message =
+        error instanceof Error ? error.message : "Failed to add user.";
       return adminErrorResponse(400, message);
     }
 
     const nodes = storage.listNodesForProfile(profileId, adminUserId);
-    const syncSettled = await syncUserToNodes(nodes, parsed.clientName, parsed.userUuid, "skip", {
-      storage,
-      profileName: profileId,
-      ownerId: adminUserId,
-    });
+    const syncSettled = await syncUserToNodes(
+      nodes,
+      parsed.clientName,
+      parsed.userUuid,
+      "skip",
+      {
+        storage,
+        profileName: profileId,
+        ownerId: adminUserId,
+      },
+    );
     const syncResults = syncSettled.map((r) =>
-      r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
+      r.status === "fulfilled"
+        ? r.value
+        : { result: "failed", msg: String(r.reason) },
     );
 
     return noStoreResponse(
       jsonResponse(
-        { users: mapUsers(storage, profileId, adminUserId, baseUrl), syncResults },
+        {
+          users: mapUsers(storage, profileId, adminUserId, baseUrl),
+          syncResults,
+        },
         { status: 201 },
       ),
     );
@@ -856,13 +1329,21 @@ export async function handleAdminApiRequest(
       return noStoreResponse(jsonResponse({ syncResults: [] }));
     }
 
-    const syncSettled = await syncUserToNodes(nodes, user.clientName, user.userUuid, "overwrite", {
-      storage,
-      profileName: profileId,
-      ownerId: adminUserId,
-    });
+    const syncSettled = await syncUserToNodes(
+      nodes,
+      user.clientName,
+      user.userUuid,
+      "overwrite",
+      {
+        storage,
+        profileName: profileId,
+        ownerId: adminUserId,
+      },
+    );
     const syncResults = syncSettled.map((r) =>
-      r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
+      r.status === "fulfilled"
+        ? r.value
+        : { result: "failed", msg: String(r.reason) },
     );
     return noStoreResponse(jsonResponse({ syncResults }));
   }
@@ -876,7 +1357,12 @@ export async function handleAdminApiRequest(
 
     try {
       if (parsed.clientName !== undefined) {
-        const renamed = storage.renameUser(profileId, userPathName, parsed.clientName, adminUserId);
+        const renamed = storage.renameUser(
+          profileId,
+          userPathName,
+          parsed.clientName,
+          adminUserId,
+        );
         if (!renamed) {
           return adminErrorResponse(404, `Unknown client: ${userPathName}`);
         }
@@ -884,7 +1370,12 @@ export async function handleAdminApiRequest(
 
       if (parsed.userUuid !== undefined) {
         const targetName = parsed.clientName ?? userPathName;
-        const updated = storage.setUserUuid(profileId, targetName, parsed.userUuid, adminUserId);
+        const updated = storage.setUserUuid(
+          profileId,
+          targetName,
+          parsed.userUuid,
+          adminUserId,
+        );
         if (!updated) {
           return adminErrorResponse(404, `Unknown client: ${targetName}`);
         }
@@ -896,7 +1387,9 @@ export async function handleAdminApiRequest(
     }
 
     return noStoreResponse(
-      jsonResponse({ users: mapUsers(storage, profileId, adminUserId, baseUrl) }),
+      jsonResponse({
+        users: mapUsers(storage, profileId, adminUserId, baseUrl),
+      }),
     );
   }
 
@@ -907,7 +1400,10 @@ export async function handleAdminApiRequest(
       try {
         const body = (await req.json()) as { nodeIds?: unknown };
         if (Array.isArray(body.nodeIds)) {
-          nodeIds = body.nodeIds.filter((n): n is number => typeof n === "number" && Number.isInteger(n) && n > 0);
+          nodeIds = body.nodeIds.filter(
+            (n): n is number =>
+              typeof n === "number" && Number.isInteger(n) && n > 0,
+          );
         }
       } catch {}
     }
@@ -926,7 +1422,9 @@ export async function handleAdminApiRequest(
         ownerId: adminUserId,
       });
       const syncResults = settled.map((r) =>
-        r.status === "fulfilled" ? r.value : { result: "failed", msg: String(r.reason) },
+        r.status === "fulfilled"
+          ? r.value
+          : { result: "failed", msg: String(r.reason) },
       );
       return noStoreResponse(jsonResponse({ syncResults }));
     }
@@ -936,7 +1434,9 @@ export async function handleAdminApiRequest(
 
   // Servers
   if (subPath === "/servers" && req.method === "GET") {
-    return noStoreResponse(jsonResponse({ servers: mapServers(storage, profileId, adminUserId) }));
+    return noStoreResponse(
+      jsonResponse({ servers: mapServers(storage, profileId, adminUserId) }),
+    );
   }
 
   if (subPath === "/servers" && req.method === "POST") {
@@ -948,7 +1448,14 @@ export async function handleAdminApiRequest(
     if (ipError) return ipError;
 
     try {
-      storage.addServer(profileId, parsed.name, parsed.template, Date.now(), adminUserId, parsed.nodeId ?? null);
+      storage.addServer(
+        profileId,
+        parsed.name,
+        parsed.template,
+        Date.now(),
+        adminUserId,
+        parsed.nodeId ?? null,
+      );
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to add server.";
@@ -956,7 +1463,10 @@ export async function handleAdminApiRequest(
     }
 
     return noStoreResponse(
-      jsonResponse({ servers: mapServers(storage, profileId, adminUserId) }, { status: 201 }),
+      jsonResponse(
+        { servers: mapServers(storage, profileId, adminUserId) },
+        { status: 201 },
+      ),
     );
   }
 
@@ -967,7 +1477,9 @@ export async function handleAdminApiRequest(
     }
 
     storage.reorderServers(profileId, parsed.order, adminUserId);
-    return noStoreResponse(jsonResponse({ servers: mapServers(storage, profileId, adminUserId) }));
+    return noStoreResponse(
+      jsonResponse({ servers: mapServers(storage, profileId, adminUserId) }),
+    );
   }
 
   if (subPath === "/servers/ping" && req.method === "POST") {
@@ -978,33 +1490,59 @@ export async function handleAdminApiRequest(
 
     const strategy = parsed.strategy ?? "all";
     let records = storage.listServerRecords(profileId, adminUserId);
-    const serverSet = parsed.servers && parsed.servers.length > 0 ? new Set(parsed.servers) : null;
-    const serverExceptSet = parsed.serversExcept && parsed.serversExcept.length > 0 ? new Set(parsed.serversExcept) : null;
+    const serverSet =
+      parsed.servers && parsed.servers.length > 0
+        ? new Set(parsed.servers)
+        : null;
+    const serverExceptSet =
+      parsed.serversExcept && parsed.serversExcept.length > 0
+        ? new Set(parsed.serversExcept)
+        : null;
     if (serverSet) records = records.filter((s) => serverSet.has(s.name));
-    else if (serverExceptSet) records = records.filter((s) => !serverExceptSet.has(s.name));
+    else if (serverExceptSet)
+      records = records.filter((s) => !serverExceptSet.has(s.name));
 
     if (strategy !== "icmp") {
       const httpReq = checkHttpPingRequirements();
       if (!httpReq.ok) {
-        return adminErrorResponse(422, `HTTP ping unavailable: ${httpReq.error}`);
+        return adminErrorResponse(
+          422,
+          `HTTP ping unavailable: ${httpReq.error}`,
+        );
       }
     }
 
     // {ip} подставлен заранее: и ICMP, и http-проба разбирают host:port прямо из шаблона.
     const templates = resolveServerTemplates(storage, records, adminUserId);
-    const servers = records.map((s, i) => ({ name: s.name, template: templates[i]! }));
+    const servers = records.map((s, i) => ({
+      name: s.name,
+      template: templates[i]!,
+    }));
     let userRecords = storage.listUsers(profileId, adminUserId);
-    const userSet = parsed.users && parsed.users.length > 0 ? new Set(parsed.users) : null;
-    const userExceptSet = parsed.usersExcept && parsed.usersExcept.length > 0 ? new Set(parsed.usersExcept) : null;
-    if (userSet) userRecords = userRecords.filter((u) => userSet.has(u.clientName));
-    else if (userExceptSet) userRecords = userRecords.filter((u) => !userExceptSet.has(u.clientName));
+    const userSet =
+      parsed.users && parsed.users.length > 0 ? new Set(parsed.users) : null;
+    const userExceptSet =
+      parsed.usersExcept && parsed.usersExcept.length > 0
+        ? new Set(parsed.usersExcept)
+        : null;
+    if (userSet)
+      userRecords = userRecords.filter((u) => userSet.has(u.clientName));
+    else if (userExceptSet)
+      userRecords = userRecords.filter((u) => !userExceptSet.has(u.clientName));
     // Пингу нужны те же per-user креды, что и подписке: uuid для vless, {user}/{pass} для
     // naive, {sskey} для ss, {user}/{mpass} для mieru. Резолвим идентичность точно так же,
     // как рендер подписки.
-    const required = [...new Set(templates.flatMap((template) => templatePlaceholders(template)))];
+    const required = [
+      ...new Set(
+        templates.flatMap((template) => templatePlaceholders(template)),
+      ),
+    ];
     const users = userRecords.map((u) => ({
       clientName: u.clientName,
-      identity: resolvedIdentityFor(u, ensureUserCredentials(storage, u, required)),
+      identity: resolvedIdentityFor(
+        u,
+        ensureUserCredentials(storage, u, required),
+      ),
     }));
 
     const [icmp, http] = await Promise.all([
@@ -1018,9 +1556,16 @@ export async function handleAdminApiRequest(
   const serverSyncMatch = subPath.match(/^\/servers\/([^/]+)\/sync-users$/);
   if (serverSyncMatch && req.method === "POST") {
     const serverName = decodeURIComponent(serverSyncMatch[1]!);
-    const serverRecord = storage.listServerRecords(profileId, adminUserId).find((s) => s.name === serverName);
-    if (!serverRecord) return adminErrorResponse(404, `Unknown server: ${serverName}`);
-    if (!serverRecord.nodeId) return adminErrorResponse(400, `Server "${serverName}" has no node assigned`);
+    const serverRecord = storage
+      .listServerRecords(profileId, adminUserId)
+      .find((s) => s.name === serverName);
+    if (!serverRecord)
+      return adminErrorResponse(404, `Unknown server: ${serverName}`);
+    if (!serverRecord.nodeId)
+      return adminErrorResponse(
+        400,
+        `Server "${serverName}" has no node assigned`,
+      );
 
     const node = storage.getNode(serverRecord.nodeId, adminUserId);
     if (!node) return adminErrorResponse(404, `Node not found`);
@@ -1030,7 +1575,11 @@ export async function handleAdminApiRequest(
     // users of EVERY profile with a server on this node (this profile's alone would revoke
     // the rest); `profiles` breaks the count down so the panel can say where it comes from.
     if (isDeclarativeNode(node)) {
-      const { users: declUsers, skipped, profiles } = buildDeclarativeUsers(storage, node, adminUserId);
+      const {
+        users: declUsers,
+        skipped,
+        profiles,
+      } = buildDeclarativeUsers(storage, node, adminUserId);
       const res = await syncNaiveNode(node, declUsers);
       if (res.error) return adminErrorResponse(502, res.error);
       return noStoreResponse(
@@ -1056,23 +1605,43 @@ export async function handleAdminApiRequest(
       try {
         const checkRes = await fetch(`${node.url}/check-conflicts`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${node.secret}` },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${node.secret}`,
+          },
           body: JSON.stringify({ emails: users.map((u) => u.clientName) }),
           tls: { rejectUnauthorized: false },
         } as RequestInit);
-        const checkData = (await checkRes.json()) as { conflicts?: string[]; error?: string };
-        if (!checkRes.ok) return adminErrorResponse(502, checkData.error ?? "Failed to check conflicts on node");
+        const checkData = (await checkRes.json()) as {
+          conflicts?: string[];
+          error?: string;
+        };
+        if (!checkRes.ok)
+          return adminErrorResponse(
+            502,
+            checkData.error ?? "Failed to check conflicts on node",
+          );
         const conflicts = checkData.conflicts ?? [];
-        if (conflicts.length > 0) return noStoreResponse(jsonResponse({ conflicts }));
+        if (conflicts.length > 0)
+          return noStoreResponse(jsonResponse({ conflicts }));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return adminErrorResponse(502, `Failed to reach node for conflict check: ${msg}`);
+        return adminErrorResponse(
+          502,
+          `Failed to reach node for conflict check: ${msg}`,
+        );
       }
     }
 
     const strategy = parsed.onConflict === "safe" ? "skip" : parsed.onConflict;
     const settled = await Promise.allSettled(
-      users.map((u) => syncUserToNodes([node], u.clientName, u.userUuid, strategy, { storage, profileName: profileId, ownerId: adminUserId })),
+      users.map((u) =>
+        syncUserToNodes([node], u.clientName, u.userUuid, strategy, {
+          storage,
+          profileName: profileId,
+          ownerId: adminUserId,
+        }),
+      ),
     );
 
     const results: { clientName: string; result: string; msg?: string }[] = [];
@@ -1083,12 +1652,24 @@ export async function handleAdminApiRequest(
       const s = settled[i]!;
       if (s.status === "fulfilled") {
         const nodeResult = s.value[0];
-        const r = nodeResult?.status === "fulfilled" ? nodeResult.value : { result: "failed", msg: "unexpected" };
-        if (r.result === "failed") failed++; else synced++;
-        results.push({ clientName: user.clientName, result: r.result, msg: r.msg });
+        const r =
+          nodeResult?.status === "fulfilled"
+            ? nodeResult.value
+            : { result: "failed", msg: "unexpected" };
+        if (r.result === "failed") failed++;
+        else synced++;
+        results.push({
+          clientName: user.clientName,
+          result: r.result,
+          msg: r.msg,
+        });
       } else {
         failed++;
-        results.push({ clientName: user.clientName, result: "failed", msg: s.reason instanceof Error ? s.reason.message : String(s.reason) });
+        results.push({
+          clientName: user.clientName,
+          result: "failed",
+          msg: s.reason instanceof Error ? s.reason.message : String(s.reason),
+        });
       }
     }
 
@@ -1102,7 +1683,9 @@ export async function handleAdminApiRequest(
       return noStoreResponse(parsed);
     }
     // Проверяем ИТОГОВОЕ состояние: {ip} можно добавить в шаблон, а можно отвязать ноду.
-    const existing = storage.listServerRecords(profileId, adminUserId).find((s) => s.name === serverPathName);
+    const existing = storage
+      .listServerRecords(profileId, adminUserId)
+      .find((s) => s.name === serverPathName);
     if (existing) {
       const ipError = ipWithoutNodeError(
         parsed.template ?? existing.template,
@@ -1113,15 +1696,35 @@ export async function handleAdminApiRequest(
 
     try {
       if (parsed.name !== undefined) {
-        const renamed = storage.renameServer(profileId, serverPathName, parsed.name, adminUserId);
+        const renamed = storage.renameServer(
+          profileId,
+          serverPathName,
+          parsed.name,
+          adminUserId,
+        );
         if (!renamed) {
-          return adminErrorResponse(404, `Unknown server name: ${serverPathName}`);
+          return adminErrorResponse(
+            404,
+            `Unknown server name: ${serverPathName}`,
+          );
         }
       }
 
+      if (parsed.displayName !== undefined)
+        storage.setDisplayName(
+          profileId,
+          parsed.name ?? serverPathName,
+          parsed.displayName,
+          adminUserId,
+        );
       if (parsed.template !== undefined) {
         const targetName = parsed.name ?? serverPathName;
-        const updated = storage.setServerUrl(profileId, targetName, parsed.template, adminUserId);
+        const updated = storage.setServerUrl(
+          profileId,
+          targetName,
+          parsed.template,
+          adminUserId,
+        );
         if (!updated) {
           return adminErrorResponse(404, `Unknown server name: ${targetName}`);
         }
@@ -1129,7 +1732,12 @@ export async function handleAdminApiRequest(
 
       if (parsed.nodeId !== undefined) {
         const targetName = parsed.name ?? serverPathName;
-        const updated = storage.setServerNode(profileId, targetName, parsed.nodeId, adminUserId);
+        const updated = storage.setServerNode(
+          profileId,
+          targetName,
+          parsed.nodeId,
+          adminUserId,
+        );
         if (!updated) {
           return adminErrorResponse(404, `Unknown server name: ${targetName}`);
         }
@@ -1140,11 +1748,17 @@ export async function handleAdminApiRequest(
       return adminErrorResponse(400, message);
     }
 
-    return noStoreResponse(jsonResponse({ servers: mapServers(storage, profileId, adminUserId) }));
+    return noStoreResponse(
+      jsonResponse({ servers: mapServers(storage, profileId, adminUserId) }),
+    );
   }
 
   if (serverPathName && req.method === "DELETE") {
-    const removed = storage.removeServer(profileId, serverPathName, adminUserId);
+    const removed = storage.removeServer(
+      profileId,
+      serverPathName,
+      adminUserId,
+    );
     if (!removed) {
       return adminErrorResponse(404, `Unknown server name: ${serverPathName}`);
     }

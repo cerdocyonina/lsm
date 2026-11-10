@@ -46,6 +46,6 @@ describe("XuiBackend", () => {
   });
 
   test("syncUsers не поддерживается — это naive-путь", () => {
-    expect(new XuiBackend(fakeXui()).syncUsers).toBeUndefined();
+    expect((new XuiBackend(fakeXui()) as import("./types").NodeBackend).syncUsers).toBeUndefined();
   });
 });

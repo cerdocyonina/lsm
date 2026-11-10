@@ -1,5 +1,5 @@
-import { createHmac } from "node:crypto";
 import { Database } from "bun:sqlite";
+import { createHmac } from "node:crypto";
 import type { LegacyConfig, MultiProfileDump, ProfileDump } from "./app-config";
 
 export type AdminUserRecord = {
@@ -28,7 +28,23 @@ export type UserRecord = {
   lastFetchedAt: number | null;
 };
 
+export type ConnectionRecord = {
+  id: number;
+  name: string;
+  template: string;
+  nodeId: number | null;
+  createdAt: number;
+};
+export type HostRecord = {
+  id: number;
+  name: string;
+  url: string;
+  createdAt: number;
+};
+
 export type ServerRecord = {
+  connectionId?: number;
+  displayName?: string | null;
   name: string;
   sortOrder: number;
   template: string;
@@ -45,17 +61,73 @@ export type NodeRecord = {
   secret: string;
   inboundId: number;
   type: NodeType;
+  hostId?: number;
+  backendPath?: string;
   createdAt: number;
 };
 
 export interface Storage {
+  setDisplayName(
+    profile: string,
+    name: string,
+    displayName: string | null,
+    owner: number,
+  ): void;
+  queueRemoval(nodeId: number, name: string, uuid: string, owner: number): void;
+  pendingRemovals(
+    nodeId: number,
+    owner: number,
+  ): { clientName: string; userUuid: string }[];
+  clearRemovals(nodeId: number, owner: number, uuids?: string[]): void;
+  transaction<T>(fn: () => T): T;
+  listConnections(ownerId: number): ConnectionRecord[];
+  saveConnection(
+    id: number | null,
+    name: string,
+    template: string,
+    nodeId: number | null,
+    ownerId: number,
+  ): number;
+  deleteConnection(id: number, ownerId: number): void;
+  assignConnection(
+    id: number,
+    profile: string,
+    included: boolean,
+    ownerId: number,
+  ): void;
+  listHosts(ownerId: number): HostRecord[];
+  exportHosts(ownerId: number): (HostRecord & { secret: string })[];
+  saveHost(
+    id: number | null,
+    name: string,
+    url: string,
+    secret: string,
+    ownerId: number,
+  ): number;
+  deleteHost(id: number, ownerId: number): void;
+  saveService(
+    id: number | null,
+    hostId: number,
+    name: string,
+    path: string,
+    type: NodeType,
+    inboundId: number,
+    ownerId: number,
+  ): number;
   // Admin user methods
   getPrimaryAdmin(): AdminUserRecord;
   getAdminUserByUsername(username: string): AdminUserRecord | null;
   getAdminUserById(id: number): AdminUserRecord | null;
   listAdminUsers(): Omit<AdminUserRecord, "passwordHash">[];
-  createAdminUser(username: string, passwordHash: string, createdAt: number): AdminUserRecord;
-  updateAdminUser(id: number, updates: { username?: string; passwordHash?: string }): boolean;
+  createAdminUser(
+    username: string,
+    passwordHash: string,
+    createdAt: number,
+  ): AdminUserRecord;
+  updateAdminUser(
+    id: number,
+    updates: { username?: string; passwordHash?: string },
+  ): boolean;
   deleteAdminUser(id: number): boolean;
 
   // Profile methods (all scoped by ownerId)
@@ -70,36 +142,114 @@ export interface Storage {
   // User methods (all scoped by ownerId via profile)
   listUsers(profileName: string, ownerId: number): UserRecord[];
   getUserBySubscriptionToken(subscriptionToken: string): UserRecord | null;
-  addUser(profileName: string, clientName: string, subscriptionToken: string, userUuid: string, createdAt: number, ownerId: number): void;
-  renameUser(profileName: string, oldName: string, newName: string, ownerId: number): boolean;
-  setUserUuid(profileName: string, clientName: string, userUuid: string, ownerId: number): boolean;
-  setUserCredentials(profileName: string, clientName: string, credentials: Record<string, string>, ownerId: number): boolean;
-  recordSubscriptionFetch(subscriptionToken: string, fetchedAt: number): boolean;
+  addUser(
+    profileName: string,
+    clientName: string,
+    subscriptionToken: string,
+    userUuid: string,
+    createdAt: number,
+    ownerId: number,
+  ): void;
+  renameUser(
+    profileName: string,
+    oldName: string,
+    newName: string,
+    ownerId: number,
+  ): boolean;
+  setUserUuid(
+    profileName: string,
+    clientName: string,
+    userUuid: string,
+    ownerId: number,
+  ): boolean;
+  setUserCredentials(
+    profileName: string,
+    clientName: string,
+    credentials: Record<string, string>,
+    ownerId: number,
+  ): boolean;
+  recordSubscriptionFetch(
+    subscriptionToken: string,
+    fetchedAt: number,
+  ): boolean;
   removeUser(profileName: string, clientName: string, ownerId: number): boolean;
 
   // Server methods (all scoped by ownerId via profile)
   listServers(profileName: string, ownerId: number): string[];
   listServerRecords(profileName: string, ownerId: number): ServerRecord[];
-  getServerUrl(profileName: string, name: string, ownerId: number): string | null;
-  addServer(profileName: string, name: string, template: string, createdAt: number, ownerId: number, nodeId?: number | null): void;
-  renameServer(profileName: string, oldName: string, newName: string, ownerId: number): boolean;
-  setServerUrl(profileName: string, name: string, template: string, ownerId: number): boolean;
-  setServerNode(profileName: string, name: string, nodeId: number | null, ownerId: number): boolean;
+  getServerUrl(
+    profileName: string,
+    name: string,
+    ownerId: number,
+  ): string | null;
+  addServer(
+    profileName: string,
+    name: string,
+    template: string,
+    createdAt: number,
+    ownerId: number,
+    nodeId?: number | null,
+  ): void;
+  renameServer(
+    profileName: string,
+    oldName: string,
+    newName: string,
+    ownerId: number,
+  ): boolean;
+  setServerUrl(
+    profileName: string,
+    name: string,
+    template: string,
+    ownerId: number,
+  ): boolean;
+  setServerNode(
+    profileName: string,
+    name: string,
+    nodeId: number | null,
+    ownerId: number,
+  ): boolean;
   removeServer(profileName: string, name: string, ownerId: number): boolean;
   reorderServers(profileName: string, names: string[], ownerId: number): void;
 
   // Node methods (all scoped by ownerId)
   listNodes(ownerId: number): NodeRecord[];
   getNode(id: number, ownerId: number): NodeRecord | null;
-  addNode(name: string, url: string, secret: string, inboundId: number, ownerId: number, createdAt: number, type?: NodeType): NodeRecord;
-  updateNode(id: number, ownerId: number, updates: Partial<Pick<NodeRecord, "name" | "url" | "secret" | "inboundId" | "type">>): boolean;
+  addNode(
+    name: string,
+    url: string,
+    secret: string,
+    inboundId: number,
+    ownerId: number,
+    createdAt: number,
+    type?: NodeType,
+  ): NodeRecord;
+  updateNode(
+    id: number,
+    ownerId: number,
+    updates: Partial<
+      Pick<NodeRecord, "name" | "url" | "secret" | "inboundId" | "type">
+    >,
+  ): boolean;
   removeNode(id: number, ownerId: number): boolean;
   listNodesForProfile(profileName: string, ownerId: number): NodeRecord[];
 
   // Import/export
-  replaceProfileFromFullDump(profileName: string, dump: ProfileDump, ownerId: number): void;
-  mergeProfileFromFullDump(profileName: string, dump: ProfileDump, ownerId: number): void;
-  mergeProfileFromLegacyConfig(profileName: string, config: LegacyConfig, subLinkSecret: string, ownerId: number): void;
+  replaceProfileFromFullDump(
+    profileName: string,
+    dump: ProfileDump,
+    ownerId: number,
+  ): void;
+  mergeProfileFromFullDump(
+    profileName: string,
+    dump: ProfileDump,
+    ownerId: number,
+  ): void;
+  mergeProfileFromLegacyConfig(
+    profileName: string,
+    config: LegacyConfig,
+    subLinkSecret: string,
+    ownerId: number,
+  ): void;
   mergeAllFromMultiProfileDump(dump: MultiProfileDump, ownerId: number): void;
 
   close(): void;
@@ -110,7 +260,8 @@ function parseCredentials(raw: unknown): Record<string, string> {
   if (typeof raw !== "string" || raw.length === 0) return {};
   try {
     const parsed = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+      return {};
     return Object.fromEntries(
       Object.entries(parsed).filter(([, v]) => typeof v === "string"),
     ) as Record<string, string>;
@@ -122,7 +273,10 @@ function parseCredentials(raw: unknown): Record<string, string> {
 export class SqliteStorage implements Storage {
   private readonly db: Database;
 
-  public constructor(path: string, private readonly primaryAdminUsername: string) {
+  public constructor(
+    path: string,
+    private readonly primaryAdminUsername: string,
+  ) {
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec("PRAGMA foreign_keys = ON;");
     // БД делят два процесса (sub-сервер и админка), а sub-сервер пишет на каждой
@@ -137,13 +291,20 @@ export class SqliteStorage implements Storage {
    * server share this DB and usually start together, so the other process may add the
    * column between our PRAGMA check and the ALTER — that's success, not a startup crash.
    */
-  private addColumnIfMissing(table: string, column: string, definition: string): void {
-    const cols = this.db.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  private addColumnIfMissing(
+    table: string,
+    column: string,
+    definition: string,
+  ): void {
+    const cols = this.db.query(`PRAGMA table_info(${table})`).all() as {
+      name: string;
+    }[];
     if (cols.some((c) => c.name === column)) return;
     try {
       this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     } catch (err) {
-      if (err instanceof Error && err.message.includes("duplicate column name")) return;
+      if (err instanceof Error && err.message.includes("duplicate column name"))
+        return;
       throw err;
     }
   }
@@ -213,13 +374,21 @@ export class SqliteStorage implements Storage {
     `);
 
     // 4. Migration: add node_id to servers if not present
-    this.addColumnIfMissing("servers", "node_id", "INTEGER REFERENCES nodes(id) ON DELETE SET NULL");
+    this.addColumnIfMissing(
+      "servers",
+      "node_id",
+      "INTEGER REFERENCES nodes(id) ON DELETE SET NULL",
+    );
 
     // 5. Migration: add owner_id to profiles (recreate table to change UNIQUE constraint)
-    const profileCols = this.db.query("PRAGMA table_info(profiles)").all() as { name: string }[];
+    const profileCols = this.db.query("PRAGMA table_info(profiles)").all() as {
+      name: string;
+    }[];
     if (!profileCols.some((c) => c.name === "owner_id")) {
       const primaryAdminId = (
-        this.db.query("SELECT id FROM admin_users WHERE is_primary = 1").get() as { id: number }
+        this.db
+          .query("SELECT id FROM admin_users WHERE is_primary = 1")
+          .get() as { id: number }
       ).id;
       this.db.exec("PRAGMA foreign_keys = OFF");
       const migrateProfiles = this.db.transaction(() => {
@@ -245,10 +414,14 @@ export class SqliteStorage implements Storage {
     }
 
     // 6. Migration: add owner_id to nodes (recreate table)
-    const nodeCols = this.db.query("PRAGMA table_info(nodes)").all() as { name: string }[];
+    const nodeCols = this.db.query("PRAGMA table_info(nodes)").all() as {
+      name: string;
+    }[];
     if (!nodeCols.some((c) => c.name === "owner_id")) {
       const primaryAdminId = (
-        this.db.query("SELECT id FROM admin_users WHERE is_primary = 1").get() as { id: number }
+        this.db
+          .query("SELECT id FROM admin_users WHERE is_primary = 1")
+          .get() as { id: number }
       ).id;
       const migrateNodes = this.db.transaction(() => {
         this.db.exec(`
@@ -275,7 +448,11 @@ export class SqliteStorage implements Storage {
 
     // 6a. Migration: per-user credential bag for named placeholders ({user}, {pass}, ...).
     // user_uuid stays where it is and remains the source for {uuid}.
-    this.addColumnIfMissing("users", "credentials", "TEXT NOT NULL DEFAULT '{}'");
+    this.addColumnIfMissing(
+      "users",
+      "credentials",
+      "TEXT NOT NULL DEFAULT '{}'",
+    );
 
     // 6b. Migration: node provider type. Checked after migration 6, which may have just
     // recreated the nodes table without this column.
@@ -284,21 +461,169 @@ export class SqliteStorage implements Storage {
     // 6c. Migration: last successful subscription fetch per user (nullable — "never").
     this.addColumnIfMissing("users", "last_fetched_at", "INTEGER");
 
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS hosts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, url TEXT NOT NULL, secret TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS connections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, template TEXT NOT NULL, node_id INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS profile_connections (
+        profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+        connection_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, sort_order INTEGER NOT NULL, PRIMARY KEY(profile_id, name),
+        UNIQUE(profile_id, connection_id)
+      );
+    `);
+    this.addColumnIfMissing("profile_connections", "display_name", "TEXT");
+    this.db.exec(`CREATE TABLE IF NOT EXISTS pending_node_removals(
+      node_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,owner_id INTEGER NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+      client_name TEXT NOT NULL,user_uuid TEXT NOT NULL,PRIMARY KEY(node_id,user_uuid))`);
+    this.addColumnIfMissing(
+      "nodes",
+      "host_id",
+      "INTEGER REFERENCES hosts(id) ON DELETE CASCADE",
+    );
+    this.addColumnIfMissing(
+      "nodes",
+      "backend_path",
+      "TEXT NOT NULL DEFAULT ''",
+    );
+    this.db
+      .transaction(() => {
+        this.normalizeHosts();
+        // Migrate once, atomically. Definitions match by exact template AND service, never by name alone.
+        if (
+          this.db
+            .query(
+              "SELECT 1 FROM sqlite_master WHERE type='table' AND name='servers'",
+            )
+            .get()
+        ) {
+          const rows = this.db
+            .query(
+              `SELECT s.*, p.owner_id FROM servers s JOIN profiles p ON p.id=s.profile_id ORDER BY s.rowid`,
+            )
+            .all() as any[];
+          for (const row of rows) {
+            let id = this.findOrCreateConnection(
+              row.name,
+              row.template,
+              row.node_id,
+              row.created_at,
+              row.owner_id,
+            );
+            if (
+              this.db
+                .query(
+                  "SELECT 1 FROM profile_connections WHERE profile_id=?1 AND connection_id=?2",
+                )
+                .get(row.profile_id, id)
+            )
+              id = Number(
+                this.db
+                  .query(
+                    "INSERT INTO connections(owner_id,name,template,node_id,created_at) VALUES (?1,?2,?3,?4,?5)",
+                  )
+                  .run(
+                    row.owner_id,
+                    row.name,
+                    row.template,
+                    row.node_id,
+                    row.created_at,
+                  ).lastInsertRowid,
+              );
+            this.db
+              .query(
+                "INSERT INTO profile_connections(profile_id,connection_id,name,sort_order) VALUES (?1,?2,?3,?4)",
+              )
+              .run(row.profile_id, id, row.name, row.sort_order);
+          }
+          this.db.exec("DROP TABLE servers");
+        }
+      })
+      .immediate();
+
     // 7. Seed "main" profile for primary admin if not present
     const primaryAdminId = (
-      this.db.query("SELECT id FROM admin_users WHERE is_primary = 1").get() as { id: number }
+      this.db
+        .query("SELECT id FROM admin_users WHERE is_primary = 1")
+        .get() as { id: number }
     ).id;
     const mainExists = this.db
-      .query("SELECT 1 FROM profiles WHERE name = 'main' AND owner_id = ?1 LIMIT 1")
+      .query(
+        "SELECT 1 FROM profiles WHERE name = 'main' AND owner_id = ?1 LIMIT 1",
+      )
       .get(primaryAdminId);
     if (!mainExists) {
       this.db
-        .query("INSERT INTO profiles (owner_id, name, created_at) VALUES (?1, ?2, ?3)")
+        .query(
+          "INSERT INTO profiles (owner_id, name, created_at) VALUES (?1, ?2, ?3)",
+        )
         .run(primaryAdminId, "main", Date.now());
     }
   }
 
   // Admin user methods
+
+  public setDisplayName(
+    profile: string,
+    name: string,
+    displayName: string | null,
+    owner: number,
+  ): void {
+    this.db
+      .query(
+        "UPDATE profile_connections SET display_name=?1 WHERE profile_id=?2 AND name=?3",
+      )
+      .run(displayName, this.profileId(profile, owner), name);
+  }
+  public queueRemoval(
+    nodeId: number,
+    name: string,
+    uuid: string,
+    owner: number,
+  ): void {
+    if (!this.getNode(nodeId, owner)) throw new Error("Unknown service");
+    this.db
+      .query(
+        "INSERT OR REPLACE INTO pending_node_removals VALUES (?1,?2,?3,?4)",
+      )
+      .run(nodeId, owner, name, uuid);
+  }
+  public pendingRemovals(
+    nodeId: number,
+    owner: number,
+  ): { clientName: string; userUuid: string }[] {
+    return this.db
+      .query(
+        "SELECT client_name AS clientName,user_uuid AS userUuid FROM pending_node_removals WHERE node_id=?1 AND owner_id=?2",
+      )
+      .all(nodeId, owner) as { clientName: string; userUuid: string }[];
+  }
+  public clearRemovals(nodeId: number, owner: number, uuids?: string[]): void {
+    if (uuids) {
+      for (const uuid of uuids)
+        this.db
+          .query(
+            "DELETE FROM pending_node_removals WHERE node_id=?1 AND owner_id=?2 AND user_uuid=?3",
+          )
+          .run(nodeId, owner, uuid);
+      return;
+    }
+    this.db
+      .query(
+        "DELETE FROM pending_node_removals WHERE node_id=?1 AND owner_id=?2",
+      )
+      .run(nodeId, owner);
+  }
+
+  public transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
 
   private mapAdminUser(row: {
     id: number;
@@ -367,7 +692,12 @@ export class SqliteStorage implements Storage {
       .query(
         "SELECT id, username, is_primary, created_at FROM admin_users ORDER BY is_primary DESC, created_at, id",
       )
-      .all() as { id: number; username: string; is_primary: number; created_at: number }[];
+      .all() as {
+      id: number;
+      username: string;
+      is_primary: number;
+      created_at: number;
+    }[];
     return rows.map((r) => ({
       id: r.id,
       username: r.username,
@@ -376,7 +706,11 @@ export class SqliteStorage implements Storage {
     }));
   }
 
-  public createAdminUser(username: string, passwordHash: string, createdAt: number): AdminUserRecord {
+  public createAdminUser(
+    username: string,
+    passwordHash: string,
+    createdAt: number,
+  ): AdminUserRecord {
     try {
       this.db
         .query(
@@ -384,29 +718,42 @@ export class SqliteStorage implements Storage {
         )
         .run(username, passwordHash, createdAt);
     } catch (err) {
-      if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+      if (
+        err instanceof Error &&
+        err.message.includes("UNIQUE constraint failed")
+      ) {
         throw new Error(`Admin user "${username}" already exists.`);
       }
       throw err;
     }
     const newUser = this.getAdminUserByUsername(username)!;
     this.db
-      .query("INSERT INTO profiles (owner_id, name, created_at) VALUES (?1, 'main', ?2)")
+      .query(
+        "INSERT INTO profiles (owner_id, name, created_at) VALUES (?1, 'main', ?2)",
+      )
       .run(newUser.id, createdAt);
     return newUser;
   }
 
-  public updateAdminUser(id: number, updates: { username?: string; passwordHash?: string }): boolean {
+  public updateAdminUser(
+    id: number,
+    updates: { username?: string; passwordHash?: string },
+  ): boolean {
     const tx = this.db.transaction(() => {
       let changed = false;
       if (updates.username !== undefined) {
         try {
           const result = this.db
-            .query("UPDATE admin_users SET username = ?1 WHERE id = ?2 AND is_primary = 0")
+            .query(
+              "UPDATE admin_users SET username = ?1 WHERE id = ?2 AND is_primary = 0",
+            )
             .run(updates.username, id);
           if (result.changes > 0) changed = true;
         } catch (err) {
-          if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+          if (
+            err instanceof Error &&
+            err.message.includes("UNIQUE constraint failed")
+          ) {
             throw new Error(`Username "${updates.username}" is already taken.`);
           }
           throw err;
@@ -414,7 +761,9 @@ export class SqliteStorage implements Storage {
       }
       if (updates.passwordHash !== undefined) {
         const result = this.db
-          .query("UPDATE admin_users SET password_hash = ?1 WHERE id = ?2 AND is_primary = 0")
+          .query(
+            "UPDATE admin_users SET password_hash = ?1 WHERE id = ?2 AND is_primary = 0",
+          )
           .run(updates.passwordHash, id);
         if (result.changes > 0) changed = true;
       }
@@ -424,7 +773,9 @@ export class SqliteStorage implements Storage {
   }
 
   public deleteAdminUser(id: number): boolean {
-    const result = this.db.query("DELETE FROM admin_users WHERE id = ?1 AND is_primary = 0").run(id);
+    const result = this.db
+      .query("DELETE FROM admin_users WHERE id = ?1 AND is_primary = 0")
+      .run(id);
     return result.changes > 0;
   }
 
@@ -461,24 +812,37 @@ export class SqliteStorage implements Storage {
   public createProfile(name: string, ownerId: number, createdAt: number): void {
     try {
       this.db
-        .query("INSERT INTO profiles (owner_id, name, created_at) VALUES (?1, ?2, ?3)")
+        .query(
+          "INSERT INTO profiles (owner_id, name, created_at) VALUES (?1, ?2, ?3)",
+        )
         .run(ownerId, name, createdAt);
     } catch (err) {
-      if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+      if (
+        err instanceof Error &&
+        err.message.includes("UNIQUE constraint failed")
+      ) {
         throw new Error(`Profile "${name}" already exists.`);
       }
       throw err;
     }
   }
 
-  public renameProfile(name: string, newName: string, ownerId: number): boolean {
+  public renameProfile(
+    name: string,
+    newName: string,
+    ownerId: number,
+  ): boolean {
     const result = this.db
       .query("UPDATE profiles SET name = ?1 WHERE name = ?2 AND owner_id = ?3")
       .run(newName, name, ownerId);
     return result.changes > 0;
   }
 
-  public renameProfileById(id: number, newName: string, ownerId: number): boolean {
+  public renameProfileById(
+    id: number,
+    newName: string,
+    ownerId: number,
+  ): boolean {
     const result = this.db
       .query("UPDATE profiles SET name = ?1 WHERE id = ?2 AND owner_id = ?3")
       .run(newName, id, ownerId);
@@ -503,11 +867,18 @@ export class SqliteStorage implements Storage {
          FROM users u JOIN profiles p ON p.id = u.profile_id
          WHERE p.name = ?1 AND p.owner_id = ?2 ORDER BY u.created_at DESC, u.client_name`,
       )
-      .all(profileName, ownerId) as (Omit<UserRecord, "credentials"> & { credentials: string })[];
-    return rows.map((row) => ({ ...row, credentials: parseCredentials(row.credentials) }));
+      .all(profileName, ownerId) as (Omit<UserRecord, "credentials"> & {
+      credentials: string;
+    })[];
+    return rows.map((row) => ({
+      ...row,
+      credentials: parseCredentials(row.credentials),
+    }));
   }
 
-  public getUserBySubscriptionToken(subscriptionToken: string): UserRecord | null {
+  public getUserBySubscriptionToken(
+    subscriptionToken: string,
+  ): UserRecord | null {
     const row = this.db
       .query(
         `SELECT p.name AS profileName, p.owner_id AS ownerId, u.client_name AS clientName,
@@ -516,8 +887,12 @@ export class SqliteStorage implements Storage {
          FROM users u JOIN profiles p ON p.id = u.profile_id
          WHERE u.subscription_token = ?1`,
       )
-      .get(subscriptionToken) as (Omit<UserRecord, "credentials"> & { credentials: string }) | null;
-    return row ? { ...row, credentials: parseCredentials(row.credentials) } : null;
+      .get(subscriptionToken) as
+      | (Omit<UserRecord, "credentials"> & { credentials: string })
+      | null;
+    return row
+      ? { ...row, credentials: parseCredentials(row.credentials) }
+      : null;
   }
 
   public addUser(
@@ -534,16 +909,31 @@ export class SqliteStorage implements Storage {
           `INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, created_at)
            VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6), ?2, ?3, ?4, ?5)`,
         )
-        .run(profileName, clientName, subscriptionToken, userUuid, createdAt, ownerId);
+        .run(
+          profileName,
+          clientName,
+          subscriptionToken,
+          userUuid,
+          createdAt,
+          ownerId,
+        );
     } catch (err) {
-      if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+      if (
+        err instanceof Error &&
+        err.message.includes("UNIQUE constraint failed")
+      ) {
         throw new Error(`User "${clientName}" already exists.`);
       }
       throw err;
     }
   }
 
-  public renameUser(profileName: string, oldName: string, newName: string, ownerId: number): boolean {
+  public renameUser(
+    profileName: string,
+    oldName: string,
+    newName: string,
+    ownerId: number,
+  ): boolean {
     const result = this.db
       .query(
         `UPDATE users SET client_name = ?1
@@ -553,7 +943,12 @@ export class SqliteStorage implements Storage {
     return result.changes > 0;
   }
 
-  public setUserUuid(profileName: string, clientName: string, userUuid: string, ownerId: number): boolean {
+  public setUserUuid(
+    profileName: string,
+    clientName: string,
+    userUuid: string,
+    ownerId: number,
+  ): boolean {
     const result = this.db
       .query(
         `UPDATE users SET user_uuid = ?1
@@ -576,7 +971,9 @@ export class SqliteStorage implements Storage {
           `SELECT u.credentials AS credentials FROM users u JOIN profiles p ON p.id = u.profile_id
            WHERE p.name = ?1 AND p.owner_id = ?3 AND u.client_name = ?2`,
         )
-        .get(profileName, clientName, ownerId) as { credentials: string } | null;
+        .get(profileName, clientName, ownerId) as {
+        credentials: string;
+      } | null;
       if (!row) return false;
 
       const merged = { ...parseCredentials(row.credentials), ...credentials };
@@ -591,14 +988,23 @@ export class SqliteStorage implements Storage {
     return tx() as boolean;
   }
 
-  public recordSubscriptionFetch(subscriptionToken: string, fetchedAt: number): boolean {
+  public recordSubscriptionFetch(
+    subscriptionToken: string,
+    fetchedAt: number,
+  ): boolean {
     const result = this.db
-      .query("UPDATE users SET last_fetched_at = ?1 WHERE subscription_token = ?2")
+      .query(
+        "UPDATE users SET last_fetched_at = ?1 WHERE subscription_token = ?2",
+      )
       .run(fetchedAt, subscriptionToken);
     return result.changes > 0;
   }
 
-  public removeUser(profileName: string, clientName: string, ownerId: number): boolean {
+  public removeUser(
+    profileName: string,
+    clientName: string,
+    ownerId: number,
+  ): boolean {
     const result = this.db
       .query(
         `DELETE FROM users
@@ -614,24 +1020,57 @@ export class SqliteStorage implements Storage {
     return this.listServerRecords(profileName, ownerId).map((r) => r.template);
   }
 
-  public listServerRecords(profileName: string, ownerId: number): ServerRecord[] {
+  public listServerRecords(
+    profileName: string,
+    ownerId: number,
+  ): ServerRecord[] {
     return this.db
       .query(
-        `SELECT s.name, s.sort_order AS sortOrder, s.template, s.created_at AS createdAt, s.node_id AS nodeId
-         FROM servers s JOIN profiles p ON p.id = s.profile_id
-         WHERE p.name = ?1 AND p.owner_id = ?2 ORDER BY s.sort_order, s.rowid`,
+        `SELECT m.name, m.display_name AS displayName, m.sort_order AS sortOrder, c.template, c.created_at AS createdAt,
+      c.node_id AS nodeId, c.id AS connectionId FROM profile_connections m
+      JOIN connections c ON c.id=m.connection_id JOIN profiles p ON p.id=m.profile_id
+      WHERE p.name=?1 AND p.owner_id=?2 ORDER BY m.sort_order, m.rowid`,
       )
       .all(profileName, ownerId) as ServerRecord[];
   }
 
-  public getServerUrl(profileName: string, name: string, ownerId: number): string | null {
-    const row = this.db
+  public getServerUrl(
+    profileName: string,
+    name: string,
+    ownerId: number,
+  ): string | null {
+    return (
+      this.listServerRecords(profileName, ownerId).find((s) => s.name === name)
+        ?.template ?? null
+    );
+  }
+
+  private profileId(name: string, ownerId: number): number {
+    const p = this.getProfile(name, ownerId);
+    if (!p) throw new Error(`Unknown profile: ${name}`);
+    return p.id;
+  }
+
+  private findOrCreateConnection(
+    name: string,
+    template: string,
+    nodeId: number | null,
+    createdAt: number,
+    ownerId: number,
+  ): number {
+    const existing = this.db
       .query(
-        `SELECT s.template FROM servers s JOIN profiles p ON p.id = s.profile_id
-         WHERE p.name = ?1 AND s.name = ?2 AND p.owner_id = ?3`,
+        "SELECT id FROM connections WHERE owner_id=?1 AND template=?2 AND node_id IS ?3 ORDER BY id LIMIT 1",
       )
-      .get(profileName, name, ownerId) as { template: string } | null;
-    return row?.template ?? null;
+      .get(ownerId, template, nodeId) as { id: number } | null;
+    if (existing) return existing.id;
+    return Number(
+      this.db
+        .query(
+          "INSERT INTO connections(owner_id,name,template,node_id,created_at) VALUES (?1,?2,?3,?4,?5)",
+        )
+        .run(ownerId, name, template, nodeId, createdAt).lastInsertRowid,
+    );
   }
 
   public addServer(
@@ -642,314 +1081,514 @@ export class SqliteStorage implements Storage {
     ownerId: number,
     nodeId: number | null = null,
   ): void {
-    const row = this.db
-      .query(
-        `SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder
-         FROM servers WHERE profile_id = (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?2)`,
+    this.db.transaction(() => {
+      if (nodeId !== null && !this.getNode(nodeId, ownerId))
+        throw new Error("Unknown service");
+      const pid = this.profileId(profileName, ownerId);
+      if (
+        this.listServerRecords(profileName, ownerId).some(
+          (s) => s.name === name,
+        )
       )
-      .get(profileName, ownerId) as { nextSortOrder: number };
-    try {
+        throw new Error(`Server "${name}" already exists.`);
+      let id = this.findOrCreateConnection(
+        name,
+        template,
+        nodeId,
+        createdAt,
+        ownerId,
+      );
+      if (
+        this.listServerRecords(profileName, ownerId).some(
+          (s) => s.connectionId === id,
+        )
+      )
+        id = this.saveConnection(null, name, template, nodeId, ownerId);
       this.db
         .query(
-          `INSERT INTO servers (profile_id, name, sort_order, template, created_at, node_id)
-           VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6), ?2, ?3, ?4, ?5, ?7)`,
+          `INSERT INTO profile_connections(profile_id,connection_id,name,sort_order) VALUES (?1,?2,?3,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM profile_connections WHERE profile_id=?1))`,
         )
-        .run(profileName, name, row.nextSortOrder, template, createdAt, ownerId, nodeId);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
-        throw new Error(`Server "${name}" already exists.`);
-      }
-      throw err;
+        .run(pid, id, name);
+    })();
+  }
+
+  public setServerNode(
+    profile: string,
+    name: string,
+    nodeId: number | null,
+    ownerId: number,
+  ): boolean {
+    const c = this.listServerRecords(profile, ownerId).find(
+      (s) => s.name === name,
+    );
+    if (!c) return false;
+    this.saveConnection(c.connectionId!, name, c.template, nodeId, ownerId);
+    return true;
+  }
+  public renameServer(
+    profile: string,
+    oldName: string,
+    newName: string,
+    ownerId: number,
+  ): boolean {
+    return (
+      this.db
+        .query(
+          "UPDATE profile_connections SET name=?1 WHERE profile_id=?2 AND name=?3",
+        )
+        .run(newName, this.profileId(profile, ownerId), oldName).changes > 0
+    );
+  }
+  public setServerUrl(
+    profile: string,
+    name: string,
+    template: string,
+    ownerId: number,
+  ): boolean {
+    const c = this.listServerRecords(profile, ownerId).find(
+      (s) => s.name === name,
+    );
+    if (!c) return false;
+    this.saveConnection(c.connectionId!, name, template, c.nodeId, ownerId);
+    return true;
+  }
+  public removeServer(profile: string, name: string, ownerId: number): boolean {
+    return (
+      this.db
+        .query(
+          "DELETE FROM profile_connections WHERE profile_id=?1 AND name=?2",
+        )
+        .run(this.profileId(profile, ownerId), name).changes > 0
+    );
+  }
+  public reorderServers(
+    profile: string,
+    names: string[],
+    ownerId: number,
+  ): void {
+    this.db.transaction(() => {
+      const pid = this.profileId(profile, ownerId);
+      names.forEach((name, i) =>
+        this.db
+          .query(
+            "UPDATE profile_connections SET sort_order=?1 WHERE profile_id=?2 AND name=?3",
+          )
+          .run(i, pid, name),
+      );
+    })();
+  }
+
+  public listConnections(ownerId: number): ConnectionRecord[] {
+    return this.db
+      .query(
+        "SELECT id,name,template,node_id AS nodeId,created_at AS createdAt FROM connections WHERE owner_id=?1 ORDER BY id",
+      )
+      .all(ownerId) as ConnectionRecord[];
+  }
+  public saveConnection(
+    id: number | null,
+    name: string,
+    template: string,
+    nodeId: number | null,
+    ownerId: number,
+  ): number {
+    if (nodeId !== null && !this.getNode(nodeId, ownerId))
+      throw new Error("Unknown service");
+    if (id === null)
+      return Number(
+        this.db
+          .query(
+            "INSERT INTO connections(owner_id,name,template,node_id,created_at) VALUES (?1,?2,?3,?4,?5)",
+          )
+          .run(ownerId, name, template, nodeId, Date.now()).lastInsertRowid,
+      );
+    if (
+      !this.db
+        .query(
+          "UPDATE connections SET name=?1,template=?2,node_id=?3 WHERE id=?4 AND owner_id=?5",
+        )
+        .run(name, template, nodeId, id, ownerId).changes
+    )
+      throw new Error("Unknown connection");
+    return id;
+  }
+  public deleteConnection(id: number, ownerId: number): void {
+    this.db
+      .query("DELETE FROM connections WHERE id=?1 AND owner_id=?2")
+      .run(id, ownerId);
+  }
+  public assignConnection(
+    id: number,
+    profile: string,
+    included: boolean,
+    ownerId: number,
+  ): void {
+    const c = this.listConnections(ownerId).find((c) => c.id === id);
+    if (!c) throw new Error("Unknown connection");
+    const pid = this.profileId(profile, ownerId);
+    if (!included) {
+      this.db
+        .query(
+          "DELETE FROM profile_connections WHERE profile_id=?1 AND connection_id=?2",
+        )
+        .run(pid, id);
+      return;
+    }
+    if (
+      this.listServerRecords(profile, ownerId).some(
+        (s) => s.connectionId === id,
+      )
+    )
+      return;
+    let name = c.name;
+    let n = 2;
+    while (
+      this.listServerRecords(profile, ownerId).some((s) => s.name === name)
+    )
+      name = `${c.name} (${n++})`;
+    this.db
+      .query(
+        `INSERT INTO profile_connections(profile_id,connection_id,name,sort_order) VALUES (?1,?2,?3,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM profile_connections WHERE profile_id=?1))`,
+      )
+      .run(pid, id, name);
+  }
+
+  private normalizeHosts(): void {
+    const nodes = this.db
+      .query("SELECT * FROM nodes WHERE host_id IS NULL")
+      .all() as any[];
+    for (const node of nodes) {
+      const url = new URL(node.url);
+      const base = url.origin;
+      const path = url.pathname.replace(/\/$/, "");
+      let h = this.db
+        .query(
+          "SELECT id FROM hosts WHERE owner_id=?1 AND url=?2 AND secret=?3",
+        )
+        .get(node.owner_id, base, node.secret) as { id: number } | null;
+      if (!h)
+        h = {
+          id: Number(
+            this.db
+              .query(
+                "INSERT INTO hosts(owner_id,name,url,secret,created_at) VALUES (?1,?2,?3,?4,?5)",
+              )
+              .run(
+                node.owner_id,
+                url.hostname,
+                base,
+                node.secret,
+                node.created_at,
+              ).lastInsertRowid,
+          ),
+        };
+      this.db
+        .query("UPDATE nodes SET host_id=?1,backend_path=?2 WHERE id=?3")
+        .run(h.id, path, node.id);
     }
   }
-
-  public setServerNode(profileName: string, name: string, nodeId: number | null, ownerId: number): boolean {
-    const result = this.db
+  public listHosts(ownerId: number): HostRecord[] {
+    return this.db
       .query(
-        `UPDATE servers SET node_id = ?1
-         WHERE profile_id = (SELECT id FROM profiles WHERE name = ?2 AND owner_id = ?4) AND name = ?3`,
+        "SELECT id,name,url,created_at AS createdAt FROM hosts WHERE owner_id=?1 ORDER BY id",
       )
-      .run(nodeId, profileName, name, ownerId);
-    return result.changes > 0;
+      .all(ownerId) as HostRecord[];
   }
-
-  public renameServer(profileName: string, oldName: string, newName: string, ownerId: number): boolean {
-    const result = this.db
+  public exportHosts(ownerId: number): (HostRecord & { secret: string })[] {
+    return this.db
       .query(
-        `UPDATE servers SET name = ?1
-         WHERE profile_id = (SELECT id FROM profiles WHERE name = ?2 AND owner_id = ?4) AND name = ?3`,
+        "SELECT id,name,url,secret,created_at AS createdAt FROM hosts WHERE owner_id=?1 ORDER BY id",
       )
-      .run(newName, profileName, oldName, ownerId);
-    return result.changes > 0;
+      .all(ownerId) as (HostRecord & { secret: string })[];
   }
-
-  public setServerUrl(profileName: string, name: string, template: string, ownerId: number): boolean {
-    const result = this.db
-      .query(
-        `UPDATE servers SET template = ?1
-         WHERE profile_id = (SELECT id FROM profiles WHERE name = ?2 AND owner_id = ?4) AND name = ?3`,
-      )
-      .run(template, profileName, name, ownerId);
-    return result.changes > 0;
-  }
-
-  public removeServer(profileName: string, name: string, ownerId: number): boolean {
-    const result = this.db
-      .query(
-        `DELETE FROM servers
-         WHERE profile_id = (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?3) AND name = ?2`,
-      )
-      .run(profileName, name, ownerId);
-    return result.changes > 0;
-  }
-
-  public reorderServers(profileName: string, names: string[], ownerId: number): void {
-    const tx = this.db.transaction((pname: string, nameList: string[]) => {
-      const update = this.db.query(
-        `UPDATE servers SET sort_order = ?1
-         WHERE profile_id = (SELECT id FROM profiles WHERE name = ?2 AND owner_id = ?4) AND name = ?3`,
+  public saveHost(
+    id: number | null,
+    name: string,
+    url: string,
+    secret: string,
+    ownerId: number,
+  ): number {
+    if (id === null) {
+      if (!secret) throw new Error("Agent secret is required");
+      return Number(
+        this.db
+          .query(
+            "INSERT INTO hosts(owner_id,name,url,secret,created_at) VALUES (?1,?2,?3,?4,?5)",
+          )
+          .run(ownerId, name, url.replace(/\/$/, ""), secret, Date.now())
+          .lastInsertRowid,
       );
-      nameList.forEach((name, index) => {
-        update.run(index, pname, name, ownerId);
-      });
-    });
-    tx(profileName, names);
+    }
+    if (
+      !this.db
+        .query(
+          "UPDATE hosts SET name=?1,url=?2,secret=CASE WHEN ?3='' THEN secret ELSE ?3 END WHERE id=?4 AND owner_id=?5",
+        )
+        .run(name, url.replace(/\/$/, ""), secret, id, ownerId).changes
+    )
+      throw new Error("Unknown host");
+    return id;
+  }
+  public deleteHost(id: number, ownerId: number): void {
+    if (this.listNodes(ownerId).some((n) => n.hostId === id))
+      throw new Error("Remove the host's services first");
+    this.db
+      .query("DELETE FROM hosts WHERE id=?1 AND owner_id=?2")
+      .run(id, ownerId);
+  }
+  public saveService(
+    id: number | null,
+    hostId: number,
+    name: string,
+    path: string,
+    type: NodeType,
+    inboundId: number,
+    ownerId: number,
+  ): number {
+    const host = this.db
+      .query("SELECT * FROM hosts WHERE id=?1 AND owner_id=?2")
+      .get(hostId, ownerId) as any;
+    if (!host) throw new Error("Unknown host");
+    if (
+      this.listNodes(ownerId).some(
+        (n) =>
+          n.id !== id &&
+          n.hostId === hostId &&
+          n.backendPath === path &&
+          (type !== "xui" || n.type !== "xui" || n.inboundId === inboundId),
+      )
+    )
+      throw new Error(
+        "This backend is already configured; create another connection variant instead",
+      );
+    if (id === null) {
+      id = Number(
+        this.db
+          .query(
+            "INSERT INTO nodes(owner_id,name,url,secret,inbound_id,type,created_at,host_id,backend_path) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+          )
+          .run(
+            ownerId,
+            name,
+            host.url + path,
+            host.secret,
+            inboundId,
+            type,
+            Date.now(),
+            hostId,
+            path,
+          ).lastInsertRowid,
+      );
+    }
+    if (
+      !this.db
+        .query(
+          "UPDATE nodes SET name=?1,type=?2,inbound_id=?3,host_id=?4,backend_path=?5 WHERE id=?6 AND owner_id=?7",
+        )
+        .run(name, type, inboundId, hostId, path, id, ownerId).changes
+    )
+      throw new Error("Unknown service");
+    return id;
   }
 
   // Import/export methods
 
-  public replaceProfileFromFullDump(profileName: string, dump: ProfileDump, ownerId: number): void {
-    const tx = this.db.transaction(() => {
-      this.db
-        .query(
-          "DELETE FROM users WHERE profile_id = (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?2)",
-        )
-        .run(profileName, ownerId);
-      this.db
-        .query(
-          "DELETE FROM servers WHERE profile_id = (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?2)",
-        )
-        .run(profileName, ownerId);
-
-      const upsertNode = this.db.query(`
-        INSERT INTO nodes (owner_id, name, url, secret, inbound_id, type, created_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-        ON CONFLICT(name) DO UPDATE SET
-          url = excluded.url,
-          secret = excluded.secret,
-          inbound_id = excluded.inbound_id,
-          type = excluded.type,
-          created_at = excluded.created_at
-        WHERE nodes.owner_id = ?1 AND excluded.created_at > nodes.created_at
-      `);
-      for (const node of dump.NODES ?? []) {
-        upsertNode.run(ownerId, node.name, node.url, node.secret, node.inboundId, node.type ?? "xui", node.createdAt);
-      }
-
-      const insertUser = this.db.query(
-        `INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, credentials, created_at)
-         VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?7), ?2, ?3, ?4, ?5, ?6)`,
-      );
-      for (const user of dump.USERS) {
-        insertUser.run(profileName, user.clientName, user.subscriptionToken, user.userUuid, JSON.stringify(user.credentials ?? {}), user.createdAt, ownerId);
-      }
-
-      const insertServer = this.db.query(
-        `INSERT INTO servers (profile_id, name, sort_order, template, created_at, node_id)
-         VALUES (
-           (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6),
-           ?2, ?3, ?4, ?5,
-           (SELECT id FROM nodes WHERE name = ?7 AND owner_id = ?6)
-         )`,
-      );
-      for (const server of dump.SERVERS) {
-        insertServer.run(profileName, server.name, server.sortOrder, server.template, server.createdAt, ownerId, server.nodeName ?? null);
-      }
-    });
-    tx();
-  }
-
-  public mergeProfileFromFullDump(profileName: string, dump: ProfileDump, ownerId: number): void {
-    const upsertNode = this.db.query(`
-      INSERT INTO nodes (owner_id, name, url, secret, inbound_id, type, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-      ON CONFLICT(name) DO UPDATE SET
-        url = excluded.url,
-        secret = excluded.secret,
-        inbound_id = excluded.inbound_id,
-        type = excluded.type,
-        created_at = excluded.created_at
-      WHERE nodes.owner_id = ?1 AND excluded.created_at > nodes.created_at
-    `);
-    const upsertUser = this.db.query(`
-      INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, credentials, created_at)
-      VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?7), ?2, ?3, ?4, ?5, ?6)
-      ON CONFLICT(profile_id, client_name) DO UPDATE SET
-        subscription_token = excluded.subscription_token,
-        user_uuid = excluded.user_uuid,
-        credentials = excluded.credentials,
-        created_at = excluded.created_at
-      WHERE excluded.created_at > users.created_at
-    `);
-    const upsertServer = this.db.query(`
-      INSERT INTO servers (profile_id, name, sort_order, template, created_at, node_id)
-      VALUES (
-        (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6),
-        ?2, ?3, ?4, ?5,
-        (SELECT id FROM nodes WHERE name = ?7 AND owner_id = ?6)
-      )
-      ON CONFLICT(profile_id, name) DO UPDATE SET
-        sort_order = excluded.sort_order,
-        template = excluded.template,
-        created_at = excluded.created_at,
-        node_id = excluded.node_id
-      WHERE excluded.created_at > servers.created_at
-    `);
-
-    const tx = this.db.transaction(() => {
-      for (const node of dump.NODES ?? []) {
-        upsertNode.run(ownerId, node.name, node.url, node.secret, node.inboundId, node.type ?? "xui", node.createdAt);
-      }
-      for (const user of dump.USERS) {
-        upsertUser.run(profileName, user.clientName, user.subscriptionToken, user.userUuid, JSON.stringify(user.credentials ?? {}), user.createdAt, ownerId);
-      }
-      for (const server of dump.SERVERS) {
-        upsertServer.run(profileName, server.name, server.sortOrder, server.template, server.createdAt, ownerId, server.nodeName ?? null);
-      }
-    });
-    tx();
-  }
-
-  public mergeProfileFromLegacyConfig(
-    profileName: string,
-    config: LegacyConfig,
-    subLinkSecret: string,
+  private importNodes(
+    nodes: NonNullable<ProfileDump["NODES"]>,
     ownerId: number,
   ): void {
-    const tx = this.db.transaction(() => {
-      const now = Date.now();
-
-      const insertUser = this.db.query(`
-        INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, created_at)
-        VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6), ?2, ?3, ?4, ?5)
-        ON CONFLICT(profile_id, client_name) DO NOTHING
-      `);
-      for (const [clientName, userUuid] of Object.entries(config.USERS) as [string, string][]) {
-        insertUser.run(
-          profileName,
-          clientName,
-          createHmac("sha256", subLinkSecret)
-            .update(`${profileName}:${clientName}`)
-            .digest("base64url"),
-          userUuid,
-          now,
+    for (const node of nodes) {
+      const existing = this.listNodes(ownerId).find(
+        (n) => n.name === node.name,
+      );
+      if (!existing)
+        this.addNode(
+          node.name,
+          node.url,
+          node.secret,
+          node.inboundId,
           ownerId,
+          node.createdAt,
+          node.type ?? "xui",
         );
+      else if (node.createdAt > existing.createdAt) {
+        this.db
+          .query(
+            "UPDATE nodes SET url=?1,secret=?2,inbound_id=?3,type=?4,created_at=?5,host_id=NULL WHERE id=?6",
+          )
+          .run(
+            node.url,
+            node.secret,
+            node.inboundId,
+            node.type ?? "xui",
+            node.createdAt,
+            existing.id,
+          );
       }
-
-      const existingTemplates = new Set(
-        (
+    }
+    this.normalizeHosts();
+    for (const node of nodes)
+      if (node.hostName) {
+        const n = this.listNodes(ownerId).find((n) => n.name === node.name);
+        if (n?.hostId)
           this.db
-            .query(
-              "SELECT s.template FROM servers s JOIN profiles p ON p.id = s.profile_id WHERE p.name = ?1 AND p.owner_id = ?2",
-            )
-            .all(profileName, ownerId) as { template: string }[]
-        ).map((r) => r.template),
-      );
-      const existingNames = new Set(
-        (
-          this.db
-            .query(
-              "SELECT s.name FROM servers s JOIN profiles p ON p.id = s.profile_id WHERE p.name = ?1 AND p.owner_id = ?2",
-            )
-            .all(profileName, ownerId) as { name: string }[]
-        ).map((r) => r.name),
-      );
-
-      const getNextSortOrder = this.db.query(
-        "SELECT COALESCE(MAX(sort_order), -1) + 1 AS nextSortOrder FROM servers WHERE profile_id = (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?2)",
-      );
-      const insertServer = this.db.query(
-        `INSERT INTO servers (profile_id, name, sort_order, template, created_at)
-         VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6), ?2, ?3, ?4, ?5)`,
-      );
-
-      let counter = existingNames.size;
-      for (const template of config.SERVERS) {
-        if (existingTemplates.has(template)) continue;
-        counter++;
-        let name = `server-${counter}`;
-        while (existingNames.has(name)) {
-          counter++;
-          name = `server-${counter}`;
-        }
-        const row = getNextSortOrder.get(profileName, ownerId) as { nextSortOrder: number };
-        insertServer.run(profileName, name, row.nextSortOrder, template, now, ownerId);
-        existingNames.add(name);
-        existingTemplates.add(template);
+            .query("UPDATE hosts SET name=?1 WHERE id=?2 AND owner_id=?3")
+            .run(node.hostName, n.hostId, ownerId);
       }
-    });
-    tx();
   }
-
-  public mergeAllFromMultiProfileDump(dump: MultiProfileDump, ownerId: number): void {
-    const ensureProfile = this.db.query(`
-      INSERT INTO profiles (owner_id, name, created_at)
-      VALUES (?1, ?2, ?3)
-      ON CONFLICT(owner_id, name) DO NOTHING
-    `);
-    const upsertNode = this.db.query(`
-      INSERT INTO nodes (owner_id, name, url, secret, inbound_id, type, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-      ON CONFLICT(name) DO UPDATE SET
-        url = excluded.url,
-        secret = excluded.secret,
-        inbound_id = excluded.inbound_id,
-        type = excluded.type,
-        created_at = excluded.created_at
-      WHERE nodes.owner_id = ?1 AND excluded.created_at > nodes.created_at
-    `);
-    const upsertUser = this.db.query(`
-      INSERT INTO users (profile_id, client_name, subscription_token, user_uuid, credentials, created_at)
-      VALUES ((SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?7), ?2, ?3, ?4, ?5, ?6)
-      ON CONFLICT(profile_id, client_name) DO UPDATE SET
-        subscription_token = excluded.subscription_token,
-        user_uuid = excluded.user_uuid,
-        credentials = excluded.credentials,
-        created_at = excluded.created_at
-      WHERE excluded.created_at > users.created_at
-    `);
-    const upsertServer = this.db.query(`
-      INSERT INTO servers (profile_id, name, sort_order, template, created_at, node_id)
-      VALUES (
-        (SELECT id FROM profiles WHERE name = ?1 AND owner_id = ?6),
-        ?2, ?3, ?4, ?5,
-        (SELECT id FROM nodes WHERE name = ?7 AND owner_id = ?6)
-      )
-      ON CONFLICT(profile_id, name) DO UPDATE SET
-        sort_order = excluded.sort_order,
-        template = excluded.template,
-        created_at = excluded.created_at,
-        node_id = excluded.node_id
-      WHERE excluded.created_at > servers.created_at
-    `);
-
-    const tx = this.db.transaction(() => {
-      const now = Date.now();
-      for (const node of dump.nodes ?? []) {
-        upsertNode.run(ownerId, node.name, node.url, node.secret, node.inboundId, node.type ?? "xui", node.createdAt);
+  public replaceProfileFromFullDump(
+    profile: string,
+    dump: ProfileDump,
+    ownerId: number,
+  ): void {
+    this.db.transaction(() => {
+      const pid = this.profileId(profile, ownerId);
+      this.db.query("DELETE FROM users WHERE profile_id=?1").run(pid);
+      this.db
+        .query("DELETE FROM profile_connections WHERE profile_id=?1")
+        .run(pid);
+      this.mergeProfileFromFullDump(profile, dump, ownerId);
+    })();
+  }
+  public mergeProfileFromFullDump(
+    profile: string,
+    dump: ProfileDump,
+    ownerId: number,
+    connectionKeys = new Map<string, number>(),
+  ): void {
+    this.db.transaction(() => {
+      this.importNodes(dump.NODES ?? [], ownerId);
+      const pid = this.profileId(profile, ownerId);
+      for (const u of dump.USERS)
+        this.db
+          .query(
+            `INSERT INTO users(profile_id,client_name,subscription_token,user_uuid,credentials,created_at)
+        VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(profile_id,client_name) DO UPDATE SET
+        subscription_token=excluded.subscription_token,user_uuid=excluded.user_uuid,credentials=excluded.credentials,created_at=excluded.created_at
+        WHERE excluded.created_at>users.created_at`,
+          )
+          .run(
+            pid,
+            u.clientName,
+            u.subscriptionToken,
+            u.userUuid,
+            JSON.stringify(u.credentials ?? {}),
+            u.createdAt,
+          );
+      for (const c of dump.SERVERS) {
+        const old = this.listServerRecords(profile, ownerId).find(
+          (s) => s.name === c.name,
+        );
+        if (old && old.createdAt >= c.createdAt) continue;
+        if (old) this.removeServer(profile, c.name, ownerId);
+        const node = this.listNodes(ownerId).find((n) => n.name === c.nodeName);
+        const shared = c.connectionKey
+          ? connectionKeys.get(c.connectionKey)
+          : undefined;
+        if (shared !== undefined)
+          this.db
+            .query(
+              "INSERT INTO profile_connections(profile_id,connection_id,name,sort_order) VALUES (?1,?2,?3,?4)",
+            )
+            .run(pid, shared, c.name, c.sortOrder);
+        else
+          this.addServer(
+            profile,
+            c.name,
+            c.template,
+            c.createdAt,
+            ownerId,
+            node?.id ?? null,
+          );
+        this.setDisplayName(profile, c.name, c.displayName ?? null, ownerId);
+        this.db
+          .query(
+            "UPDATE profile_connections SET sort_order=?1 WHERE profile_id=?2 AND name=?3",
+          )
+          .run(c.sortOrder, pid, c.name);
       }
-      for (const [profileName, profileData] of Object.entries(dump.profiles)) {
-        ensureProfile.run(ownerId, profileName, now);
-        for (const user of profileData.USERS) {
-          upsertUser.run(profileName, user.clientName, user.subscriptionToken, user.userUuid, JSON.stringify(user.credentials ?? {}), user.createdAt, ownerId);
-        }
-        for (const server of profileData.SERVERS) {
-          upsertServer.run(profileName, server.name, server.sortOrder, server.template, server.createdAt, ownerId, server.nodeName ?? null);
-        }
+    })();
+  }
+  public mergeProfileFromLegacyConfig(
+    profile: string,
+    config: LegacyConfig,
+    secret: string,
+    ownerId: number,
+  ): void {
+    this.db.transaction(() => {
+      for (const [name, uuid] of Object.entries(config.USERS))
+        if (
+          !this.listUsers(profile, ownerId).some((u) => u.clientName === name)
+        )
+          this.addUser(
+            profile,
+            name,
+            createHmac("sha256", secret)
+              .update(`${profile}:${name}`)
+              .digest("base64url"),
+            uuid,
+            Date.now(),
+            ownerId,
+          );
+      let n = this.listServerRecords(profile, ownerId).length;
+      for (const template of config.SERVERS) {
+        if (this.listServers(profile, ownerId).includes(template)) continue;
+        let name: string;
+        do {
+          name = `server-${++n}`;
+        } while (
+          this.listServerRecords(profile, ownerId).some((s) => s.name === name)
+        );
+        this.addServer(profile, name, template, Date.now(), ownerId);
       }
-    });
-    tx();
+    })();
+  }
+  public mergeAllFromMultiProfileDump(
+    dump: MultiProfileDump,
+    ownerId: number,
+  ): void {
+    this.db.transaction(() => {
+      for (const h of dump.hosts ?? []) {
+        const old = this.db
+          .query(
+            "SELECT id FROM hosts WHERE owner_id=?1 AND url=?2 AND secret=?3",
+          )
+          .get(ownerId, h.url, h.secret) as { id: number } | null;
+        if (!old) this.saveHost(null, h.name, h.url, h.secret, ownerId);
+      }
+      this.importNodes(dump.nodes ?? [], ownerId);
+      const connectionKeys = new Map<string, number>();
+      const claimed = new Set<number>();
+      for (const c of dump.connections ?? []) {
+        const nodeId =
+          this.listNodes(ownerId).find((n) => n.name === c.nodeName)?.id ??
+          null;
+        const existing = this.listConnections(ownerId).find(
+          (x) =>
+            !claimed.has(x.id) &&
+            x.name === c.name &&
+            x.template === c.template &&
+            x.nodeId === nodeId,
+        );
+        const id =
+          existing?.id ??
+          Number(
+            this.db
+              .query(
+                "INSERT INTO connections(owner_id,name,template,node_id,created_at) VALUES (?1,?2,?3,?4,?5)",
+              )
+              .run(ownerId, c.name, c.template, nodeId, c.createdAt)
+              .lastInsertRowid,
+          );
+        connectionKeys.set(c.key, id);
+        claimed.add(id);
+      }
+      for (const [profile, data] of Object.entries(dump.profiles)) {
+        if (!this.getProfile(profile, ownerId))
+          this.createProfile(profile, ownerId, Date.now());
+        this.mergeProfileFromFullDump(profile, data, ownerId, connectionKeys);
+      }
+    })();
   }
 
   // Node methods
@@ -957,7 +1596,7 @@ export class SqliteStorage implements Storage {
   public listNodes(ownerId: number): NodeRecord[] {
     return this.db
       .query(
-        "SELECT id, name, url, secret, inbound_id AS inboundId, type, created_at AS createdAt FROM nodes WHERE owner_id = ?1 ORDER BY created_at, id",
+        "SELECT n.id,n.name,h.url || n.backend_path AS url,h.secret,n.inbound_id AS inboundId,n.type,n.created_at AS createdAt,n.host_id AS hostId,n.backend_path AS backendPath FROM nodes n JOIN hosts h ON h.id=n.host_id WHERE n.owner_id=?1 ORDER BY n.created_at,n.id",
       )
       .all(ownerId) as NodeRecord[];
   }
@@ -966,7 +1605,7 @@ export class SqliteStorage implements Storage {
     return (
       (this.db
         .query(
-          "SELECT id, name, url, secret, inbound_id AS inboundId, type, created_at AS createdAt FROM nodes WHERE id = ?1 AND owner_id = ?2",
+          "SELECT n.id,n.name,h.url || n.backend_path AS url,h.secret,n.inbound_id AS inboundId,n.type,n.created_at AS createdAt,n.host_id AS hostId,n.backend_path AS backendPath FROM nodes n JOIN hosts h ON h.id=n.host_id WHERE n.id=?1 AND n.owner_id=?2",
         )
         .get(id, ownerId) as NodeRecord | null) ?? null
     );
@@ -988,11 +1627,15 @@ export class SqliteStorage implements Storage {
         )
         .run(ownerId, name, url, secret, inboundId, type, createdAt);
     } catch (err) {
-      if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+      if (
+        err instanceof Error &&
+        err.message.includes("UNIQUE constraint failed")
+      ) {
         throw new Error(`Node "${name}" already exists.`);
       }
       throw err;
     }
+    this.normalizeHosts();
     return this.db
       .query(
         "SELECT id, name, url, secret, inbound_id AS inboundId, type, created_at AS createdAt FROM nodes WHERE name = ?1 AND owner_id = ?2",
@@ -1003,7 +1646,9 @@ export class SqliteStorage implements Storage {
   public updateNode(
     id: number,
     ownerId: number,
-    updates: Partial<Pick<NodeRecord, "name" | "url" | "secret" | "inboundId" | "type">>,
+    updates: Partial<
+      Pick<NodeRecord, "name" | "url" | "secret" | "inboundId" | "type">
+    >,
   ): boolean {
     const tx = this.db.transaction(() => {
       let changed = false;
@@ -1026,7 +1671,9 @@ export class SqliteStorage implements Storage {
       if (updates.secret !== undefined) {
         if (
           this.db
-            .query("UPDATE nodes SET secret = ?1 WHERE id = ?2 AND owner_id = ?3")
+            .query(
+              "UPDATE nodes SET secret = ?1 WHERE id = ?2 AND owner_id = ?3",
+            )
             .run(updates.secret, id, ownerId).changes > 0
         )
           changed = true;
@@ -1034,7 +1681,9 @@ export class SqliteStorage implements Storage {
       if (updates.inboundId !== undefined) {
         if (
           this.db
-            .query("UPDATE nodes SET inbound_id = ?1 WHERE id = ?2 AND owner_id = ?3")
+            .query(
+              "UPDATE nodes SET inbound_id = ?1 WHERE id = ?2 AND owner_id = ?3",
+            )
             .run(updates.inboundId, id, ownerId).changes > 0
         )
           changed = true;
@@ -1046,6 +1695,18 @@ export class SqliteStorage implements Storage {
             .run(updates.type, id, ownerId).changes > 0
         )
           changed = true;
+      }
+      if (updates.url !== undefined || updates.secret !== undefined) {
+        const current = this.getNode(id, ownerId);
+        if (current)
+          this.db
+            .query("UPDATE nodes SET url=?1,secret=?2,host_id=NULL WHERE id=?3")
+            .run(
+              updates.url ?? current.url,
+              updates.secret ?? current.secret,
+              id,
+            );
+        this.normalizeHosts();
       }
       return changed;
     });
@@ -1059,16 +1720,14 @@ export class SqliteStorage implements Storage {
     return result.changes > 0;
   }
 
-  public listNodesForProfile(profileName: string, ownerId: number): NodeRecord[] {
-    return this.db
-      .query(
-        `SELECT DISTINCT n.id, n.name, n.url, n.secret, n.inbound_id AS inboundId, n.type, n.created_at AS createdAt
-         FROM nodes n
-         JOIN servers s ON s.node_id = n.id
-         JOIN profiles p ON p.id = s.profile_id
-         WHERE p.name = ?1 AND p.owner_id = ?2`,
-      )
-      .all(profileName, ownerId) as NodeRecord[];
+  public listNodesForProfile(
+    profileName: string,
+    ownerId: number,
+  ): NodeRecord[] {
+    const ids = new Set(
+      this.listServerRecords(profileName, ownerId).map((s) => s.nodeId),
+    );
+    return this.listNodes(ownerId).filter((n) => ids.has(n.id));
   }
 
   public close(): void {
@@ -1076,65 +1735,123 @@ export class SqliteStorage implements Storage {
   }
 }
 
-export function buildProfileDump(storage: Storage, profileName: string, ownerId: number): ProfileDump {
+export function buildProfileDump(
+  storage: Storage,
+  profileName: string,
+  ownerId: number,
+): ProfileDump {
   const nodes = storage.listNodesForProfile(profileName, ownerId);
   const nodeNameById = new Map(nodes.map((n) => [n.id, n.name]));
   return {
-    USERS: storage.listUsers(profileName, ownerId).map(({ clientName, userUuid, subscriptionToken, credentials, createdAt }) => ({
-      clientName,
-      userUuid,
-      subscriptionToken,
-      credentials,
-      createdAt,
-    })),
-    SERVERS: storage.listServerRecords(profileName, ownerId).map(({ name, sortOrder, template, createdAt, nodeId }) => ({
-      name,
-      sortOrder,
-      template,
-      createdAt,
-      nodeName: nodeId != null ? (nodeNameById.get(nodeId) ?? null) : null,
-    })),
-    NODES: nodes.map(({ name, url, secret, inboundId, type, createdAt }) => ({
-      name,
-      url,
-      secret,
-      inboundId,
-      type,
-      createdAt,
-    })),
+    USERS: storage
+      .listUsers(profileName, ownerId)
+      .map(
+        ({
+          clientName,
+          userUuid,
+          subscriptionToken,
+          credentials,
+          createdAt,
+        }) => ({
+          clientName,
+          userUuid,
+          subscriptionToken,
+          credentials,
+          createdAt,
+        }),
+      ),
+    SERVERS: storage
+      .listServerRecords(profileName, ownerId)
+      .map(({ name, sortOrder, template, createdAt, nodeId, displayName }) => ({
+        displayName,
+        name,
+        sortOrder,
+        template,
+        createdAt,
+        nodeName: nodeId != null ? (nodeNameById.get(nodeId) ?? null) : null,
+      })),
+    NODES: nodes.map(
+      ({ name, url, secret, inboundId, type, createdAt, hostId }) => ({
+        hostName: storage.listHosts(ownerId).find((h) => h.id === hostId)?.name,
+        name,
+        url,
+        secret,
+        inboundId,
+        type,
+        createdAt,
+      }),
+    ),
   };
 }
 
-export function buildMultiProfileDump(storage: Storage, ownerId: number): MultiProfileDump {
+export function buildMultiProfileDump(
+  storage: Storage,
+  ownerId: number,
+): MultiProfileDump {
   const profiles = storage.listProfiles(ownerId);
   const allNodes = storage.listNodes(ownerId);
   const nodeNameById = new Map(allNodes.map((n) => [n.id, n.name]));
   const result: MultiProfileDump = {
     profiles: {},
-    nodes: allNodes.map(({ name, url, secret, inboundId, type, createdAt }) => ({
-      name,
-      url,
-      secret,
-      inboundId,
-      type,
-      createdAt,
+    hosts: storage.exportHosts(ownerId).map(({ id, ...host }) => host),
+    connections: storage.listConnections(ownerId).map((c) => ({
+      key: `connection-${c.id}`,
+      name: c.name,
+      template: c.template,
+      nodeName: c.nodeId === null ? null : (nodeNameById.get(c.nodeId) ?? null),
+      createdAt: c.createdAt,
     })),
+    nodes: allNodes.map(
+      ({ name, url, secret, inboundId, type, createdAt, hostId }) => ({
+        hostName: storage.listHosts(ownerId).find((h) => h.id === hostId)?.name,
+        name,
+        url,
+        secret,
+        inboundId,
+        type,
+        createdAt,
+      }),
+    ),
   };
   for (const profile of profiles) {
-    const users = storage.listUsers(profile.name, ownerId).map(({ clientName, userUuid, subscriptionToken, credentials, createdAt }) => ({
-      clientName,
-      userUuid,
-      subscriptionToken,
-      credentials,
-      createdAt,
-    }));
-    const servers = storage.listServerRecords(profile.name, ownerId).map(({ name, sortOrder, template, createdAt, nodeId }) => ({
-      name,
-      sortOrder,
-      template,
-      createdAt,
-      nodeName: nodeId != null ? (nodeNameById.get(nodeId) ?? null) : null,
-    }));
+    const users = storage
+      .listUsers(profile.name, ownerId)
+      .map(
+        ({
+          clientName,
+          userUuid,
+          subscriptionToken,
+          credentials,
+          createdAt,
+        }) => ({
+          clientName,
+          userUuid,
+          subscriptionToken,
+          credentials,
+          createdAt,
+        }),
+      );
+    const servers = storage
+      .listServerRecords(profile.name, ownerId)
+      .map(
+        ({
+          name,
+          sortOrder,
+          template,
+          createdAt,
+          nodeId,
+          connectionId,
+          displayName,
+        }) => ({
+          displayName,
+          connectionKey: `connection-${connectionId}`,
+          name,
+          sortOrder,
+          template,
+          createdAt,
+          nodeName: nodeId != null ? (nodeNameById.get(nodeId) ?? null) : null,
+        }),
+      );
     result.profiles[profile.name] = { USERS: users, SERVERS: servers };
   }
   return result;

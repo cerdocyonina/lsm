@@ -22,28 +22,38 @@ function require(env: Env, name: string): string {
 }
 
 /** Собирает один бэкенд из декларативного описания (одна запись backends.json). */
-export function createBackendFromSpec(name: string, spec: Record<string, unknown>): NodeBackend {
+export function createBackendFromSpec(
+  name: string,
+  spec: Record<string, unknown>,
+): NodeBackend {
   const kind = spec.kind;
   const str = (key: string): string => {
     const v = spec[key];
-    if (typeof v !== "string" || !v) throw new Error(`backend "${name}": "${key}" must be a non-empty string`);
+    if (typeof v !== "string" || !v)
+      throw new Error(`backend "${name}": "${key}" must be a non-empty string`);
     return v;
   };
   const num = (key: string): number => {
     const v = spec[key];
-    if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`backend "${name}": "${key}" must be a number`);
+    if (typeof v !== "number" || !Number.isFinite(v))
+      throw new Error(`backend "${name}": "${key}" must be a number`);
     return v;
   };
   const optStr = (key: string): string | undefined => {
     const v = spec[key];
     if (v === undefined) return undefined;
-    if (typeof v !== "string") throw new Error(`backend "${name}": "${key}" must be a string`);
+    if (typeof v !== "string")
+      throw new Error(`backend "${name}": "${key}" must be a string`);
     return v;
   };
 
   switch (kind) {
     case "naive":
-      return new CaddyBackend({ usersFile: str("usersFile"), container: str("container"), probeUrl: optStr("probeUrl") });
+      return new CaddyBackend({
+        usersFile: str("usersFile"),
+        container: str("container"),
+        probeUrl: optStr("probeUrl"),
+      });
     case "shadowsocks":
       return new ShadowsocksBackend({
         configFile: str("configFile"),
@@ -54,17 +64,30 @@ export function createBackendFromSpec(name: string, spec: Record<string, unknown
         listen: optStr("listen"),
       });
     case "xui":
-      return new XuiBackend(new XUIService({ host: str("host"), user: str("user"), password: str("password") }));
+      return new XuiBackend(
+        new XUIService({
+          host: str("host"),
+          user: str("user"),
+          password: str("password"),
+        }),
+      );
     case "mieru":
       // baseConfig — серверный конфиг mita без users (portBindings, mtu, trafficPattern, ...).
       // users рендерит сам бэкенд на каждом синке.
       try {
-        return new MieruBackend({ baseConfig: validateBaseConfig(spec.baseConfig), mitaBin: optStr("mitaBin") });
+        return new MieruBackend({
+          baseConfig: validateBaseConfig(spec.baseConfig),
+          mitaBin: optStr("mitaBin"),
+        });
       } catch (err) {
-        throw new Error(`backend "${name}": ${err instanceof Error ? err.message : String(err)}`);
+        throw new Error(
+          `backend "${name}": ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     default:
-      throw new Error(`backend "${name}": unknown kind ${JSON.stringify(kind)}`);
+      throw new Error(
+        `backend "${name}": unknown kind ${JSON.stringify(kind)}`,
+      );
   }
 }
 
@@ -80,7 +103,11 @@ function buildLegacyBackend(env: Env): NodeBackend {
   }
   if (provider === "xui") {
     return new XuiBackend(
-      new XUIService({ host: require(env, "XUI_HOST"), user: require(env, "XUI_USER"), password: require(env, "XUI_PASSWORD") }),
+      new XUIService({
+        host: require(env, "XUI_HOST"),
+        user: require(env, "XUI_USER"),
+        password: require(env, "XUI_PASSWORD"),
+      }),
     );
   }
   throw new Error(`PROVIDER must be "xui" or "naive", got "${provider}"`);
@@ -107,11 +134,29 @@ export function buildBackends(env: Env): BackendRegistry {
     };
     const specs = raw.backends ?? {};
     const names = Object.keys(specs);
-    if (names.length === 0) throw new Error(`${configPath}: "backends" must have at least one entry`);
+    if (names.length === 0)
+      throw new Error(`${configPath}: "backends" must have at least one entry`);
     const backends = new Map<string, NodeBackend>();
-    for (const name of names) backends.set(name, createBackendFromSpec(name, specs[name]!));
+    for (const name of names) {
+      if (
+        !/^[A-Za-z0-9_-]+$/.test(name) ||
+        [
+          "backends",
+          "health",
+          "sync-users",
+          "sync-user",
+          "delete-user",
+          "check-conflicts",
+        ].includes(name)
+      )
+        throw new Error(`Invalid or reserved backend name: ${name}`);
+      backends.set(name, createBackendFromSpec(name, specs[name]!));
+    }
     const defaultName = raw.default ?? names[0]!;
-    if (!backends.has(defaultName)) throw new Error(`${configPath}: default "${defaultName}" is not a defined backend`);
+    if (!backends.has(defaultName))
+      throw new Error(
+        `${configPath}: default "${defaultName}" is not a defined backend`,
+      );
     return { backends, defaultName };
   }
 

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 // Legacy "plain" format: { USERS: { name: uuid }, SERVERS: [template, ...] }
@@ -20,6 +19,7 @@ export const fullDumpUserSchema = z.object({
 });
 
 export const fullDumpNodeSchema = z.object({
+  hostName: z.string().optional(),
   name: z.string().min(1),
   url: z.string().url(),
   secret: z.string().min(1),
@@ -30,6 +30,8 @@ export const fullDumpNodeSchema = z.object({
 });
 
 export const fullDumpServerSchema = z.object({
+  connectionKey: z.string().optional(),
+  displayName: z.string().nullable().optional(),
   name: z.string().min(1),
   sortOrder: z.number().int().nonnegative(),
   template: z.string().min(1),
@@ -56,6 +58,27 @@ export type ProfileDump = FullDump;
 export const multiProfileDumpSchema = z.object({
   profiles: z.record(z.string().min(1), profileDumpSchema),
   nodes: z.array(fullDumpNodeSchema).optional(),
+  hosts: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        url: z.url(),
+        secret: z.string().min(1),
+        createdAt: z.number(),
+      }),
+    )
+    .optional(),
+  connections: z
+    .array(
+      z.object({
+        key: z.string(),
+        name: z.string().min(1),
+        template: z.string().min(1),
+        nodeName: z.string().nullable(),
+        createdAt: z.number(),
+      }),
+    )
+    .optional(),
 });
 export type MultiProfileDump = z.infer<typeof multiProfileDumpSchema>;
 
@@ -63,26 +86,6 @@ export type ParsedDump =
   | { kind: "multi-profile"; data: MultiProfileDump }
   | { kind: "single-profile"; data: ProfileDump }
   | { kind: "legacy"; data: LegacyConfig };
-
-function readAndParseJsonFile(path: string): unknown {
-  let fileContent: string;
-
-  try {
-    fileContent = readFileSync(path, "utf8");
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "unknown file read error";
-    throw new Error(`Failed to read file at ${path}: ${message}`);
-  }
-
-  try {
-    return JSON.parse(fileContent);
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "unknown JSON parse error";
-    throw new Error(`Failed to parse JSON at ${path}: ${message}`);
-  }
-}
 
 export function parseDumpOrThrow(data: unknown): ParsedDump {
   if (data !== null && typeof data === "object") {
@@ -95,10 +98,15 @@ export function parseDumpOrThrow(data: unknown): ParsedDump {
       !Array.isArray(obj.profiles)
     ) {
       try {
-        return { kind: "multi-profile", data: multiProfileDumpSchema.parse(data) };
+        return {
+          kind: "multi-profile",
+          data: multiProfileDumpSchema.parse(data),
+        };
       } catch (error) {
         if (error instanceof z.ZodError) {
-          throw new Error(`Invalid multi-profile dump format: ${z.prettifyError(error)}`);
+          throw new Error(
+            `Invalid multi-profile dump format: ${z.prettifyError(error)}`,
+          );
         }
         throw error;
       }
@@ -109,7 +117,9 @@ export function parseDumpOrThrow(data: unknown): ParsedDump {
         return { kind: "single-profile", data: profileDumpSchema.parse(data) };
       } catch (error) {
         if (error instanceof z.ZodError) {
-          throw new Error(`Invalid single-profile dump format: ${z.prettifyError(error)}`);
+          throw new Error(
+            `Invalid single-profile dump format: ${z.prettifyError(error)}`,
+          );
         }
         throw error;
       }
@@ -120,65 +130,10 @@ export function parseDumpOrThrow(data: unknown): ParsedDump {
     return { kind: "legacy", data: legacyConfigSchema.parse(data) };
   } catch (error) {
     if (error instanceof z.ZodError) {
-      throw new Error(`Unrecognized or invalid import format: ${z.prettifyError(error)}`);
+      throw new Error(
+        `Unrecognized or invalid import format: ${z.prettifyError(error)}`,
+      );
     }
-    throw error;
-  }
-}
-
-export function loadDumpOrThrow(path: string): ParsedDump {
-  const parsedJson = readAndParseJsonFile(path);
-
-  if (parsedJson !== null && typeof parsedJson === "object") {
-    const obj = parsedJson as Record<string, unknown>;
-
-    // Multi-profile dump: has "profiles" key that is an object (not array)
-    if ("profiles" in obj && obj.profiles !== null && typeof obj.profiles === "object" && !Array.isArray(obj.profiles)) {
-      try {
-        return { kind: "multi-profile", data: multiProfileDumpSchema.parse(parsedJson) };
-      } catch (error) {
-        if (error instanceof z.ZodError) {
-          throw new Error(`Invalid multi-profile dump format at ${path}: ${z.prettifyError(error)}`);
-        }
-        throw error;
-      }
-    }
-
-    // Single-profile full dump: USERS is an array
-    if (Array.isArray(obj.USERS)) {
-      try {
-        return { kind: "single-profile", data: profileDumpSchema.parse(parsedJson) };
-      } catch (error) {
-        if (error instanceof z.ZodError) {
-          throw new Error(`Invalid full dump format at ${path}: ${z.prettifyError(error)}`);
-        }
-        throw error;
-      }
-    }
-  }
-
-  // Legacy plain format
-  try {
-    return { kind: "legacy", data: legacyConfigSchema.parse(parsedJson) };
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      throw new Error(`Invalid config format at ${path}: ${z.prettifyError(error)}`);
-    }
-    throw error;
-  }
-}
-
-/** @deprecated Use loadDumpOrThrow instead */
-export function loadLegacyAppConfigOrThrow(path: string): LegacyConfig {
-  const parsedJson = readAndParseJsonFile(path);
-
-  try {
-    return legacyConfigSchema.parse(parsedJson);
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      throw new Error(z.prettifyError(error));
-    }
-
     throw error;
   }
 }
