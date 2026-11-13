@@ -26,6 +26,14 @@ describe("buildHealthPayload", () => {
     });
   });
 
+  test("xray-нода отдаёт поле xray", () => {
+    expect(buildHealthPayload("xray", { ok: true }, { version: "2.1.0" })).toEqual({
+      ok: true,
+      version: "2.1.0",
+      xray: { ok: true },
+    });
+  });
+
   test("ошибка бэкенда прокидывается", () => {
     expect(buildHealthPayload("naive", { ok: false, error: "ECONNREFUSED" }, { version: "1.3.0" })).toEqual({
       ok: true,

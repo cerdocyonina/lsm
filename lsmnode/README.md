@@ -152,10 +152,10 @@ Authorization: Bearer <SHARED_SECRET>
 
 `/sync-user`, `/delete-user` и `/check-conflicts` ниже оставлены для старых мастеров.
 
-### `POST /sync-users` (naive / shadowsocks / mieru)
+### `POST /sync-users` (naive / shadowsocks / mieru / xray)
 
 Декларативный синк: принимает **весь** целевой список и перерендеривает конфиг провайдера
-(Caddy, Xray или mita).
+(Caddy, Xray или mita). У `xray` `pass` — это UUID клиента VLESS.
 Отсутствующие в списке юзеры тем самым отзываются.
 
 ```json
@@ -230,3 +230,118 @@ sudo ufw allow 8444:8453/tcp
   `{user}` = `<профиль>.<клиент>` (как у naive), `{mpass}` — отдельный пароль mieru;
 - HTTP-пинг mieru требует клиент `mieru` в `PATH` мастера (поднимается временно с конфигом из
   `MIERU_CONFIG_JSON_FILE`, socks5 → curl). Часы мастера тоже должны быть точными.
+
+## Xray без 3x-ui (VLESS)
+
+Голый Xray, без панели. Xray запускается с `-confdir`: базовый конфиг (log, outbounds, routing)
+оператор пишет сам, а агенту принадлежит **один файл** в той же папке — с managed-инбаундом
+и всеми клиентами в нём. Синк декларативный: мастер шлёт весь список
+(`<профиль>.<клиент>` + UUID юзера), агент рендерит файл, проверяет всю папку
+`xray run -test`, атомарно подменяет файл и рестартит Xray (у Xray нет hot-reload конфига:
+живые соединения на мгновение рвутся, клиенты переподключаются сами). Если `-test` упал —
+синк возвращает ошибку, а работающий Xray и его файл не тронуты. Пустой список —
+`clients: []`, VLESS никого не пускает.
+
+Пока поддерживается только VLESS; flow по умолчанию — `xtls-rprx-vision` на TCP + REALITY/TLS
+(иначе без flow), переопределяется полем `flow` (`""` — выключить).
+
+### Установка на узле
+
+```bash
+# 1. Xray (официальный скрипт: /usr/local/bin/xray, геофайлы в /usr/local/share/xray;
+#    свежий установщик сам заводит юзера xray и запускает сервис от него)
+sudo bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+
+# 2. папка конфигов: владелец — юзер lsm-node, группа — xray (setgid: новые файлы агента
+#    наследуют группу, Xray читает их через неё). НЕ внутри /usr/local/etc/xray: установщик
+#    при каждом обновлении переводит её в root:xray 750/640, и агент потерял бы запись.
+sudo install -d -o "$(whoami)" -g xray -m 2750 /usr/local/etc/xray-lsm
+
+# 3. запуск из папки (User/Group — для старых установщиков, которые запускали от nobody)
+sudo tee /etc/systemd/system/xray.service.d/20-lsm.conf >/dev/null <<'UNIT'
+[Service]
+User=xray
+Group=xray
+ExecStart=
+ExecStart=/usr/local/bin/xray run -confdir /usr/local/etc/xray-lsm
+UNIT
+sudo systemctl daemon-reload
+
+# 4. базовый конфиг (без секретов, 0644 — агент читает его для `xray run -test`)
+sudo install -m 0644 -o root -g xray 00-base.json /usr/local/etc/xray-lsm/00-base.json
+
+# 5. агенту можно рестартить Xray без пароля — ровно эту команду
+echo "$(whoami) ALL=(root) NOPASSWD: /usr/bin/systemctl restart xray" | sudo tee /etc/sudoers.d/lsm-xray
+sudo chmod 440 /etc/sudoers.d/lsm-xray
+sudo systemctl restart xray
+```
+
+Если установщик падает на запросе к GitHub API (бывает у провайдеров, где GitHub рвёт
+большие ответы или HTTP/2): скачать `Xray-linux-64.zip` (+ `.dgst`) и `geoip.dat`/`geosite.dat`
+(Loyalsoldier, + `.sha256sum`) через `curl --http1.1`, сверить хэши и поставить
+`install --local Xray-linux-64.zip --geoip geoip.dat --geosite geosite.dat`.
+
+`00-base.json` — всё, кроме инбаунда агента, например:
+
+```json
+{
+  "log": { "loglevel": "warning", "access": "none" },
+  "outbounds": [
+    { "tag": "direct", "protocol": "freedom" },
+    { "tag": "blocked", "protocol": "blackhole" }
+  ],
+  "routing": {
+    "rules": [
+      { "ip": ["geoip:private"], "outboundTag": "blocked" },
+      { "protocol": ["bittorrent"], "outboundTag": "blocked" }
+    ]
+  }
+}
+```
+
+### `backends.json`
+
+```json
+{
+  "default": "vless",
+  "backends": {
+    "vless": {
+      "kind": "xray",
+      "inboundFile": "/usr/local/etc/xray-lsm/10-vless.json",
+      "inbound": {
+        "tag": "vless-reality",
+        "port": 443,
+        "protocol": "vless",
+        "settings": { "decryption": "none" },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "reality",
+          "realitySettings": {
+            "target": "127.0.0.1:8443",
+            "serverNames": ["node.example.com"],
+            "privateKey": "<xray x25519: PrivateKey>",
+            "shortIds": ["<openssl rand -hex 8>"]
+          }
+        },
+        "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] }
+      }
+    }
+  }
+}
+```
+
+- `inboundFile` — абсолютный путь к файлу агента внутри `-confdir`. Его целиком переписывает
+  каждый синк, руками не править. Порядок загрузки — по имени файла, как у Xray.
+- `inbound` — обычный xray-инбаунд **без** `settings.clients` (их владелец — агент). Ключ REALITY
+  лежит здесь, так что `backends.json` — `chmod 600`.
+- `restartCommand` — чем применить файл (по умолчанию `["sudo", "-n", "systemctl", "restart", "xray"]`;
+  для docker — `["docker", "restart", "xray"]`).
+- `xrayBin` — бинарь для `xray run -test`, если `xray` не в `PATH`.
+- `/health` — TCP-коннект на порт инбаунда (поле `xray`).
+
+### На мастере
+
+- сервер: тип **VLESS · Xray**, путь `/vless` (имя бэкенда из `backends.json`);
+- шаблон — как у 3x-ui:
+  `vless://{uuid}@{ip}:443?type=tcp&security=reality&flow=xtls-rprx-vision&sni=node.example.com&fp=firefox&pbk=<PublicKey>&sid=<shortId>&spx=%2F#🇩🇪 DE`.
+  `{uuid}` — тот же UUID юзера, что уходит агенту. HTTP-пинг работает как для 3x-ui.

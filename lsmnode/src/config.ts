@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { XUIService } from "../../src/3x-ui";
 import { CaddyBackend } from "./backends/caddy";
 import { MieruBackend, validateBaseConfig } from "./backends/mieru";
 import { ShadowsocksBackend } from "./backends/shadowsocks";
+import { validateInbound, XrayBackend } from "./backends/xray";
 import type { NodeBackend } from "./backends/types";
 import { XuiBackend } from "./backends/xui";
 
@@ -46,6 +48,13 @@ export function createBackendFromSpec(
       throw new Error(`backend "${name}": "${key}" must be a string`);
     return v;
   };
+  const optArgv = (key: string): string[] | undefined => {
+    const v = spec[key];
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v) || v.length === 0 || v.some((a) => typeof a !== "string" || !a))
+      throw new Error(`backend "${name}": "${key}" must be a non-empty array of strings`);
+    return v as string[];
+  };
 
   switch (kind) {
     case "naive":
@@ -84,6 +93,27 @@ export function createBackendFromSpec(
           `backend "${name}": ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+    case "xray": {
+      // inbound — обычный xray-inbound без settings.clients; клиентов рендерит бэкенд.
+      const inboundFile = str("inboundFile");
+      if (!isAbsolute(inboundFile))
+        throw new Error(`backend "${name}": "inboundFile" must be an absolute path`);
+      let inbound;
+      try {
+        inbound = validateInbound(spec.inbound);
+      } catch (err) {
+        throw new Error(
+          `backend "${name}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return new XrayBackend({
+        inboundFile,
+        inbound,
+        flow: optStr("flow"),
+        xrayBin: optStr("xrayBin"),
+        restartCommand: optArgv("restartCommand"),
+      });
+    }
     default:
       throw new Error(
         `backend "${name}": unknown kind ${JSON.stringify(kind)}`,

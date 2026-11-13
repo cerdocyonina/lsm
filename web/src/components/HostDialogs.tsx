@@ -47,8 +47,8 @@ export function HostEditor({
           <Modal.Body>
             {error && <Alert variant="danger">{error}</Alert>}
             <p className="text-body-secondary small">
-              A host is one machine running <code>lsmnode</code>. All its servers (3x-ui inbounds, NaïveProxy, SS2022,
-              mieru) are reached through this one agent.
+              A host is one machine running <code>lsmnode</code>. All its servers (3x-ui inbounds, bare Xray VLESS,
+              NaïveProxy, SS2022, mieru) are reached through this one agent.
             </p>
             <Form.Group className="mb-3" controlId="host-name">
               <Form.Label className="fw-semibold">Name</Form.Label>

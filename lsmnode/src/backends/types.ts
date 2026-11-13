@@ -16,13 +16,13 @@ import type { ClientOutcome, ClientSyncRequest } from "../../../src/3x-ui";
 
 export type NaiveUser = { user: string; pass: string };
 
-export type BackendKind = "xui" | "naive" | "shadowsocks" | "mieru";
+export type BackendKind = "xui" | "naive" | "shadowsocks" | "mieru" | "xray";
 
 /**
  * Общий контракт для провайдеров, которыми управляет нода.
  *
  * Методы опциональны, потому что у провайдеров разная природа:
- * 3x-ui императивен (панель принимает per-user add/delete), а Caddy, Xray-ss и mita
+ * 3x-ui императивен (панель принимает per-user add/delete), а Caddy, Xray (ss и vless) и mita
  * декларативны (весь список юзеров рендерится в конфиг разом). Роутер отдаёт 400
  * на эндпоинт, которого у текущего бэкенда нет.
  */
@@ -37,6 +37,6 @@ export interface NodeBackend {
   /** Batch, UUID-aware sync of one inbound (lsmnode ≥ 2.0). */
   syncClients?(req: ClientSyncRequest): Promise<{ results: ClientOutcome[] }>;
 
-  // naive / shadowsocks / mieru: декларативный полный список
+  // naive / shadowsocks / mieru / xray: декларативный полный список (у xray pass = UUID)
   syncUsers?(users: NaiveUser[]): Promise<{ synced: number; error?: string }>;
 }

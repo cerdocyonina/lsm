@@ -71,7 +71,7 @@ export function renderMitaConfig(base: MitaBaseConfig, users: NaiveUser[]): stri
   return JSON.stringify(config, null, 2) + "\n";
 }
 
-async function spawnCommand(argv: string[]): Promise<CommandResult> {
+export async function spawnCommand(argv: string[]): Promise<CommandResult> {
   const proc = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -81,7 +81,7 @@ async function spawnCommand(argv: string[]): Promise<CommandResult> {
   return { exitCode, stdout, stderr };
 }
 
-function describeFailure(argv: string[], res: CommandResult): string {
+export function describeFailure(argv: string[], res: CommandResult): string {
   const output = (res.stderr.trim() || res.stdout.trim()).split("\n").slice(-3).join(" | ");
   return `${argv.join(" ")} failed (exit ${res.exitCode})${output ? `: ${output}` : ""}`;
 }

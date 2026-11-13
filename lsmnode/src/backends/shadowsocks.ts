@@ -75,9 +75,9 @@ async function dockerRestart(container: string): Promise<void> {
   }
 }
 
-function tcpProbe(port: number, timeoutMs = 3000): Promise<boolean> {
+export function tcpProbe(port: number, timeoutMs = 3000, host = "127.0.0.1"): Promise<boolean> {
   return new Promise((resolve) => {
-    const sock = connect({ host: "127.0.0.1", port });
+    const sock = connect({ host, port });
     const done = (ok: boolean) => {
       sock.destroy();
       resolve(ok);

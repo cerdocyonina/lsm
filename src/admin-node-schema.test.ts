@@ -29,6 +29,12 @@ describe("createNodeSchema", () => {
     expect(parsed.inboundId).toBe(0);
   });
 
+  test("xray (bare Xray VLESS) is declarative: no inboundId, stored as 0", () => {
+    const parsed = createNodeSchema.parse({ ...base, type: "xray" });
+    expect(parsed.type).toBe("xray");
+    expect(parsed.inboundId).toBe(0);
+  });
+
   test("неизвестный тип отвергается", () => {
     expect(createNodeSchema.safeParse({ ...base, type: "wireguard", inboundId: 1 }).success).toBe(false);
   });

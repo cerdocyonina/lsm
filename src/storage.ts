@@ -53,7 +53,7 @@ export type ServerRecord = {
   nodeId: number | null;
 };
 
-export type NodeType = "xui" | "naive" | "shadowsocks" | "mieru";
+export type NodeType = "xui" | "naive" | "shadowsocks" | "mieru" | "xray";
 
 export type NodeRecord = {
   id: number;

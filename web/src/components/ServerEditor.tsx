@@ -10,6 +10,7 @@ const TEMPLATE_HINTS: Record<NodeType, string> = {
   naive: "naive+https://{user}:{pass}@example.com:443#🇩🇪 DE [Naïve]",
   shadowsocks: "ss://2022-blake3-aes-128-gcm:SERVER_PSK:{sskey}@{ip}:9444#🇩🇪 DE [SS]",
   mieru: "mierus://{user}:{mpass}@{ip}?profile=🇩🇪 DE&port=8444-8453&protocol=TCP#🇩🇪 DE",
+  xray: "vless://{uuid}@{ip}:443?type=tcp&security=reality&flow=xtls-rprx-vision&…#🇩🇪 DE",
 };
 
 /**

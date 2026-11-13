@@ -11,6 +11,7 @@ export type HealthPayload = {
   caddy?: HealthStatus;
   shadowsocks?: HealthStatus;
   mieru?: HealthStatus;
+  xray?: HealthStatus;
 };
 
 /**
@@ -18,11 +19,12 @@ export type HealthPayload = {
  * в проде уже отдают "xui", naive — "caddy", и мастер читает именно их. Менять существующие
  * — значит требовать одновременного передеплоя всех нод.
  */
-const HEALTH_FIELD: Record<BackendKind, "xui" | "caddy" | "shadowsocks" | "mieru"> = {
+const HEALTH_FIELD: Record<BackendKind, "xui" | "caddy" | "shadowsocks" | "mieru" | "xray"> = {
   xui: "xui",
   naive: "caddy",
   shadowsocks: "shadowsocks",
   mieru: "mieru",
+  xray: "xray",
 };
 
 /**

@@ -117,6 +117,7 @@ export const KINDS: Record<NodeType, { label: string; path: string }> = {
   naive: { label: "NaïveProxy", path: "/naive" },
   shadowsocks: { label: "SS2022", path: "/ss2022" },
   mieru: { label: "mieru", path: "/mieru" },
+  xray: { label: "VLESS · Xray", path: "/vless" },
 };
 
 export function KindBadge({ type }: { type: NodeType }) {

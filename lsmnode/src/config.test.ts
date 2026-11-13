@@ -34,6 +34,33 @@ describe("createBackendFromSpec", () => {
     expect(() => createBackendFromSpec("mieru", { kind: "mieru", baseConfig: {} })).toThrow(/backend "mieru".*portBindings/);
   });
 
+  test("xray → XrayBackend (kind xray)", () => {
+    const b = createBackendFromSpec("vless", {
+      kind: "xray",
+      inboundFile: "/usr/local/etc/xray-lsm/10-vless.json",
+      inbound: { tag: "vless-reality", port: 443, protocol: "vless" },
+      restartCommand: ["sudo", "-n", "systemctl", "restart", "xray"],
+    });
+    expect(b.kind).toBe("xray");
+  });
+
+  test("xray: relative inboundFile, clients in the inbound, bad restartCommand — errors with the name", () => {
+    const inbound = { tag: "vless-reality", port: 443, protocol: "vless" };
+    expect(() => createBackendFromSpec("vless", { kind: "xray", inboundFile: "10.json", inbound })).toThrow(
+      /backend "vless".*absolute/,
+    );
+    expect(() =>
+      createBackendFromSpec("vless", {
+        kind: "xray",
+        inboundFile: "/x/10.json",
+        inbound: { ...inbound, settings: { clients: [] } },
+      }),
+    ).toThrow(/backend "vless".*clients/);
+    expect(() =>
+      createBackendFromSpec("vless", { kind: "xray", inboundFile: "/x/10.json", inbound, restartCommand: "systemctl" }),
+    ).toThrow(/backend "vless".*restartCommand/);
+  });
+
   test("неизвестный kind — ошибка", () => {
     expect(() => createBackendFromSpec("x", { kind: "wireguard" })).toThrow(/unknown kind/);
   });

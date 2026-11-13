@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { buildMieruUsersForNode, buildNaiveUsersForNode, buildShadowsocksUsersForNode } from "./naive-sync";
+import {
+  buildDeclarativeUsers,
+  buildMieruUsersForNode,
+  buildNaiveUsersForNode,
+  buildShadowsocksUsersForNode,
+  buildXrayUsersForNode,
+} from "./naive-sync";
 import { SqliteStorage } from "./storage";
 
 const NAIVE = "naive+https://{user}:{pass}@h:443#n";
@@ -199,5 +205,52 @@ describe("buildMieruUsersForNode", () => {
     const { users, skipped } = buildMieruUsersForNode(storage, nodeId, owner);
     expect(users.map((u) => u.user)).toEqual(["main.ok"]);
     expect(skipped).toEqual(["main/bad name"]);
+  });
+});
+
+describe("buildXrayUsersForNode", () => {
+  const VLESS = "vless://{uuid}@{ip}:443?type=tcp&security=reality#x";
+  let storage: SqliteStorage;
+  let owner: number;
+  let nodeId: number;
+
+  beforeEach(() => {
+    storage = new SqliteStorage(":memory:", "admin");
+    owner = storage.getPrimaryAdmin().id;
+    storage.createProfile("par", owner, 0);
+    nodeId = storage.addNode("atofop", "http://x:9000/vless", "sek", 0, owner, 0, "xray").id;
+  });
+
+  test("email namespaced by profile, the secret is the user's own UUID (no new credential)", () => {
+    storage.addServer("main", "s-main", VLESS, 0, owner, nodeId);
+    storage.addServer("par", "s-par", VLESS, 0, owner, nodeId);
+    storage.addUser("main", "client1", "t1", "11111111-2222-4333-8444-555555555555", 1000, owner);
+    storage.addUser("par", "client1", "t2", "66666666-7777-4888-9999-aaaaaaaaaaaa", 1001, owner);
+
+    const { users, skipped } = buildXrayUsersForNode(storage, nodeId, owner);
+    expect(skipped).toEqual([]);
+    expect([...users].sort((a, b) => a.user.localeCompare(b.user))).toEqual([
+      { user: "main.client1", pass: "11111111-2222-4333-8444-555555555555" },
+      { user: "par.client1", pass: "66666666-7777-4888-9999-aaaaaaaaaaaa" },
+    ]);
+    expect(storage.listUsers("main", owner)[0]!.credentials).toEqual({});
+  });
+
+  test("a malformed UUID is skipped and reported, not pushed", () => {
+    storage.addServer("main", "s-main", VLESS, 0, owner, nodeId);
+    storage.addUser("main", "ok", "t1", "11111111-2222-4333-8444-555555555555", 1000, owner);
+    storage.addUser("main", "legacy", "t2", "not-a-uuid", 1001, owner);
+    const { users, skipped } = buildXrayUsersForNode(storage, nodeId, owner);
+    expect(users.map((u) => u.user)).toEqual(["main.ok"]);
+    expect(skipped).toEqual(["main/legacy"]);
+  });
+
+  test("buildDeclarativeUsers dispatches an xray node to the UUID list", () => {
+    storage.addServer("main", "s-main", VLESS, 0, owner, nodeId);
+    storage.addUser("main", "alice", "t1", "11111111-2222-4333-8444-555555555555", 1000, owner);
+    const node = storage.getNode(nodeId, owner)!;
+    expect(buildDeclarativeUsers(storage, node, owner).users).toEqual([
+      { user: "main.alice", pass: "11111111-2222-4333-8444-555555555555" },
+    ]);
   });
 });

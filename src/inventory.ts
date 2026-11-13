@@ -1,10 +1,5 @@
 import { z } from "zod";
-import {
-  buildMieruUsersForNode,
-  buildNaiveUsersForNode,
-  buildShadowsocksUsersForNode,
-  syncNaiveNode,
-} from "./naive-sync";
+import { buildDeclarativeUsers, syncNaiveNode } from "./naive-sync";
 import type {
   ClientOutcome,
   ClientSyncRequest,
@@ -35,7 +30,7 @@ export const serviceSchema = z
       .string()
       .regex(/^(\/[A-Za-z0-9_-]+)*$/)
       .default(""),
-    type: z.enum(["xui", "naive", "shadowsocks", "mieru"]),
+    type: z.enum(["xui", "naive", "shadowsocks", "mieru", "xray"]),
     inboundId: z.number().int().nonnegative().default(0),
   })
   .refine(
@@ -53,7 +48,7 @@ export const connectionSchema = z
     (c) => !c.template.includes("{ip}") || c.nodeId !== null,
     "{ip} requires a managed service",
   );
-const nodeTypeSchema = z.enum(["xui", "naive", "shadowsocks", "mieru"]);
+const nodeTypeSchema = z.enum(["xui", "naive", "shadowsocks", "mieru", "xray"]);
 /** What the admin UI edits: a link template plus, optionally, the agent backend it syncs users to. */
 export const serverSchema = z
   .object({
@@ -349,13 +344,7 @@ export async function syncInventory(
           try {
             if (node.type === "xui")
               return await syncXui(storage, owner, node, options);
-            const build =
-              node.type === "naive"
-                ? buildNaiveUsersForNode
-                : node.type === "mieru"
-                  ? buildMieruUsersForNode
-                  : buildShadowsocksUsersForNode;
-            const list = build(storage, id, owner);
+            const list = buildDeclarativeUsers(storage, node, owner);
             // Declarative backends take the whole list; there is nothing to preview per user.
             if (options.dryRun)
               return {
