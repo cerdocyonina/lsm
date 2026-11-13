@@ -150,13 +150,46 @@ export function ServersPage({ inv }: { inv: InventoryApi }) {
             onToggle={(p, on) => toggle(c, p, on)}
           />
           <div className="d-flex gap-1 justify-content-end">
-            {service && (
+            {service && service.type !== "xui" && (
               <ActionIconButton
                 variant="outline-secondary"
-                label={`Push users to ${c.name}'s backend now`}
+                label={`Push users to ${c.name}'s backend now (replaces its whole user list)`}
                 icon={<TbRefresh size={16} />}
                 onClick={() => void inv.push([service.id])}
               />
+            )}
+            {service?.type === "xui" && (
+              // 3x-ui is merged client by client, so a conflict strategy applies.
+              <Dropdown align="end">
+                <Dropdown.Toggle
+                  variant="outline-secondary"
+                  className="admin-icon-button no-caret"
+                  style={{ width: 32, height: 32 }}
+                  aria-label={`Push users to ${c.name}`}
+                  title="Push users to the 3x-ui panel"
+                >
+                  <TbRefresh size={16} />
+                </Dropdown.Toggle>
+                <Dropdown.Menu>
+                  <Dropdown.Header>Push users to {c.name}</Dropdown.Header>
+                  <Dropdown.Item onClick={() => void inv.push([service.id], undefined, { dryRun: true })}>
+                    Check only (no changes)
+                  </Dropdown.Item>
+                  <Dropdown.Divider />
+                  <Dropdown.Item onClick={() => void inv.push([service.id])}>
+                    Push, skip conflicts
+                    <div className="small text-body-secondary">Leave clients that have another UUID</div>
+                  </Dropdown.Item>
+                  <Dropdown.Item onClick={() => void inv.push([service.id], undefined, { onConflict: "overwrite" })}>
+                    Push, overwrite conflicts
+                    <div className="small text-body-secondary">Make the panel use LSM's UUID</div>
+                  </Dropdown.Item>
+                  <Dropdown.Item onClick={() => void inv.push([service.id], undefined, { onConflict: "keep-both" })}>
+                    Push, keep both
+                    <div className="small text-body-secondary">Add LSM's client as name_1 next to it</div>
+                  </Dropdown.Item>
+                </Dropdown.Menu>
+              </Dropdown>
             )}
             <ActionIconButton
               variant="outline-secondary"

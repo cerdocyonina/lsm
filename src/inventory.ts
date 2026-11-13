@@ -5,6 +5,13 @@ import {
   buildShadowsocksUsersForNode,
   syncNaiveNode,
 } from "./naive-sync";
+import type {
+  ClientOutcome,
+  ClientSyncRequest,
+  ConflictStrategy,
+  DesiredClient,
+} from "./3x-ui";
+import { naiveLogin } from "./credentials";
 import type { NodeRecord, Storage } from "./storage";
 
 const httpUrl = z
@@ -113,7 +120,7 @@ export function saveConnectionWithProfiles(
           for (const u of storage.listUsers(profile.name, owner))
             storage.queueRemoval(
               previous.nodeId,
-              u.clientName,
+              xuiEmail(profile.name, u.clientName),
               u.userUuid,
               owner,
             );
@@ -201,19 +208,130 @@ export type InventorySyncResult = {
   ok: boolean;
   error?: string;
   synced?: number;
+  /** 3x-ui only: what happened (or, for a dry run, would happen) per client. */
+  steps?: ClientOutcome[];
+  dryRun?: boolean;
 };
+export type SyncOptions = { onConflict?: ConflictStrategy; dryRun?: boolean };
+
+/**
+ * 3x-ui emails are global per panel, so like the other protocols' logins they carry the
+ * profile: the same client name in two profiles is two different people.
+ */
+export const xuiEmail = naiveLogin;
+
+/** Everyone who should be on this 3x-ui service, across every profile using it. */
+export function desiredXuiClients(
+  storage: Storage,
+  nodeId: number,
+  owner: number,
+): DesiredClient[] {
+  return storage
+    .listProfiles(owner)
+    .filter((p) =>
+      storage.listServerRecords(p.name, owner).some((s) => s.nodeId === nodeId),
+    )
+    .flatMap((p) =>
+      storage.listUsers(p.name, owner).map((u) => ({
+        email: xuiEmail(p.name, u.clientName),
+        uuid: u.userUuid,
+        // Pre-2.0 panels hold the plain name; the agent renames it in place.
+        legacyEmail: u.clientName,
+      })),
+    );
+}
+
+/** One batch request to the agent; it reads the panel once and applies a UUID-based plan. */
+export async function pushXuiClients(
+  node: NodeRecord,
+  body: Omit<ClientSyncRequest, "inboundId">,
+): Promise<ClientOutcome[]> {
+  const response = await fetch(`${node.url}/sync-clients`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${node.secret}`,
+    },
+    body: JSON.stringify({ inboundId: node.inboundId, ...body }),
+    signal: AbortSignal.timeout(120000),
+    tls: { rejectUnauthorized: false },
+  } as RequestInit);
+  if (response.status === 404)
+    throw new Error(
+      "This host's lsmnode is too old for 3x-ui sync. Update lsmnode on it (2.0+), then push again.",
+    );
+  const data = (await response.json()) as {
+    results?: ClientOutcome[];
+    error?: string;
+  };
+  if (!response.ok || !Array.isArray(data.results))
+    throw new Error(data.error ?? `Agent returned ${response.status}`);
+  return data.results;
+}
+
+const PRESENT = new Set(["unchanged", "add", "rename", "attach", "overwrite", "keep-both"]);
+
+async function syncXui(
+  storage: Storage,
+  owner: number,
+  node: NodeRecord,
+  { onConflict = "skip", dryRun = false }: SyncOptions,
+): Promise<InventorySyncResult> {
+  const clients = desiredXuiClients(storage, node.id, owner);
+  const wanted = new Set(clients.map((c) => c.uuid));
+  const pending = storage.pendingRemovals(node.id, owner);
+  const steps = await pushXuiClients(node, {
+    clients,
+    // A revoked UUID that is still wanted on this service (another profile) stays.
+    remove: pending
+      .filter((r) => !wanted.has(r.userUuid))
+      .map((r) => ({ email: r.clientName, uuid: r.userUuid })),
+    onConflict,
+    dryRun,
+  });
+  const failed = steps.filter((s) => !s.ok);
+  if (!dryRun) {
+    const retry = new Set(failed.map((s) => s.uuid));
+    storage.clearRemovals(
+      node.id,
+      owner,
+      pending.filter((r) => !retry.has(r.userUuid)).map((r) => r.userUuid),
+    );
+  }
+  return {
+    nodeId: node.id,
+    name: node.name,
+    ok: failed.length === 0,
+    error: failed.length
+      ? `${failed.length} change(s) failed, e.g. ${failed[0]!.email}: ${failed[0]!.error}`
+      : undefined,
+    synced: steps.filter((s) => s.ok && PRESENT.has(s.kind)).length,
+    steps,
+    ...(dryRun ? { dryRun: true } : {}),
+  };
+}
+
 const queues = new Map<number, Promise<unknown>>();
 /** Serialize full-list pushes so a stale request can never finish after a newer assignment. */
 export async function syncInventory(
   storage: Storage,
   owner: number,
   ids: number[],
-  removed: Map<number, { clientName: string; userUuid: string }[]> = new Map(),
+  removed: Map<
+    number,
+    { profileName: string; clientName: string; userUuid: string }[]
+  > = new Map(),
+  options: SyncOptions = {},
 ): Promise<InventorySyncResult[]> {
   for (const [id, users] of removed)
     if (storage.getNode(id, owner)?.type === "xui")
       for (const u of users)
-        storage.queueRemoval(id, u.clientName, u.userUuid, owner);
+        storage.queueRemoval(
+          id,
+          xuiEmail(u.profileName, u.clientName),
+          u.userUuid,
+          owner,
+        );
   return Promise.all(
     [...new Set(ids)].map(async (id) => {
       const key = id;
@@ -229,57 +347,36 @@ export async function syncInventory(
               error: "Service no longer exists",
             };
           try {
-            if (node.type !== "xui") {
-              const build =
-                node.type === "naive"
-                  ? buildNaiveUsersForNode
-                  : node.type === "mieru"
-                    ? buildMieruUsersForNode
-                    : buildShadowsocksUsersForNode;
-              const list = build(storage, id, owner);
-              const result = await syncNaiveNode(node, list.users);
-              if (result.error || list.skipped.length)
-                throw new Error(
-                  result.error ??
-                    `Skipped invalid users: ${list.skipped.join(", ")}`,
-                );
-              storage.clearRemovals(id, owner);
+            if (node.type === "xui")
+              return await syncXui(storage, owner, node, options);
+            const build =
+              node.type === "naive"
+                ? buildNaiveUsersForNode
+                : node.type === "mieru"
+                  ? buildMieruUsersForNode
+                  : buildShadowsocksUsersForNode;
+            const list = build(storage, id, owner);
+            // Declarative backends take the whole list; there is nothing to preview per user.
+            if (options.dryRun)
               return {
                 nodeId: id,
                 name: node.name,
                 ok: true,
-                synced: result.synced,
+                synced: list.users.length,
+                dryRun: true,
               };
-            }
-            const users = storage
-              .listProfiles(owner)
-              .filter((p) =>
-                storage
-                  .listNodesForProfile(p.name, owner)
-                  .some((n) => n.id === id),
-              )
-              .flatMap((p) => storage.listUsers(p.name, owner));
-            const pending = storage.pendingRemovals(id, owner);
-            for (const u of pending)
-              if (!users.some((v) => v.userUuid === u.userUuid))
-                await call(node, "delete-user", { email: u.clientName });
-            for (const u of users)
-              await call(node, "sync-user", {
-                email: u.clientName,
-                uuid: u.userUuid,
-                inboundId: node.inboundId,
-                onConflict: "skip",
-              });
-            storage.clearRemovals(
-              id,
-              owner,
-              pending.map((u) => u.userUuid),
-            );
+            const result = await syncNaiveNode(node, list.users);
+            if (result.error || list.skipped.length)
+              throw new Error(
+                result.error ??
+                  `Skipped invalid users: ${list.skipped.join(", ")}`,
+              );
+            storage.clearRemovals(id, owner);
             return {
               nodeId: id,
               name: node.name,
               ok: true,
-              synced: users.length,
+              synced: result.synced,
             };
           } catch (e) {
             return {
@@ -299,27 +396,6 @@ export async function syncInventory(
     }),
   );
 }
-async function call(node: NodeRecord, action: string, body: unknown) {
-  const response = await fetch(`${node.url}/${action}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${node.secret}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15000),
-    tls: { rejectUnauthorized: false },
-  } as RequestInit);
-  const result = (await response.json()) as {
-    error?: string;
-    result?: string;
-    msg?: string;
-  };
-  if (!response.ok || result.error || result.result === "failed")
-    throw new Error(
-      result.error ?? result.msg ?? `Agent returned ${response.status}`,
-    );
-}
 
 export function applyAssignments(
   storage: Storage,
@@ -327,7 +403,10 @@ export function applyAssignments(
   body: z.infer<typeof assignmentsSchema>,
 ) {
   const ids = new Set<number>();
-  const removed = new Map<number, { clientName: string; userUuid: string }[]>();
+  const removed = new Map<
+    number,
+    { profileName: string; clientName: string; userUuid: string }[]
+  >();
   storage.transaction(() => {
     for (const a of body.assignments) {
       const connection = storage
@@ -356,7 +435,7 @@ export function applyAssignments(
         for (const u of storage.listUsers(a.profile, owner))
           storage.queueRemoval(
             connection.nodeId,
-            u.clientName,
+            xuiEmail(a.profile, u.clientName),
             u.userUuid,
             owner,
           );

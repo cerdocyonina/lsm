@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { createHmac } from "node:crypto";
 import type { LegacyConfig, MultiProfileDump, ProfileDump } from "./app-config";
+import { labelOf, withoutLabel } from "./link-label";
 
 export type AdminUserRecord = {
   id: number;
@@ -264,18 +265,6 @@ export interface Storage {
   mergeAllFromMultiProfileDump(dump: MultiProfileDump, ownerId: number): void;
 
   close(): void;
-}
-
-/** Decoded #label of a template, or null when it has none. */
-export function fragmentOf(template: string): string | null {
-  const hash = template.indexOf("#");
-  if (hash === -1) return null;
-  const raw = template.slice(hash + 1);
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
 }
 
 /** Мешок кредов хранится как JSON-текст; битое значение не должно ронять раздачу. */
@@ -1299,7 +1288,7 @@ export class SqliteStorage implements Storage {
 
   /**
    * The 1.6.0 migration shared connections only on an exact template match, so a server
-   * whose profiles differed just by the #label stayed split into one copy per profile.
+   * whose profiles differed just by the label (#…, profile= for mieru) stayed split.
    * Fold such copies into the oldest one and keep each profile's label as its link-name
    * override. Copies that share a profile, or that nobody uses, are left alone.
    */
@@ -1316,9 +1305,7 @@ export class SqliteStorage implements Storage {
     }[];
     const groups = new Map<string, typeof rows>();
     for (const row of rows) {
-      const hash = row.template.indexOf("#");
-      const base = hash === -1 ? row.template : row.template.slice(0, hash);
-      const key = JSON.stringify([row.owner, row.nodeId, base]);
+      const key = JSON.stringify([row.owner, row.nodeId, withoutLabel(row.template)]);
       groups.set(key, [...(groups.get(key) ?? []), row]);
     }
     const membersOf = (id: number) =>
@@ -1329,14 +1316,14 @@ export class SqliteStorage implements Storage {
         .all(id) as { profileId: number; displayName: string | null }[];
     for (const [canonical, ...rest] of groups.values()) {
       if (!canonical || !rest.length) continue;
-      const label = fragmentOf(canonical.template);
+      const label = labelOf(canonical.template);
       const used = new Set(membersOf(canonical.id).map((m) => m.profileId));
       for (const other of rest) {
         const members = membersOf(other.id);
-        const otherLabel = fragmentOf(other.template);
+        const otherLabel = labelOf(other.template);
         if (!members.length || members.some((m) => used.has(m.profileId)))
           continue;
-        // Without a fragment there is no label to carry over as an override.
+        // Without a label there is nothing to carry over as an override.
         if (otherLabel === null && label !== null) continue;
         for (const m of members) {
           if (m.displayName === null && otherLabel !== label)

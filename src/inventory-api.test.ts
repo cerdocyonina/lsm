@@ -225,15 +225,19 @@ describe("inventory API", () => {
   test("failed xui revocation is persisted for retry after membership removal", async () => {
     const { storage, owner } = setup();
     let fail = true;
-    const calls: string[] = [];
+    const bodies: any[] = [];
     const agent = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch: async (req) => {
-        calls.push(new URL(req.url).pathname);
+        expect(new URL(req.url).pathname).toBe("/sync-clients");
+        const body: any = await req.json();
+        bodies.push(body);
         return fail
           ? Response.json({ error: "offline" }, { status: 503 })
-          : Response.json({ result: "deleted" });
+          : Response.json({
+              results: body.remove.map((r: any) => ({ kind: "delete", email: r.email, uuid: r.uuid, reason: "revoked", ok: true })),
+            });
       },
     });
     cleanup.push(() => agent.stop(true));
@@ -249,8 +253,42 @@ describe("inventory API", () => {
     expect(storage.pendingRemovals(node.id, owner)).toHaveLength(1);
     fail = false;
     expect((await syncInventory(storage, owner, [node.id]))[0]!.ok).toBe(true);
-    expect(calls).toEqual(["/delete-user", "/delete-user"]);
+    // Revocations go out under the profile-qualified email, matched by UUID on the agent.
+    expect(bodies[1].remove).toEqual([{ email: "main.alice", uuid: "uuid-main" }]);
+    expect(bodies[1].clients).toEqual([]);
     expect(storage.pendingRemovals(node.id, owner)).toHaveLength(0);
+  });
+
+  test("3x-ui pushes carry profile-qualified emails, legacy names and the chosen strategy", async () => {
+    const { storage, owner, request } = setup();
+    const bodies: any[] = [];
+    let old = false;
+    const agent = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (req) => {
+        if (old) return Response.json({ error: "Not found" }, { status: 404 });
+        const body: any = await req.json();
+        bodies.push(body);
+        return Response.json({
+          results: body.clients.map((c: any) => ({ kind: body.dryRun ? "rename" : "unchanged", email: c.email, uuid: c.uuid, ok: true })),
+        });
+      },
+    });
+    cleanup.push(() => agent.stop(true));
+    const node = storage.addNode("xui", agent.url.origin, "s", 4, owner, 1);
+    const c = storage.saveConnection(null, "c", "link", node.id, owner);
+    for (const p of ["main", "work"]) storage.assignConnection(c, p, true, owner);
+    const r = await request("/inventory/sync", { ids: [node.id], onConflict: "overwrite", dryRun: true });
+    expect(bodies[0]).toMatchObject({ inboundId: 4, onConflict: "overwrite", dryRun: true });
+    expect([...bodies[0].clients].sort((a: any, b: any) => a.email.localeCompare(b.email))).toEqual([
+      { email: "main.alice", uuid: "uuid-main", legacyEmail: "alice" },
+      { email: "work.alice", uuid: "uuid-work", legacyEmail: "alice" },
+    ]);
+    expect(r.body.syncResults[0]).toMatchObject({ ok: true, dryRun: true, synced: 2 });
+    old = true;
+    const stale = await request("/inventory/sync", { ids: [node.id] });
+    expect(stale.body.syncResults[0].error).toContain("too old");
   });
 });
 
@@ -384,5 +422,24 @@ describe("server endpoint (services folded into servers)", () => {
     expect(r.body.hosts).toHaveLength(0);
     expect(r.body.services).toHaveLength(0);
     expect(r.body.connections.map((c: any) => c.name)).toEqual(["plain"]);
+  });
+});
+
+describe("per-profile labels for mieru", () => {
+  test("the override replaces profile=, which is what mieru clients show", async () => {
+    const { storage, owner, request } = setup();
+    const id = storage.saveConnection(
+      null,
+      "m",
+      "mierus://{user}:{mpass}@1.2.3.4?profile=🇩🇪 DE&port=8444&protocol=TCP#m",
+      null,
+      owner,
+    );
+    storage.assignConnection(id, "main", true, owner);
+    await request("/profiles/main/servers/m", { displayName: "🇩🇪 DE (дом)" }, "PATCH");
+    const [link] = renderSubscriptionLinks(storage, storage.listUsers("main", owner)[0]!);
+    const profile = new URL(link!.replace("mierus://", "http://")).searchParams.get("profile");
+    expect(profile).toBe("🇩🇪 DE (дом)");
+    expect(link).toEndWith("#m");
   });
 });

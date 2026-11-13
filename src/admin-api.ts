@@ -18,10 +18,12 @@ import {
   hostSchema,
   inventory,
   saveConnectionWithProfiles,
+  pushXuiClients,
   saveServer,
   serverSchema,
   serviceSchema,
   syncInventory,
+  xuiEmail,
 } from "./inventory";
 import {
   buildMieruUsersForNode,
@@ -145,12 +147,6 @@ export const updateNodeSchema = z
       path: ["inboundId"],
     },
   );
-
-const syncUsersSchema = z.object({
-  onConflict: z
-    .enum(["skip", "overwrite", "keep-both", "safe"])
-    .default("overwrite"),
-});
 
 const createAdminUserSchema = z.object({
   username: z
@@ -477,26 +473,21 @@ async function syncUserToNodes(
       }
 
       try {
-        const res = await fetch(`${node.url}/sync-user`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${node.secret}`,
-          },
-          body: JSON.stringify({
-            email,
-            uuid,
-            inboundId: node.inboundId,
-            onConflict,
-          }),
-          tls: { rejectUnauthorized: false },
-        } as RequestInit);
-        const data = (await res.json()) as { result: string; msg?: string };
+        const [step] = await pushXuiClients(node, {
+          clients: [
+            {
+              email: xuiEmail(naiveContext!.profileName, email),
+              uuid,
+              legacyEmail: email,
+            },
+          ],
+          onConflict,
+        });
         return {
           nodeId: node.id,
           nodeName: node.name,
-          result: data.result,
-          msg: data.msg,
+          result: !step || !step.ok ? "failed" : step.kind === "conflict" ? "skipped" : step.kind,
+          msg: step?.error ?? (step?.kind === "conflict" ? step.detail : undefined),
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -509,6 +500,7 @@ async function syncUserToNodes(
 async function deleteUserFromNodes(
   nodes: NodeRecord[],
   email: string,
+  uuid: string,
   naiveContext?: { storage: Storage; profileName: string; ownerId: number },
 ) {
   return Promise.allSettled(
@@ -544,21 +536,17 @@ async function deleteUserFromNodes(
       }
 
       try {
-        const res = await fetch(`${node.url}/delete-user`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${node.secret}`,
-          },
-          body: JSON.stringify({ email }),
-          tls: { rejectUnauthorized: false },
-        } as RequestInit);
-        const data = (await res.json()) as { result: string; msg?: string };
+        const steps = await pushXuiClients(node, {
+          clients: [],
+          remove: [{ email: xuiEmail(naiveContext!.profileName, email), uuid }],
+          onConflict: "skip",
+        });
+        const failed = steps.find((s) => !s.ok);
         return {
           nodeId: node.id,
           nodeName: node.name,
-          result: data.result,
-          msg: data.msg,
+          result: failed ? "failed" : steps.some((s) => s.kind === "not-found") ? "not_found" : "deleted",
+          msg: failed?.error,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -827,6 +815,7 @@ export async function handleAdminApiRequest(
       // Saves return as soon as the DB is updated; the UI pushes these services afterwards
       // via /inventory/sync, so a slow or dead agent never holds up an edit.
       let pendingSync: number[] = [];
+      let dryRun = false;
       if (action === "discover") {
         const p = await parseJson(req, hostSchema);
         if (p instanceof Response) return p;
@@ -962,16 +951,26 @@ export async function handleAdminApiRequest(
       } else if (action === "sync") {
         const p = await parseJson(
           req,
-          z.object({ ids: z.array(z.number().int().positive()) }),
+          z.object({
+            ids: z.array(z.number().int().positive()),
+            // 3x-ui only: what to do when a client exists with another UUID.
+            onConflict: z.enum(["skip", "overwrite", "keep-both"]).default("skip"),
+            dryRun: z.boolean().default(false),
+          }),
         );
         if (p instanceof Response) return p;
-        syncResults = await syncInventory(storage, adminUserId, p.ids);
+        dryRun = p.dryRun;
+        syncResults = await syncInventory(storage, adminUserId, p.ids, new Map(), {
+          onConflict: p.onConflict,
+          dryRun: p.dryRun,
+        });
       } else return adminErrorResponse(404, "Unknown inventory action");
       // An unused service stays until a push to it succeeds, so revocations aren't lost.
-      storage.pruneUnusedServices(adminUserId, [
-        ...pendingSync,
-        ...syncResults.filter((r) => !r.ok).map((r) => r.nodeId),
-      ]);
+      if (!dryRun)
+        storage.pruneUnusedServices(adminUserId, [
+          ...pendingSync,
+          ...syncResults.filter((r) => !r.ok).map((r) => r.nodeId),
+        ]);
       return noStoreResponse(
         jsonResponse({
           ...inventory(storage, adminUserId),
@@ -1451,15 +1450,18 @@ export async function handleAdminApiRequest(
       } catch {}
     }
 
+    const user = storage
+      .listUsers(profileId, adminUserId)
+      .find((u) => u.clientName === userPathName);
     const removed = storage.removeUser(profileId, userPathName, adminUserId);
-    if (!removed) {
+    if (!removed || !user) {
       return adminErrorResponse(404, `Unknown client: ${userPathName}`);
     }
 
     if (nodeIds.length > 0) {
       const profileNodes = storage.listNodesForProfile(profileId, adminUserId);
       const selectedNodes = profileNodes.filter((n) => nodeIds.includes(n.id));
-      const settled = await deleteUserFromNodes(selectedNodes, userPathName, {
+      const settled = await deleteUserFromNodes(selectedNodes, userPathName, user.userUuid, {
         storage,
         profileName: profileId,
         ownerId: adminUserId,
@@ -1594,129 +1596,6 @@ export async function handleAdminApiRequest(
     ]);
 
     return noStoreResponse(jsonResponse({ icmp, http }));
-  }
-
-  const serverSyncMatch = subPath.match(/^\/servers\/([^/]+)\/sync-users$/);
-  if (serverSyncMatch && req.method === "POST") {
-    const serverName = decodeURIComponent(serverSyncMatch[1]!);
-    const serverRecord = storage
-      .listServerRecords(profileId, adminUserId)
-      .find((s) => s.name === serverName);
-    if (!serverRecord)
-      return adminErrorResponse(404, `Unknown server: ${serverName}`);
-    if (!serverRecord.nodeId)
-      return adminErrorResponse(
-        400,
-        `Server "${serverName}" has no node assigned`,
-      );
-
-    const node = storage.getNode(serverRecord.nodeId, adminUserId);
-    if (!node) return adminErrorResponse(404, `Node not found`);
-
-    // Naive/shadowsocks/mieru nodes take the whole list in one declarative push — per-user
-    // conflict strategies don't apply, so skip that machinery entirely. The push carries the
-    // users of EVERY profile with a server on this node (this profile's alone would revoke
-    // the rest); `profiles` breaks the count down so the panel can say where it comes from.
-    if (isDeclarativeNode(node)) {
-      const {
-        users: declUsers,
-        skipped,
-        profiles,
-      } = buildDeclarativeUsers(storage, node, adminUserId);
-      const res = await syncNaiveNode(node, declUsers);
-      if (res.error) return adminErrorResponse(502, res.error);
-      return noStoreResponse(
-        jsonResponse({
-          synced: res.synced,
-          failed: skipped.length,
-          node: node.name,
-          profiles,
-          results: [
-            ...declUsers.map((u) => ({ clientName: u.user, result: "added" })),
-            ...skipped.map((clientName) => ({ clientName, result: "skipped" })),
-          ],
-        }),
-      );
-    }
-
-    const parsed = await parseJson(req, syncUsersSchema);
-    if (parsed instanceof Response) return noStoreResponse(parsed);
-
-    const users = storage.listUsers(profileId, adminUserId);
-
-    if (parsed.onConflict === "safe") {
-      try {
-        const checkRes = await fetch(`${node.url}/check-conflicts`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${node.secret}`,
-          },
-          body: JSON.stringify({ emails: users.map((u) => u.clientName) }),
-          tls: { rejectUnauthorized: false },
-        } as RequestInit);
-        const checkData = (await checkRes.json()) as {
-          conflicts?: string[];
-          error?: string;
-        };
-        if (!checkRes.ok)
-          return adminErrorResponse(
-            502,
-            checkData.error ?? "Failed to check conflicts on node",
-          );
-        const conflicts = checkData.conflicts ?? [];
-        if (conflicts.length > 0)
-          return noStoreResponse(jsonResponse({ conflicts }));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return adminErrorResponse(
-          502,
-          `Failed to reach node for conflict check: ${msg}`,
-        );
-      }
-    }
-
-    const strategy = parsed.onConflict === "safe" ? "skip" : parsed.onConflict;
-    const settled = await Promise.allSettled(
-      users.map((u) =>
-        syncUserToNodes([node], u.clientName, u.userUuid, strategy, {
-          storage,
-          profileName: profileId,
-          ownerId: adminUserId,
-        }),
-      ),
-    );
-
-    const results: { clientName: string; result: string; msg?: string }[] = [];
-    let synced = 0;
-    let failed = 0;
-    for (let i = 0; i < settled.length; i++) {
-      const user = users[i]!;
-      const s = settled[i]!;
-      if (s.status === "fulfilled") {
-        const nodeResult = s.value[0];
-        const r =
-          nodeResult?.status === "fulfilled"
-            ? nodeResult.value
-            : { result: "failed", msg: "unexpected" };
-        if (r.result === "failed") failed++;
-        else synced++;
-        results.push({
-          clientName: user.clientName,
-          result: r.result,
-          msg: r.msg,
-        });
-      } else {
-        failed++;
-        results.push({
-          clientName: user.clientName,
-          result: "failed",
-          msg: s.reason instanceof Error ? s.reason.message : String(s.reason),
-        });
-      }
-    }
-
-    return noStoreResponse(jsonResponse({ synced, failed, results }));
   }
 
   const serverPathName = getServerSubPath(subPath);

@@ -21,13 +21,63 @@ export type Membership = {
   displayName: string | null;
   sortOrder: number;
 };
+/** One 3x-ui client decision from the agent (see planClientSync in src/3x-ui.ts). */
+export type SyncStep = {
+  kind:
+    | "add"
+    | "rename"
+    | "attach"
+    | "overwrite"
+    | "keep-both"
+    | "conflict"
+    | "unchanged"
+    | "delete"
+    | "detach"
+    | "not-found";
+  email: string;
+  uuid: string;
+  from?: string;
+  as?: string;
+  reason?: "revoked" | "duplicate";
+  detail?: string;
+  ok: boolean;
+  error?: string;
+};
 export type SyncOutcome = {
   nodeId: number;
   name: string;
   ok: boolean;
   error?: string;
   synced?: number;
+  steps?: SyncStep[];
+  dryRun?: boolean;
 };
+export type ConflictStrategy = "skip" | "overwrite" | "keep-both";
+export type PushOptions = { onConflict?: ConflictStrategy; dryRun?: boolean };
+export type SyncReport = { results: SyncOutcome[]; options: PushOptions };
+
+const STEP_WORDS: Partial<Record<SyncStep["kind"], string>> = {
+  add: "added",
+  rename: "renamed",
+  attach: "attached",
+  overwrite: "overwritten",
+  "keep-both": "kept both",
+  conflict: "conflicts",
+  delete: "removed",
+  detach: "detached",
+};
+/** "121 users: 112 renamed, 9 added" for 3x-ui; the plain count for the others. */
+export function summarize(r: SyncOutcome): string {
+  if (!r.steps) return r.synced === undefined ? "" : `${r.synced} users`;
+  const counts = new Map<string, number>();
+  for (const s of r.steps) {
+    const word = STEP_WORDS[s.kind];
+    if (word) counts.set(word, (counts.get(word) ?? 0) + 1);
+  }
+  const changes = [...counts].map(([w, n]) => `${n} ${w}`).join(", ");
+  return `${r.synced ?? 0} users${changes ? `: ${changes}` : ", no changes"}`;
+}
+const conflictsOf = (r: SyncOutcome) => r.steps?.filter((s) => s.kind === "conflict").length ?? 0;
 export type Inventory = {
   hosts: Host[];
   services: NodeRecord[];
@@ -77,16 +127,37 @@ export function KindBadge({ type }: { type: NodeType }) {
   );
 }
 
-/** Decoded #label of a template — what clients show unless a profile overrides it. */
+/**
+ * The name clients show unless a profile overrides it: the #fragment, or for mieru the
+ * profile= value (mieru clients ignore #). Mirrors labelOf in src/link-label.ts.
+ */
 export function labelOf(template: string): string | null {
+  const decode = (raw: string, form: boolean) => {
+    const value = form ? raw.replace(/\+/g, " ") : raw;
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  };
   const hash = template.indexOf("#");
-  if (hash === -1) return null;
-  const raw = template.slice(hash + 1);
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
+  if (/^mierus?:\/\//.test(template)) {
+    const q = template.indexOf("?");
+    const end = hash === -1 ? template.length : hash;
+    if (q !== -1 && q < end) {
+      const param = template
+        .slice(q + 1, end)
+        .split(/&(?=[A-Za-z][\w-]*=)/)
+        .find((p) => p.startsWith("profile="));
+      if (param !== undefined) return decode(param.slice(8), true);
+    }
   }
+  return hash === -1 ? null : decode(template.slice(hash + 1), false);
+}
+
+/** Where the label lives in this template, for hints. */
+export function labelSlot(template: string): string {
+  return /^mierus?:\/\//.test(template) && /[?&]profile=/.test(template) ? "profile=" : "#";
 }
 
 export function describeTarget(service: NodeRecord | undefined): string {
@@ -107,6 +178,8 @@ export type InventoryApi = ReturnType<typeof useInventory>;
 export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
   const [data, setData] = useState<Inventory>(empty);
   const [busy, setBusy] = useState<string | null>(null);
+  /** Detailed per-client results shown in a dialog (dry runs, conflicts). */
+  const [syncReport, setSyncReport] = useState<SyncReport | null>(null);
 
   const reload = useCallback(async () => {
     setData(await api<Inventory>("/inventory"));
@@ -142,17 +215,22 @@ export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
     return r;
   }
 
-  /** Pushes the current user lists to these services, reporting progress as a toast. */
-  async function push(ids: number[], known: Inventory = data) {
+  /**
+   * Pushes the current user lists to these services, reporting progress as a toast.
+   * `onConflict` and `dryRun` only matter for 3x-ui (the others take the whole list).
+   */
+  async function push(ids: number[], known: Inventory = data, options: PushOptions = {}) {
     const names = ids.map((id) => serverName(id, known)).join(", ");
-    const loading = toast.loading(`Pushing users to ${names}…`);
+    const loading = toast.loading(options.dryRun ? `Checking ${names}…` : `Pushing users to ${names}…`);
     try {
       const r = await api<InventoryResponse>("/inventory/sync", {
         method: "POST",
-        body: JSON.stringify({ ids }),
+        body: JSON.stringify({ ids, ...options }),
       });
       toast.dismiss(loading);
-      report(r.syncResults ?? [], known);
+      const results = (r.syncResults ?? []).map((x) => ({ ...x, name: serverName(x.nodeId, known, x.name) }));
+      if (options.dryRun) setSyncReport({ results, options });
+      else report(results, known, options);
       // Re-read instead of using r: a later save may have landed while this push ran.
       await reload();
       await onChanged();
@@ -161,38 +239,60 @@ export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
     }
   }
 
-  function report(raw: SyncOutcome[], known: Inventory) {
-    if (!raw.length) return;
-    const results = raw.map((r) => ({ ...r, name: serverName(r.nodeId, known, r.name) }));
+  function report(results: SyncOutcome[], known: Inventory, options: PushOptions = {}) {
+    if (!results.length) return;
     const failed = results.filter((r) => !r.ok);
-    if (!failed.length) {
-      toast.success(
-        `Pushed users to ${results.map((r) => (r.synced === undefined ? r.name : `${r.name} (${r.synced})`)).join(", ")}`,
-      );
+    const conflicted = results.filter((r) => conflictsOf(r) > 0);
+    if (!failed.length && !conflicted.length) {
+      toast.success(`Pushed users to ${results.map((r) => `${r.name} (${summarize(r)})`).join(", ")}`);
       return;
     }
-    toast.error(
+    const show = failed.length ? toast.error : toast;
+    show(
       (t) => (
         <div className="small">
-          <div className="fw-semibold mb-1">Saved, but some agents didn't take the update:</div>
+          <div className="fw-semibold mb-1">
+            {failed.length ? "Saved, but some agents didn't take the update:" : "Pushed, with conflicts:"}
+          </div>
           {failed.map((r) => (
             <div key={r.nodeId}>
               {r.name}: {r.error}
             </div>
           ))}
-          <button
-            type="button"
-            className="btn btn-sm btn-outline-dark mt-2"
-            onClick={() => {
-              toast.dismiss(t.id);
-              void push(failed.map((r) => r.nodeId), known);
-            }}
-          >
-            Retry
-          </button>
+          {conflicted.map((r) => (
+            <div key={`c${r.nodeId}`}>
+              {r.name}: {conflictsOf(r)} client(s) already on the panel with another UUID, left as is
+            </div>
+          ))}
+          <div className="d-flex gap-2 mt-2">
+            {results.some((r) => r.steps) && (
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-dark"
+                onClick={() => {
+                  toast.dismiss(t.id);
+                  setSyncReport({ results, options });
+                }}
+              >
+                Details
+              </button>
+            )}
+            {failed.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-sm btn-outline-dark"
+                onClick={() => {
+                  toast.dismiss(t.id);
+                  void push(failed.map((r) => r.nodeId), known, options);
+                }}
+              >
+                Retry
+              </button>
+            )}
+          </div>
         </div>
       ),
-      { duration: 15000 },
+      { duration: 15000, ...(failed.length ? {} : { icon: "⚠️" }) },
     );
   }
 
@@ -247,6 +347,8 @@ export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
     reload,
     refresh,
     push,
+    syncReport,
+    closeSyncReport: () => setSyncReport(null),
     mutate,
     attempt,
     saveServer,

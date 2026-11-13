@@ -552,8 +552,14 @@ export async function pingHttp(
     const mieru = parseMieruLink(resolveTemplate(template, identity));
     if (!mieru) return { ok: false, latencyMs: null, error: "failed to parse server template" };
     if (!mieru.user || !mieru.pass) return { ok: false, latencyMs: null, error: "missing mieru credentials" };
-    if (!checkToolOnPath("mieru")) return { ok: false, latencyMs: null, error: "mieru not found on PATH" };
-    return pingThroughMieru(mieru, timeoutMs);
+    if (!checkToolOnPath("mieru"))
+      return { ok: false, latencyMs: null, error: "mieru client not found on the master's PATH" };
+    const result = await pingThroughMieru(mieru, timeoutMs);
+    // mieru gives no handshake error to curl; name the usual causes.
+    if (!result.ok && result.error === "connection failed")
+      result.error =
+        "connection failed: mieru handshake didn't complete (master and node clocks must be within a few minutes; the master must reach the mieru ports)";
+    return result;
   }
 
   const params = parseVlessParams(template);

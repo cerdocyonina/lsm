@@ -147,6 +147,7 @@ export function buildBackends(env: Env): BackendRegistry {
           "sync-user",
           "delete-user",
           "check-conflicts",
+          "sync-clients",
         ].includes(name)
       )
         throw new Error(`Invalid or reserved backend name: ${name}`);

@@ -38,6 +38,7 @@ import { LoginPage } from "./components/LoginPage";
 import { ProfileServersPanel } from "./components/ProfileServersPanel";
 import { ProfileTabs } from "./components/ProfileTabs";
 import { ServersPage } from "./components/ServersPage";
+import { SyncReportModal } from "./components/SyncReportModal";
 import { UsersPanel } from "./components/UsersPanel";
 import { useInventory } from "./inventory";
 import type {
@@ -887,6 +888,8 @@ export default function App() {
           </Row>
         )}
       </Container>
+
+      <SyncReportModal inv={inventory} />
 
       {/* Rename profile modal */}
       <Modal

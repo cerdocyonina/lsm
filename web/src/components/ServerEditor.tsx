@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Col, Form, Modal, Row } from "react-bootstrap";
-import { KINDS, labelOf, type Inventory, type ServerDraft } from "../inventory";
+import { KINDS, labelOf, labelSlot, type Inventory, type ServerDraft } from "../inventory";
 import type { NodeType } from "../types";
 import { ProfileChips } from "./ProfileChips";
 import { PlaceholderHelp, TemplateEditor } from "./TemplateEditor";
@@ -104,7 +104,10 @@ export function ServerEditor({
                 placeholder="e.g. vyrfop-naive"
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
               />
-              <Form.Text>Only shown in this panel. Clients see the label after # in the template.</Form.Text>
+              <Form.Text>
+                Only shown in this panel. Clients see the label from the template: the text after #, or the profile=
+                value for mieru.
+              </Form.Text>
             </Form.Group>
 
             <fieldset className="border rounded p-3 mb-3">
@@ -196,7 +199,7 @@ export function ServerEditor({
                 {needsHost
                   ? "{ip} takes the address from a host. Pick one above or write the address."
                   : label
-                    ? `Clients see: ${label}`
+                    ? `Clients see: ${label} (from ${labelSlot(form.template)})`
                     : "No #label: clients will show the address instead."}
                 {!needsHost && overridden.length > 0 && ` (${overridden.join(", ")} show their own label)`}
               </Form.Text>

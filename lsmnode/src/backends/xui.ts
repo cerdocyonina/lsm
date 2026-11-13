@@ -1,5 +1,5 @@
 import type { XUIService } from "../../../src/3x-ui";
-import type { HealthStatus, NodeBackend, OnConflict, SyncResult } from "./types";
+import type { ClientOutcome, ClientSyncRequest, HealthStatus, NodeBackend, OnConflict, SyncResult } from "./types";
 
 /** Тонкая обёртка над XUIService — поведение 3x-ui-пути не меняется. */
 export class XuiBackend implements NodeBackend {
@@ -22,6 +22,10 @@ export class XuiBackend implements NodeBackend {
 
   public checkConflicts(emails: string[]): Promise<string[]> {
     return this.xui.checkConflicts(emails);
+  }
+
+  public syncClients(req: ClientSyncRequest): Promise<{ results: ClientOutcome[] }> {
+    return this.xui.syncClients(req);
   }
 
   public deleteUser(email: string): Promise<SyncResult> {

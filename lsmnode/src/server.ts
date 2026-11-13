@@ -1,4 +1,5 @@
 import type {
+  ClientSyncRequest,
   NaiveUser,
   NodeBackend,
   OnConflict,
@@ -85,6 +86,37 @@ export function createAgentHandler(
       users.push({ user, pass });
     }
     return users;
+  }
+
+  /** Validates a /sync-clients body; returns an error message on bad input. */
+  function parseClientSync(body: Record<string, unknown>): ClientSyncRequest | string {
+    const { inboundId, clients, remove, onConflict, dryRun } = body;
+    if (typeof inboundId !== "number" || !Number.isInteger(inboundId) || inboundId < 1)
+      return "inboundId must be a positive integer";
+    const pairs = (value: unknown, label: string) => {
+      if (value === undefined) return [];
+      if (!Array.isArray(value)) return null;
+      for (const e of value) {
+        const { email, uuid, legacyEmail } = (e ?? {}) as Record<string, unknown>;
+        if (typeof email !== "string" || !email || typeof uuid !== "string" || !uuid) return null;
+        if (label === "clients" && legacyEmail !== undefined && typeof legacyEmail !== "string") return null;
+      }
+      return value as { email: string; uuid: string; legacyEmail?: string }[];
+    };
+    const c = pairs(clients, "clients");
+    const r = pairs(remove, "remove");
+    if (!c) return "clients must be an array of { email, uuid, legacyEmail? }";
+    if (!r) return "remove must be an array of { email, uuid }";
+    const strategy = (onConflict ?? "skip") as OnConflict;
+    if (!["skip", "overwrite", "keep-both"].includes(strategy))
+      return "onConflict must be skip, overwrite, or keep-both";
+    return {
+      inboundId,
+      clients: c,
+      remove: r.map(({ email, uuid }) => ({ email, uuid })),
+      onConflict: strategy,
+      dryRun: dryRun === true,
+    };
   }
 
   return async function fetch(req: Request): Promise<Response> {
@@ -174,6 +206,25 @@ export function createAgentHandler(
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`sync-user failed for ${email}:`, msg);
         return Response.json({ result: "failed", msg }, { status: 500 });
+      }
+    }
+
+    // --- xui: batch, UUID-aware sync of one inbound ---------------------------
+    if (action === "/sync-clients" && req.method === "POST") {
+      if (!backend.syncClients) return unsupported("/sync-clients", backend);
+      const body = await readJsonObject(req);
+      if (body instanceof Response) return body;
+      const parsed = parseClientSync(body);
+      if (typeof parsed === "string")
+        return Response.json({ error: parsed }, { status: 400 });
+      try {
+        return Response.json(
+          await serialize(backend, () => backend.syncClients!(parsed)),
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("sync-clients failed:", msg);
+        return Response.json({ error: msg }, { status: 500 });
       }
     }
 

@@ -125,6 +125,33 @@ Authorization: Bearer <SHARED_SECRET>
 
 Возможные значения `result`: `added`, `skipped`, `overwritten`, `kept-both`, `failed`.
 
+### `POST /sync-clients` (3x-ui, lsmnode ≥ 2.0)
+
+Пакетный синк одного инбаунда; им пользуется мастер 2.0+. Агент один раз читает список
+клиентов панели и решает по **UUID**: добавить, переименовать (клиент со старым именем —
+например голым `client1` до префиксов профилей — переименовывается на месте, со статистикой),
+прикрепить к инбаунду, или конфликт. Клиенты, которых нет в запросе, не трогаются.
+
+```json
+{
+  "inboundId": 1,
+  "clients": [{ "email": "main.client1", "uuid": "550e8400-…", "legacyEmail": "client1" }],
+  "remove": [{ "email": "par.client7", "uuid": "1b4e28ba-…" }],
+  "onConflict": "skip",
+  "dryRun": false
+}
+```
+
+`onConflict` — что делать, если клиент с таким email уже есть с другим UUID: `skip` (оставить),
+`overwrite` (поставить UUID из LSM), `keep-both` (добавить рядом как `email_1`). `dryRun: true`
+возвращает план без изменений. `remove` удаляет только клиента с совпадающим UUID; если клиент
+прикреплён к нескольким инбаундам, он только открепляется от этого.
+
+Ответ: `{ "results": [{ "kind": "rename", "email": "main.client1", "from": "client1", "uuid": "…", "ok": true }, …] }`.
+`kind`: `add`, `rename`, `attach`, `overwrite`, `keep-both`, `conflict`, `unchanged`, `delete`, `detach`, `not-found`.
+
+`/sync-user`, `/delete-user` и `/check-conflicts` ниже оставлены для старых мастеров.
+
 ### `POST /sync-users` (naive / shadowsocks / mieru)
 
 Декларативный синк: принимает **весь** целевой список и перерендеривает конфиг провайдера

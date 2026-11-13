@@ -152,8 +152,8 @@ const PLACEHOLDER_HELP = (
         </code>
       </div>
       <p className="mb-0 mt-2 text-body-secondary">
-        Текст после <code>#</code> — подпись, которую видят клиенты; профиль может её переопределить. mieru-клиенты
-        показывают имя из <code>profile=</code>, а не из <code>#</code>.
+        Подпись, которую видят клиенты, — текст после <code>#</code>, а у mieru — значение <code>profile=</code>
+        (mieru-клиенты <code>#</code> не показывают). Профиль может переопределить подпись у себя.
       </p>
     </Popover.Body>
   </Popover>

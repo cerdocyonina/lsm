@@ -11,6 +11,9 @@ export type OnConflict = "skip" | "overwrite" | "keep-both";
 
 export type HealthStatus = { ok: boolean; error?: string };
 
+export type { ClientOutcome, ClientSyncRequest } from "../../../src/3x-ui";
+import type { ClientOutcome, ClientSyncRequest } from "../../../src/3x-ui";
+
 export type NaiveUser = { user: string; pass: string };
 
 export type BackendKind = "xui" | "naive" | "shadowsocks" | "mieru";
@@ -31,6 +34,8 @@ export interface NodeBackend {
   syncUser?(inboundId: number, email: string, uuid: string, onConflict: OnConflict): Promise<SyncResult>;
   checkConflicts?(emails: string[]): Promise<string[]>;
   deleteUser?(email: string): Promise<SyncResult>;
+  /** Batch, UUID-aware sync of one inbound (lsmnode ≥ 2.0). */
+  syncClients?(req: ClientSyncRequest): Promise<{ results: ClientOutcome[] }>;
 
   // naive / shadowsocks / mieru: декларативный полный список
   syncUsers?(users: NaiveUser[]): Promise<{ synced: number; error?: string }>;

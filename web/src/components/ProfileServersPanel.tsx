@@ -13,7 +13,7 @@ import {
   TbX,
 } from "react-icons/tb";
 import { api, profilePath } from "../api";
-import { KindBadge, labelOf, type InventoryApi, type ServerDraft } from "../inventory";
+import { KindBadge, labelOf, labelSlot, type InventoryApi, type ServerDraft } from "../inventory";
 import type { ClientHttpPingResult, PingResult, ServerIcmpResult } from "../types";
 import { ActionIconButton } from "./ActionIconButton";
 import { SelectionBar } from "./SelectionBar";
@@ -34,6 +34,33 @@ function PingBadge({ result }: { result: PingResult | undefined }) {
     >
       ICMP ✗
     </span>
+  );
+}
+
+/** Why probes failed, grouped per server and reason, so nobody has to hover every ✗. */
+function PingFailures({ http }: { http: ClientHttpPingResult[] }) {
+  const groups = new Map<string, { server: string; error: string; users: string[] }>();
+  for (const u of http)
+    for (const s of u.servers)
+      if (!s.result.ok) {
+        const error = s.result.error ?? "failed";
+        const key = `${s.serverName}\u0000${error}`;
+        const g = groups.get(key) ?? { server: s.serverName, error, users: [] };
+        g.users.push(u.clientName);
+        groups.set(key, g);
+      }
+  if (!groups.size) return null;
+  return (
+    <ul className="small text-body-secondary mt-2 mb-0 ps-3">
+      {[...groups.values()].map((g) => (
+        <li key={`${g.server}${g.error}`}>
+          <strong>{g.server}</strong>: {g.error}{" "}
+          <span className="text-body-tertiary">
+            ({g.users.length === http.length ? "all users" : g.users.join(", ")})
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -301,11 +328,7 @@ export function ProfileServersPanel({
                           type="button"
                           className="btn btn-link p-0 text-body-tertiary lh-1"
                           aria-label={`Change label of ${c.name} in ${profile}`}
-                          title={
-                            service?.type === "mieru"
-                              ? "mieru clients show the profile= name from the template, not this label"
-                              : `Change the label for ${profile} only`
-                          }
+                          title={`Change the label for ${profile} only (sets ${labelSlot(c.template)} in its links)`}
                           onClick={() => setLabel({ name: m.name, value: shown ?? "" })}
                         >
                           <TbPencil size={13} />
@@ -374,6 +397,7 @@ export function ProfileServersPanel({
                 ))}
               </tbody>
             </Table>
+            <PingFailures http={http} />
           </>
         )}
       </Card.Body>

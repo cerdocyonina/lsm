@@ -2,6 +2,7 @@ import {
   ensureUserCredentials,
   resolvedIdentityFor,
 } from "./ensure-credentials";
+import { withLabel } from "./link-label";
 import { encodeMieruLink } from "./mieru-link";
 import {
   applyServerPlaceholders,
@@ -61,9 +62,9 @@ export function renderSubscriptionLinks(
   // mierus://-ссылки (profile=🇩🇪 DE 2 можно писать как есть). Для остальных схем оба — no-op.
   return templates.map((template, index) => {
     let link = resolveTemplate(template, identity);
+    // A profile's own label replaces the template's (#…, or profile= for mieru).
     const displayName = serverRecords[index]?.displayName;
-    if (displayName != null)
-      link = link.split("#")[0] + "#" + encodeURIComponent(displayName);
+    if (displayName != null) link = withLabel(link, displayName);
     return encodeMieruLink(encodeShadowsocksLink(link));
   });
 }

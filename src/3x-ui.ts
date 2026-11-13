@@ -378,6 +378,112 @@ export class XUIService {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Batch sync (/sync-clients): one panel read, a UUID-aware plan, then the writes.
+  // ---------------------------------------------------------------------------
+
+  /** Every client on the panel with its UUID and inbound attachments. */
+  private async listClients(needsUuid: (email: string) => boolean): Promise<PanelClient[]> {
+    const response = await this.request("/panel/api/clients/list");
+    const data = (await response.json()) as any;
+    if (!data.success || !Array.isArray(data.obj))
+      throw new Error(`Cannot list 3x-ui clients: ${data.msg ?? "unexpected response"}`);
+    const clients = data.obj.map(parsePanelClient).filter((c: PanelClient | null): c is PanelClient => c !== null);
+    // The list normally carries `uuid`; if this panel version omits it, ask per client —
+    // but only for the ones the plan can touch.
+    for (const c of clients)
+      if (c.uuid === undefined && needsUuid(c.email)) {
+        const full = await this.getClient(c.email);
+        if (full) Object.assign(c, { uuid: full.uuid, inboundIds: c.inboundIds ?? full.inboundIds });
+      }
+    return clients;
+  }
+
+  private async getClient(email: string): Promise<PanelClient | null> {
+    const response = await this.request(`/panel/api/clients/get/${encodeURIComponent(email)}`);
+    const data = (await response.json()) as any;
+    if (!data.success || data.obj == null) return null;
+    const obj = data.obj;
+    // Either the flat record or { client, inboundIds } depending on the panel version.
+    return parsePanelClient({ ...(obj.client ?? obj), inboundIds: obj.inboundIds ?? obj.client?.inboundIds });
+  }
+
+  private async panelCall(path: string, body?: unknown): Promise<void> {
+    const response = await this.request(path, {
+      method: "POST",
+      ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+    });
+    const result = (await response.json()) as any;
+    if (!result.success) throw new Error(result.msg || `${path} was rejected`);
+  }
+
+  /** Partial update: the panel keeps every field the body omits. */
+  private updateClient(email: string, patch: Record<string, unknown>) {
+    return this.panelCall(`/panel/api/clients/update/${encodeURIComponent(email)}`, patch);
+  }
+
+  private async setClientUuid(email: string, uuid: string): Promise<void> {
+    // Write-side payloads name the UUID `id`, read-side records `uuid`; try both, then check.
+    for (const patch of [{ id: uuid }, { uuid }]) {
+      await this.updateClient(email, patch);
+      if ((await this.getClient(email))?.uuid === uuid) return;
+    }
+    throw new Error("panel did not apply the UUID change");
+  }
+
+  private async runStep(step: ClientStep, inboundId: number): Promise<void> {
+    const attach = (email: string) =>
+      this.panelCall(`/panel/api/clients/${encodeURIComponent(email)}/attach`, { inboundIds: [inboundId] });
+    switch (step.kind) {
+      case "add":
+        if ((await this.addNewUser(inboundId, step.email, step.uuid)) !== "added") throw new Error("panel rejected the new client");
+        return;
+      case "keep-both":
+        if ((await this.addNewUser(inboundId, step.as, step.uuid)) !== "added") throw new Error("panel rejected the new client");
+        return;
+      case "rename":
+        await this.updateClient(step.from, { email: step.email });
+        if (step.attach) await attach(step.email);
+        return;
+      case "overwrite":
+        await this.setClientUuid(step.email, step.uuid);
+        if (step.attach) await attach(step.email);
+        return;
+      case "attach":
+        await attach(step.email);
+        return;
+      case "detach":
+        await this.panelCall(`/panel/api/clients/${encodeURIComponent(step.email)}/detach`, { inboundIds: [inboundId] });
+        return;
+      case "delete":
+        await this.panelCall(`/panel/api/clients/del/${encodeURIComponent(step.email)}`);
+        return;
+      default:
+        return; // unchanged / conflict / not-found: nothing to write
+    }
+  }
+
+  /**
+   * Brings one inbound in line with the listed clients and removals. Clients the request
+   * doesn't mention are never touched. With dryRun the plan is returned without writes.
+   */
+  async syncClients(req: ClientSyncRequest): Promise<{ results: ClientOutcome[] }> {
+    await this.ensureLoggedIn();
+    const panel = await this.listClients(relevantTo(req));
+    const steps = planClientSync(panel, req);
+    if (req.dryRun) return { results: steps.map((s) => ({ ...s, ok: true })) };
+    const results: ClientOutcome[] = [];
+    for (const step of steps) {
+      try {
+        await this.runStep(step, req.inboundId);
+        results.push({ ...step, ok: true });
+      } catch (err) {
+        results.push({ ...step, ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { results };
+  }
+
   async logout(): Promise<void> {
     if (!this.cookie) return;
 
@@ -394,4 +500,141 @@ export class XUIService {
       this.csrfToken = null;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Client sync planning (pure, shared by lsmnode and its tests)
+// ---------------------------------------------------------------------------
+
+/** A client LSM wants on the inbound. `legacyEmail` is the pre-2.0 plain client name. */
+export type DesiredClient = { email: string; uuid: string; legacyEmail?: string };
+/** A client LSM revoked; matched by UUID so a same-named stranger is never removed. */
+export type ClientRemoval = { email: string; uuid: string };
+export type ConflictStrategy = "skip" | "overwrite" | "keep-both";
+export type ClientSyncRequest = {
+  inboundId: number;
+  clients: DesiredClient[];
+  remove?: ClientRemoval[];
+  onConflict: ConflictStrategy;
+  dryRun?: boolean;
+};
+export type PanelClient = { email: string; uuid?: string; inboundIds?: number[] };
+
+export type ClientStep =
+  | { kind: "add"; email: string; uuid: string }
+  | { kind: "rename"; email: string; from: string; uuid: string; attach: boolean }
+  | { kind: "attach"; email: string; uuid: string }
+  | { kind: "overwrite"; email: string; uuid: string; attach: boolean }
+  | { kind: "keep-both"; email: string; as: string; uuid: string }
+  | { kind: "conflict"; email: string; uuid: string; detail: string }
+  | { kind: "unchanged"; email: string; uuid: string }
+  | { kind: "delete"; email: string; uuid: string; reason: "revoked" | "duplicate" }
+  | { kind: "detach"; email: string; uuid: string; reason: "revoked" }
+  | { kind: "not-found"; email: string; uuid: string };
+export type ClientOutcome = ClientStep & { ok: boolean; error?: string };
+
+function parsePanelClient(raw: any): PanelClient | null {
+  if (!raw || typeof raw.email !== "string") return null;
+  const uuid = typeof raw.uuid === "string" && raw.uuid ? raw.uuid : typeof raw.id === "string" && raw.id ? raw.id : undefined;
+  const inboundIds = Array.isArray(raw.inboundIds) ? raw.inboundIds.filter((n: unknown) => typeof n === "number") : undefined;
+  return { email: raw.email, uuid, inboundIds };
+}
+
+/** Same user under another LSM-style name: plain legacy name, renamed profile or renamed user. */
+function isEarlierName(email: string, d: DesiredClient): boolean {
+  const dot = d.email.indexOf(".");
+  const profile = dot > 0 ? d.email.slice(0, dot) : "";
+  const legacy = d.legacyEmail;
+  return (
+    (legacy !== undefined && (email === legacy || email.endsWith(`.${legacy}`))) ||
+    (profile !== "" && email.startsWith(`${profile}.`))
+  );
+}
+
+/** Whether a revocation for `wanted` refers to the panel client `email` (either naming scheme). */
+function sameName(email: string, wanted: string): boolean {
+  return email === wanted || email.endsWith(`.${wanted}`) || wanted.endsWith(`.${email}`);
+}
+
+function relevantTo(req: ClientSyncRequest): (email: string) => boolean {
+  return (email) =>
+    req.clients.some((d) => d.email === email || isEarlierName(email, d)) ||
+    (req.remove ?? []).some((r) => sameName(email, r.email));
+}
+
+/**
+ * Decides what to do for each listed client. Identity is the UUID: a client already on
+ * the panel under an older LSM name (e.g. plain "client1" before profile prefixes) is
+ * renamed rather than duplicated, so traffic stats and limits survive.
+ */
+export function planClientSync(panel: PanelClient[], req: ClientSyncRequest): ClientStep[] {
+  const steps: ClientStep[] = [];
+  const byEmail = new Map(panel.map((c) => [c.email, c]));
+  const desired = new Set(req.clients.map((c) => c.email));
+  const taken = new Set(panel.map((c) => c.email));
+  const claimed = new Set<string>();
+  // Unknown attachments: assume attached rather than issue a speculative attach.
+  const onInbound = (c: PanelClient) => !c.inboundIds || c.inboundIds.includes(req.inboundId);
+
+  for (const d of req.clients) {
+    const current = byEmail.get(d.email);
+    if (current) {
+      claimed.add(current.email);
+      if (current.uuid === undefined) {
+        steps.push({ kind: "conflict", email: d.email, uuid: d.uuid, detail: "the panel did not report this client's UUID" });
+      } else if (current.uuid === d.uuid) {
+        steps.push(onInbound(current) ? { kind: "unchanged", email: d.email, uuid: d.uuid } : { kind: "attach", email: d.email, uuid: d.uuid });
+        // A copy left under an older name (an earlier rename, or a re-added legacy client)
+        // goes away when the current client already covers all of its inbounds.
+        for (const old of panel) {
+          if (claimed.has(old.email) || desired.has(old.email) || old.uuid !== d.uuid || !isEarlierName(old.email, d)) continue;
+          const covered = new Set([req.inboundId, ...(current.inboundIds ?? [])]);
+          if (old.inboundIds && old.inboundIds.every((id) => covered.has(id))) {
+            claimed.add(old.email);
+            steps.push({ kind: "delete", email: old.email, uuid: d.uuid, reason: "duplicate" });
+          }
+        }
+      } else if (req.onConflict === "overwrite") {
+        steps.push({ kind: "overwrite", email: d.email, uuid: d.uuid, attach: !onInbound(current) });
+      } else if (req.onConflict === "keep-both") {
+        let n = 1;
+        while (taken.has(`${d.email}_${n}`)) n++;
+        taken.add(`${d.email}_${n}`);
+        steps.push({ kind: "keep-both", email: d.email, as: `${d.email}_${n}`, uuid: d.uuid });
+      } else {
+        steps.push({ kind: "conflict", email: d.email, uuid: d.uuid, detail: "exists on the panel with a different UUID" });
+      }
+      continue;
+    }
+    const previous = panel.find(
+      (c) => !claimed.has(c.email) && !desired.has(c.email) && c.uuid === d.uuid && isEarlierName(c.email, d),
+    );
+    if (previous) {
+      claimed.add(previous.email);
+      steps.push({ kind: "rename", email: d.email, from: previous.email, uuid: d.uuid, attach: !onInbound(previous) });
+    } else {
+      steps.push({ kind: "add", email: d.email, uuid: d.uuid });
+    }
+  }
+
+  for (const r of req.remove ?? []) {
+    const matches = panel.filter(
+      (c) => !claimed.has(c.email) && !desired.has(c.email) && c.uuid === r.uuid && sameName(c.email, r.email),
+    );
+    const here = matches.filter(onInbound);
+    if (!here.length) {
+      steps.push({ kind: "not-found", email: r.email, uuid: r.uuid });
+      continue;
+    }
+    for (const c of here) {
+      claimed.add(c.email);
+      // Clients are global: on several inbounds, only leave this one.
+      steps.push(
+        c.inboundIds && c.inboundIds.length > 1
+          ? { kind: "detach", email: c.email, uuid: r.uuid, reason: "revoked" }
+          : { kind: "delete", email: c.email, uuid: r.uuid, reason: "revoked" },
+      );
+    }
+  }
+  return steps;
 }

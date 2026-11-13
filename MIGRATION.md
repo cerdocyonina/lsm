@@ -1,17 +1,33 @@
 # Shared connections migration
 
-## 1.7: servers instead of services/connections
+## 2.0: profile-qualified 3x-ui emails
+
+### 3x-ui client emails: `profile.client`
+
+3x-ui clients are global per panel and keyed by email, so plain client names collided across profiles (two `client1`s on one panel: only the first one ever got in). 3x-ui emails are now `<profile>.<client>`, like the NaïveProxy/SS2022/mieru logins.
+
+- **Update lsmnode on every host with a 3x-ui backend first.** The master uses the new `POST /sync-clients`; an older agent answers 404 and the push fails with "lsmnode is too old" without changing the panel.
+- The first push renames existing clients in place by UUID (`client1` → `main.client1`), keeping traffic stats and limits, and adds the ones that never made it in (e.g. `par.client1`). Run **Check only** from the server's push menu first to see the plan.
+- Later user or profile renames follow the same way on the next push. Revocations only remove a client whose UUID matches, and only detach it if it's on other inbounds too.
+- The push menu offers the old conflict strategies for clients already on the panel with another UUID: skip (default for automatic pushes), overwrite, keep both. **Check only** replaces the old "safe" strategy.
+- Removed: the per-profile `POST /profiles/:p/servers/:name/sync-users` endpoint (old UI only).
+
+### mieru labels use `profile=`
+
+mieru clients show the `profile=` value, not `#`. A profile's label override for a mieru server now replaces `profile=`; `#` is left as is.
+
+## 1.6.1: servers instead of services/connections
 
 The admin UI now shows two things only: **hosts** (lsmnode agents) and **servers** (one subscription link each, optionally synced through a host backend). Services still exist in the database, but they are created, reused and removed automatically from each server's "Sync users via agent" settings. A service left without servers is removed after its last push succeeds. If that push failed, the host card lists it with **Retry push** / **Forget**.
 
-On first start, 1.7 runs a one-time cleanup (`PRAGMA user_version` 0 → 1):
+On first start, 1.6.1 runs a one-time cleanup (`PRAGMA user_version` 0 → 1):
 
 - Connections on the same service whose templates differ only after `#`, and which are used by different profiles, are merged into the oldest one. Each other profile keeps its label as a per-profile override, so clients see the same names (the override is percent-encoded in the link).
 - Per-profile entry names are aligned with the server name where that doesn't collide.
 
 Copies used twice by one profile, and unused copies, are left alone. Deleting a host now deletes its servers too (locally; nothing is sent to the agent).
 
-Saves no longer wait for agents. `POST /inventory/{servers,hosts,assignments,setup,…}` and `DELETE /inventory/connections/:id` write to the DB and answer with `pendingSync` (service IDs whose user list changed); the admin UI then calls `POST /inventory/sync` with those IDs in the background. Renames and template edits produce no push at all; a host only re-pushes when its agent URL or secret changes.
+(1.6.2) Saves no longer wait for agents. `POST /inventory/{servers,hosts,assignments,setup,…}` and `DELETE /inventory/connections/:id` write to the DB and answer with `pendingSync` (service IDs whose user list changed); the admin UI then calls `POST /inventory/sync` with those IDs in the background. Renames and template edits produce no push at all; a host only re-pushes when its agent URL or secret changes.
 
 ## 1.6
 

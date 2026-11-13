@@ -72,19 +72,6 @@ export type SyncResult = {
   msg?: string;
 };
 
-export type SyncConflictStrategy = "overwrite" | "skip" | "keep-both" | "safe";
-
-export type NodeSyncUsersResult =
-  | { conflicts: string[] }
-  | {
-      synced: number;
-      failed: number;
-      results: { clientName: string; result: string; msg?: string }[];
-      /** Declarative nodes (naive/ss/mieru) only: the node and how many users each profile on it contributed. */
-      node?: string;
-      profiles?: { name: string; users: number }[];
-    };
-
 export type PingResult = {
   ok: boolean;
   latencyMs: number | null;

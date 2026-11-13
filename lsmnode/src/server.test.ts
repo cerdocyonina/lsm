@@ -103,3 +103,40 @@ describe("agent HTTP compatibility and discovery", () => {
     expect(max).toBe(1);
   });
 });
+
+describe("/sync-clients", () => {
+  function handlerWith(syncClients: NodeBackend["syncClients"]) {
+    const backends = new Map<string, NodeBackend>([
+      ["xui", { kind: "xui", health: async () => ({ ok: true }), syncClients }],
+      ["naive", { kind: "naive", health: async () => ({ ok: true }), syncUsers: async () => ({ synced: 0 }) }],
+    ]);
+    return createAgentHandler({ backends, defaultName: "xui" }, "secret", { version: "test" });
+  }
+  const post = (path: string, body: unknown) =>
+    new Request(`http://agent${path}`, {
+      method: "POST",
+      headers: { Authorization: "Bearer secret", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  test("validates and forwards to the 3x-ui backend, on the default and named route", async () => {
+    const seen: unknown[] = [];
+    const handler = handlerWith(async (req) => {
+      seen.push(req);
+      return { results: [] };
+    });
+    const body = {
+      inboundId: 3,
+      clients: [{ email: "main.a", uuid: "A", legacyEmail: "a" }],
+      remove: [{ email: "main.b", uuid: "B" }],
+      onConflict: "overwrite",
+      dryRun: true,
+    };
+    for (const path of ["/sync-clients", "/xui/sync-clients"])
+      expect((await handler(post(path, body))).status).toBe(200);
+    expect(seen[0]).toEqual(body);
+    expect((await handler(post("/sync-clients", { ...body, inboundId: 0 }))).status).toBe(400);
+    expect((await handler(post("/sync-clients", { ...body, clients: [{ email: "x" }] }))).status).toBe(400);
+    expect((await handler(post("/naive/sync-clients", body))).status).toBe(400);
+  });
+});
