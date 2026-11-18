@@ -433,7 +433,12 @@ export default function App() {
 
   async function handleDeleteProfile(name: string) {
     try {
-      await api(`/profiles/${encodeURIComponent(name)}`, { method: "DELETE" });
+      const payload = await api<{ pendingSync?: number[] }>(
+        `/profiles/${encodeURIComponent(name)}`,
+        { method: "DELETE" },
+      );
+      // Its users are revoked on the nodes in the background.
+      if (payload?.pendingSync?.length) void inventory.push(payload.pendingSync);
       const remaining = profiles.filter((p) => p.name !== name);
       setProfiles(remaining);
       toast.success("Profile deleted");

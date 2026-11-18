@@ -43,10 +43,13 @@ function buildDeclarativeUsersForNode(
   ownerId: number,
   secretOf: (user: UserRecord) => string,
   validSecret: (secret: string) => boolean,
+  { maxLoginBytes = Infinity, caseInsensitive = false } = {},
 ): DeclarativeUsers {
   const valid: NaiveUser[] = [];
   const skipped: string[] = [];
   const profiles: DeclarativeUsers["profiles"] = [];
+  // Xray keys clients by lower-cased email and refuses a second "main.Alice" beside "main.alice".
+  const seen = new Set<string>();
   for (const profile of storage.listProfiles(ownerId)) {
     const usesNode = storage
       .listServerRecords(profile.name, ownerId)
@@ -56,8 +59,15 @@ function buildDeclarativeUsersForNode(
     let pushed = 0;
     for (const user of storage.listUsers(profile.name, ownerId)) {
       const login = naiveLogin(profile.name, user.clientName);
+      const key = caseInsensitive ? login.toLowerCase() : login;
       const secret = secretOf(user);
-      if (NAIVE_CRED_RE.test(login) && validSecret(secret)) {
+      if (
+        NAIVE_CRED_RE.test(login) &&
+        Buffer.byteLength(login) <= maxLoginBytes &&
+        !seen.has(key) &&
+        validSecret(secret)
+      ) {
+        seen.add(key);
         valid.push({ user: login, pass: secret });
         pushed++;
       } else {
@@ -92,7 +102,9 @@ export function buildShadowsocksUsersForNode(
   ownerId: number,
 ): DeclarativeUsers {
   // sskey генерится нами как стандартный base64 → валиден по построению; проверять не нужно.
-  return buildDeclarativeUsersForNode(storage, nodeId, ownerId, credential(storage, "sskey"), () => true);
+  return buildDeclarativeUsersForNode(storage, nodeId, ownerId, credential(storage, "sskey"), () => true, {
+    caseInsensitive: true,
+  });
 }
 
 /**
@@ -106,8 +118,13 @@ export function buildMieruUsersForNode(
   nodeId: number,
   ownerId: number,
 ): DeclarativeUsers {
-  return buildDeclarativeUsersForNode(storage, nodeId, ownerId, credential(storage, "mpass"), (s) =>
-    NAIVE_CRED_RE.test(s),
+  return buildDeclarativeUsersForNode(
+    storage,
+    nodeId,
+    ownerId,
+    credential(storage, "mpass"),
+    (s) => NAIVE_CRED_RE.test(s),
+    { maxLoginBytes: 64 }, // mita's limit on user names
   );
 }
 
@@ -122,7 +139,9 @@ export function buildXrayUsersForNode(
   ownerId: number,
 ): DeclarativeUsers {
   // The agent rejects the whole list over one bad id, so a malformed UUID is skipped here instead.
-  return buildDeclarativeUsersForNode(storage, nodeId, ownerId, (u) => u.userUuid, (s) => UUID_RE.test(s));
+  return buildDeclarativeUsersForNode(storage, nodeId, ownerId, (u) => u.userUuid, (s) => UUID_RE.test(s), {
+    caseInsensitive: true,
+  });
 }
 
 /** The full target list for any declarative node, by its type. */
@@ -155,7 +174,8 @@ export async function syncNaiveNode(
   try {
     const res = await fetch(`${node.url}/sync-users`, {
       method: "POST",
-      signal: AbortSignal.timeout(20000),
+      // Xray backends test the config and restart, then wait for the port: can take a while.
+      signal: AbortSignal.timeout(60000),
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${node.secret}` },
       body: JSON.stringify({ users }),
       tls: { rejectUnauthorized: false },

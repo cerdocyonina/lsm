@@ -180,6 +180,13 @@ export interface Storage {
     credentials: Record<string, string>,
     ownerId: number,
   ): boolean;
+  /** Adds only the keys the user doesn't have yet; returns the stored set (null: no such user). */
+  fillUserCredentials(
+    profileName: string,
+    clientName: string,
+    generated: Record<string, string>,
+    ownerId: number,
+  ): Record<string, string> | null;
   recordSubscriptionFetch(
     subscriptionToken: string,
     fetchedAt: number,
@@ -1019,6 +1026,36 @@ export class SqliteStorage implements Storage {
       return result.changes > 0;
     });
     return tx() as boolean;
+  }
+
+  public fillUserCredentials(
+    profileName: string,
+    clientName: string,
+    generated: Record<string, string>,
+    ownerId: number,
+  ): Record<string, string> | null {
+    // The subscription and admin processes share the DB and may both generate a missing key
+    // at once; whoever writes first wins, so a link and a node push can't disagree.
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .query(
+          `SELECT u.credentials AS credentials FROM users u JOIN profiles p ON p.id = u.profile_id
+           WHERE p.name = ?1 AND p.owner_id = ?3 AND u.client_name = ?2`,
+        )
+        .get(profileName, clientName, ownerId) as { credentials: string } | null;
+      if (!row) return null;
+      const stored = parseCredentials(row.credentials);
+      const merged = { ...generated, ...stored };
+      if (Object.keys(merged).length !== Object.keys(stored).length)
+        this.db
+          .query(
+            `UPDATE users SET credentials = ?1
+             WHERE profile_id = (SELECT id FROM profiles WHERE name = ?2 AND owner_id = ?4) AND client_name = ?3`,
+          )
+          .run(JSON.stringify(merged), profileName, clientName, ownerId);
+      return merged;
+    });
+    return tx.immediate() as Record<string, string> | null;
   }
 
   public recordSubscriptionFetch(

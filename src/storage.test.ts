@@ -28,6 +28,17 @@ describe("user credentials", () => {
     expect(storage.listUsers("main", owner)[0]!.credentials).toEqual({ user: "alice", pass: "p1" });
   });
 
+  test("fillUserCredentials only adds missing keys and returns what is stored", () => {
+    storage.setUserCredentials("main", "alice", { pass: "first" }, owner);
+    // Another process generated "pass" too, a moment later: the stored one wins.
+    expect(storage.fillUserCredentials("main", "alice", { pass: "second", sskey: "k" }, owner)).toEqual({
+      pass: "first",
+      sskey: "k",
+    });
+    expect(storage.listUsers("main", owner)[0]!.credentials).toEqual({ pass: "first", sskey: "k" });
+    expect(storage.fillUserCredentials("main", "nobody", { pass: "x" }, owner)).toBeNull();
+  });
+
   test("setUserCredentials мержит, а не перетирает", () => {
     storage.setUserCredentials("main", "alice", { user: "alice" }, owner);
     storage.setUserCredentials("main", "alice", { pass: "p1" }, owner);

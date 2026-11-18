@@ -1257,12 +1257,26 @@ export async function handleAdminApiRequest(
     }
 
     if (req.method === "DELETE") {
+      // Read before the cascade takes them: these users lose access everywhere.
+      const services = profileServices(storage, profileId, adminUserId);
+      const users = storage.listUsers(profileId, adminUserId);
       const deleted = storage.deleteProfile(profileId, adminUserId);
       if (!deleted) {
         return adminErrorResponse(404, `Unknown profile: ${profileId}`);
       }
+      // 3x-ui only removes what it's told to (by UUID); the other backends drop them on
+      // the full-list push. The UI pushes these services in the background.
+      for (const id of services)
+        if (storage.getNode(id, adminUserId)?.type === "xui")
+          for (const u of users)
+            storage.queueRemoval(
+              id,
+              xuiEmail(profileId, u.clientName),
+              u.userUuid,
+              adminUserId,
+            );
 
-      return noStoreResponse(new Response(null, { status: 204 }));
+      return noStoreResponse(jsonResponse({ pendingSync: services }));
     }
 
     return adminErrorResponse(405, "Method not allowed.");
@@ -1503,10 +1517,20 @@ export async function handleAdminApiRequest(
     if (nodeIds.length > 0) {
       const profileNodes = storage.listNodesForProfile(profileId, adminUserId);
       const selectedNodes = profileNodes.filter((n) => nodeIds.includes(n.id));
+      // Queued first, so a 3x-ui removal that fails now goes out again with the next push.
+      const email = xuiEmail(profileId, userPathName);
+      for (const n of selectedNodes)
+        if (n.type === "xui")
+          storage.queueRemoval(n.id, email, user.userUuid, adminUserId);
       const settled = await deleteUserFromNodes(selectedNodes, userPathName, user.userUuid, {
         storage,
         profileName: profileId,
         ownerId: adminUserId,
+      });
+      settled.forEach((r, i) => {
+        const node = selectedNodes[i]!;
+        if (node.type === "xui" && r.status === "fulfilled" && r.value.result !== "failed")
+          storage.clearRemovals(node.id, adminUserId, [user.userUuid]);
       });
       const syncResults = settled.map((r) =>
         r.status === "fulfilled"

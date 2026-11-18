@@ -14,12 +14,17 @@ export function ensureUserCredentials(
   const missing = missingCredentialKeys(required, user.credentials);
   if (missing.length === 0) return user.credentials;
 
-  const next = { ...user.credentials };
+  const generated: Record<string, string> = {};
   for (const key of missing) {
-    next[key] = generateCredential(key, user.clientName);
+    generated[key] = generateCredential(key, user.clientName);
   }
-  storage.setUserCredentials(user.profileName, user.clientName, next, user.ownerId);
-  return next;
+  // Another process may have stored some of these meanwhile: use what is in the DB.
+  return (
+    storage.fillUserCredentials(user.profileName, user.clientName, generated, user.ownerId) ?? {
+      ...user.credentials,
+      ...generated,
+    }
+  );
 }
 
 /**

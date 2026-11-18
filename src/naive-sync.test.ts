@@ -208,6 +208,20 @@ describe("buildMieruUsersForNode", () => {
   });
 });
 
+describe("mieru login length", () => {
+  test("a login over mita's 64 bytes is skipped instead of failing the whole push", () => {
+    const storage = new SqliteStorage(":memory:", "admin");
+    const owner = storage.getPrimaryAdmin().id;
+    const nodeId = storage.addNode("m", "http://x:9000/mieru", "sek", 0, owner, 0, "mieru").id;
+    storage.addServer("main", "s", "mierus://{user}:{mpass}@h?profile=x", 0, owner, nodeId);
+    storage.addUser("main", "ok", "t1", "u1", 1000, owner);
+    storage.addUser("main", "x".repeat(60), "t2", "u2", 1001, owner); // "main." + 60 = 65 bytes
+    const { users, skipped } = buildMieruUsersForNode(storage, nodeId, owner);
+    expect(users.map((u) => u.user)).toEqual(["main.ok"]);
+    expect(skipped).toEqual([`main/${"x".repeat(60)}`]);
+  });
+});
+
 describe("buildXrayUsersForNode", () => {
   const VLESS = "vless://{uuid}@{ip}:443?type=tcp&security=reality#x";
   let storage: SqliteStorage;
@@ -243,6 +257,15 @@ describe("buildXrayUsersForNode", () => {
     const { users, skipped } = buildXrayUsersForNode(storage, nodeId, owner);
     expect(users.map((u) => u.user)).toEqual(["main.ok"]);
     expect(skipped).toEqual(["main/legacy"]);
+  });
+
+  test("names that differ only in case: Xray keeps one email per lower-cased name", () => {
+    storage.addServer("main", "s-main", VLESS, 0, owner, nodeId);
+    storage.addUser("main", "Alice", "t1", "11111111-2222-4333-8444-555555555555", 1000, owner);
+    storage.addUser("main", "alice", "t2", "66666666-7777-4888-9999-aaaaaaaaaaaa", 1001, owner);
+    const { users, skipped } = buildXrayUsersForNode(storage, nodeId, owner);
+    expect(users).toHaveLength(1);
+    expect(skipped).toHaveLength(1);
   });
 
   test("buildDeclarativeUsers dispatches an xray node to the UUID list", () => {

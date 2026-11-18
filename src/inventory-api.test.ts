@@ -375,6 +375,30 @@ describe("renaming a profile or user", () => {
     expect(storage.pendingRemovals(xui.id, owner)).toEqual([]);
   });
 
+  test("deleting a profile revokes its users: 3x-ui removals queued, services pushed", async () => {
+    const { storage, owner, request } = setup();
+    const naive = storage.addNode("naive", "http://127.0.0.1:1", "s", 0, owner, 1, "naive");
+    const xui = storage.addNode("xui", "http://127.0.0.1:1", "s", 1, owner, 1);
+    storage.assignConnection(storage.saveConnection(null, "n", "naive+https://{user}:{pass}@h#n", naive.id, owner), "work", true, owner);
+    storage.assignConnection(storage.saveConnection(null, "x", "vless://{uuid}@h#x", xui.id, owner), "work", true, owner);
+    const r = await request("/profiles/work", undefined, "DELETE");
+    expect(r.status).toBe(200);
+    expect([...r.body.pendingSync].sort()).toEqual([naive.id, xui.id].sort());
+    expect(storage.pendingRemovals(xui.id, owner)).toEqual([{ clientName: "work.alice", userUuid: "uuid-work" }]);
+    expect(storage.pendingRemovals(naive.id, owner)).toEqual([]);
+  });
+
+  test("a 3x-ui removal that fails on user delete stays queued for the next push", async () => {
+    const { storage, owner, request } = setup();
+    const agent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ error: "offline" }, { status: 503 }) });
+    cleanup.push(() => agent.stop(true));
+    const xui = storage.addNode("xui", agent.url.origin, "s", 1, owner, 1);
+    storage.assignConnection(storage.saveConnection(null, "x", "vless://{uuid}@h#x", xui.id, owner), "work", true, owner);
+    const r = await request("/profiles/work/users/alice", { nodeIds: [xui.id] }, "DELETE");
+    expect(r.body.syncResults[0].result).toBe("failed");
+    expect(storage.pendingRemovals(xui.id, owner)).toEqual([{ clientName: "work.alice", userUuid: "uuid-work" }]);
+  });
+
   test("a new UUID queues the old one as revoked, so the agent replaces LSM's own client", async () => {
     const { storage, owner, request } = setup();
     const xui = storage.addNode("xui", "http://127.0.0.1:1", "s", 1, owner, 1);

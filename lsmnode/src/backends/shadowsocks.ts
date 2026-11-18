@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { dirname } from "node:path";
@@ -16,12 +17,18 @@ const DEFAULT_CONFIG_IN_CONTAINER = "/etc/xray/config.json";
 
 type XrayClient = { password: string; email: string };
 
+/** Label of the stand-in client that keeps an inbound with no users closed. */
+export const NO_USERS_LABEL = "lsm-no-users";
+
 /**
  * Рендерит полный конфиг Xray под один shadowsocks-2022 inbound с EIH-мультиюзером.
  *
  * settings.password — это identity-PSK сервера (общий), а каждый клиент носит свой
  * personal-PSK в clients[].password. Клиент подключается паролем "<iPSK>:<userPSK>".
- * Пустой список клиентов = доступ закрыт для всех (декларативно, как и должно быть).
+ *
+ * An empty list must NOT render clients: [] — Xray then runs the inbound single-user, keyed
+ * by the identity PSK alone, and that key sits in plain text in every link ever handed out.
+ * Instead it gets one client with a random key nobody holds: multi-user mode, nobody in.
  */
 export function renderXrayConfig(deps: ShadowsocksDeps, users: NaiveUser[]): string {
   for (const { user, pass } of users) {
@@ -32,7 +39,9 @@ export function renderXrayConfig(deps: ShadowsocksDeps, users: NaiveUser[]): str
       throw new Error(`invalid PSK for client ${JSON.stringify(user)}: expected base64 ${PSK_RE}`);
     }
   }
-  const clients: XrayClient[] = users.map(({ user, pass }) => ({ password: pass, email: user }));
+  const clients: XrayClient[] = users.length
+    ? users.map(({ user, pass }) => ({ password: pass, email: user }))
+    : [{ password: randomPskLike(deps.identityKey), email: NO_USERS_LABEL }];
   const config = {
     log: { loglevel: "warning" },
     inbounds: [
@@ -52,6 +61,12 @@ export function renderXrayConfig(deps: ShadowsocksDeps, users: NaiveUser[]): str
     outbounds: [{ protocol: "freedom" }],
   };
   return JSON.stringify(config, null, 2) + "\n";
+}
+
+/** A fresh random key as long as the identity key (16 bytes for aes-128, 32 for aes-256). */
+function randomPskLike(identityKey: string): string {
+  const bytes = Buffer.from(identityKey, "base64").length || 16;
+  return randomBytes(bytes).toString("base64");
 }
 
 async function writeAtomic(path: string, content: string): Promise<void> {

@@ -1,5 +1,15 @@
 # Shared connections migration
 
+## 2.2.1: revocations and the other backends
+
+Update lsmnode on hosts with an SS2022 backend (the first item); the rest is master-only.
+
+- **SS2022 with no users was open.** When a server lost its last profile (or its last user), the agent wrote `clients: []`, and Xray then runs the inbound single-user on the identity key, which every SS link carries in plain text. The agent now writes one placeholder client (`lsm-no-users`) with a random key instead. If any SS2022 config on your hosts has `"clients": []`, push that server again after updating lsmnode.
+- **Deleting a profile now revokes its users.** Before, nothing reached the nodes: NaïveProxy/SS2022/mieru/Xray kept them until the service's next push, and 3x-ui kept them for good. Now 3x-ui removals are queued and the profile's servers are pushed in the background. Clients of profiles deleted earlier are still on 3x-ui panels; delete them there by hand.
+- **Deleting a user:** a 3x-ui removal that fails (agent offline) is queued and retried on the next push.
+- A credential generated at the same moment by the subscription and admin processes can no longer differ between a link and a node (the first stored value wins).
+- A user the agent would reject is skipped and reported instead of failing the whole push: mieru names over 64 bytes, and names that differ only in case on Xray-based backends (SS2022, bare Xray). Declarative pushes now wait up to 60 s (an Xray test + restart can take a while).
+
 ## 2.2: 3x-ui renames keep clients enabled
 
 lsmnode 2.0–2.1 renamed 3x-ui clients (`client1` → `main.client1`) and overwrote UUIDs by sending only the changed field. Released 3x-ui (up to 3.11.0) treats a client update as the whole client and resets everything left out. So every renamed client came out **disabled and without its `xtls-rprx-vision` flow**, and its limits, expiry and comment were cleared too. Upstream fixed this after 3.11.0 (MHSanaei/3x-ui#7042), but no release has it yet.
