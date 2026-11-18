@@ -399,13 +399,40 @@ export class XUIService {
     return clients;
   }
 
-  private async getClient(email: string): Promise<PanelClient | null> {
+  /** The stored record as the panel returns it (flat, or { client, inboundIds } by version). */
+  private async getRecord(email: string): Promise<{ record: Record<string, unknown>; inboundIds?: unknown } | null> {
     const response = await this.request(`/panel/api/clients/get/${encodeURIComponent(email)}`);
     const data = (await response.json()) as any;
     if (!data.success || data.obj == null) return null;
     const obj = data.obj;
-    // Either the flat record or { client, inboundIds } depending on the panel version.
-    return parsePanelClient({ ...(obj.client ?? obj), inboundIds: obj.inboundIds ?? obj.client?.inboundIds });
+    return { record: obj.client ?? obj, inboundIds: obj.inboundIds ?? obj.client?.inboundIds };
+  }
+
+  private async getClient(email: string): Promise<PanelClient | null> {
+    const found = await this.getRecord(email);
+    return found && parsePanelClient({ ...found.record, inboundIds: found.inboundIds });
+  }
+
+  /**
+   * Rewrites a client from its stored record with `changes` applied. Released 3x-ui
+   * (≤ 3.11) resets every field an update omits, so a body of just { email } disables the
+   * client and drops its flow; the whole record keeps it intact on every version.
+   */
+  private async rewriteClient(
+    email: string,
+    changes: (stored: Record<string, unknown>) => Record<string, unknown>,
+    expect: { email: string; uuid: string; enable?: boolean },
+  ): Promise<void> {
+    const found = await this.getRecord(email);
+    if (!found) throw new Error(`"${email}" is not on the panel any more`);
+    await this.updateClient(email, { ...fullClientBody(found.record), ...changes(found.record) });
+    const after = await this.getClient(expect.email);
+    if (!after) throw new Error(`panel did not keep the client as "${expect.email}"`);
+    if (after.uuid !== expect.uuid) throw new Error("panel did not apply the UUID change");
+    // Unless asked otherwise, the client must come back as on (or off) as it was.
+    const enable = expect.enable ?? (typeof found.record.enable === "boolean" ? found.record.enable : undefined);
+    if (enable !== undefined && after.enable !== undefined && after.enable !== enable)
+      throw new Error(`panel left the client ${after.enable ? "enabled" : "disabled"}`);
   }
 
   private async panelCall(path: string, body?: unknown): Promise<void> {
@@ -417,23 +444,16 @@ export class XUIService {
     if (!result.success) throw new Error(result.msg || `${path} was rejected`);
   }
 
-  /** Partial update: the panel keeps every field the body omits. */
-  private updateClient(email: string, patch: Record<string, unknown>) {
-    return this.panelCall(`/panel/api/clients/update/${encodeURIComponent(email)}`, patch);
-  }
-
-  private async setClientUuid(email: string, uuid: string): Promise<void> {
-    // Write-side payloads name the UUID `id`, read-side records `uuid`; try both, then check.
-    for (const patch of [{ id: uuid }, { uuid }]) {
-      await this.updateClient(email, patch);
-      if ((await this.getClient(email))?.uuid === uuid) return;
-    }
-    throw new Error("panel did not apply the UUID change");
+  /** Only ever called with a whole client (see rewriteClient): not every panel keeps omitted fields. */
+  private updateClient(email: string, body: Record<string, unknown>) {
+    return this.panelCall(`/panel/api/clients/update/${encodeURIComponent(email)}`, body);
   }
 
   private async runStep(step: ClientStep, inboundId: number): Promise<void> {
     const attach = (email: string) =>
       this.panelCall(`/panel/api/clients/${encodeURIComponent(email)}/attach`, { inboundIds: [inboundId] });
+    // What LSM adds clients with; the panel drops it on inbounds that can't use it.
+    const reenable = (stored: Record<string, unknown>) => ({ enable: true, flow: stringField(stored.flow) || VISION_FLOW });
     switch (step.kind) {
       case "add":
         if ((await this.addNewUser(inboundId, step.email, step.uuid)) !== "added") throw new Error("panel rejected the new client");
@@ -442,11 +462,19 @@ export class XUIService {
         if ((await this.addNewUser(inboundId, step.as, step.uuid)) !== "added") throw new Error("panel rejected the new client");
         return;
       case "rename":
-        await this.updateClient(step.from, { email: step.email });
+        await this.rewriteClient(
+          step.from,
+          (stored) => ({ email: step.email, ...(step.reenable ? reenable(stored) : {}) }),
+          { email: step.email, uuid: step.uuid, ...(step.reenable ? { enable: true } : {}) },
+        );
         if (step.attach) await attach(step.email);
         return;
       case "overwrite":
-        await this.setClientUuid(step.email, step.uuid);
+        await this.rewriteClient(step.email, () => ({ id: step.uuid }), { email: step.email, uuid: step.uuid });
+        if (step.attach) await attach(step.email);
+        return;
+      case "repair":
+        await this.rewriteClient(step.email, reenable, { email: step.email, uuid: step.uuid, enable: true });
         if (step.attach) await attach(step.email);
         return;
       case "attach":
@@ -459,7 +487,7 @@ export class XUIService {
         await this.panelCall(`/panel/api/clients/del/${encodeURIComponent(step.email)}`);
         return;
       default:
-        return; // unchanged / conflict / not-found: nothing to write
+        return; // unchanged / disabled / conflict / not-found: nothing to write
     }
   }
 
@@ -467,11 +495,11 @@ export class XUIService {
    * Brings one inbound in line with the listed clients and removals. Clients the request
    * doesn't mention are never touched. With dryRun the plan is returned without writes.
    */
-  async syncClients(req: ClientSyncRequest): Promise<{ results: ClientOutcome[] }> {
+  async syncClients(req: ClientSyncRequest): Promise<ClientSyncResponse> {
     await this.ensureLoggedIn();
     const panel = await this.listClients(relevantTo(req));
     const steps = planClientSync(panel, req);
-    if (req.dryRun) return { results: steps.map((s) => ({ ...s, ok: true })) };
+    if (req.dryRun) return { results: steps.map((s) => ({ ...s, ok: true })), fullWrites: true };
     const results: ClientOutcome[] = [];
     for (const step of steps) {
       try {
@@ -481,7 +509,7 @@ export class XUIService {
         results.push({ ...step, ok: false, error: err instanceof Error ? err.message : String(err) });
       }
     }
-    return { results };
+    return { results, fullWrites: true };
   }
 
   async logout(): Promise<void> {
@@ -516,18 +544,26 @@ export type ClientSyncRequest = {
   clients: DesiredClient[];
   remove?: ClientRemoval[];
   onConflict: ConflictStrategy;
+  /** Re-enable listed clients that are disabled on the panel (and restore their flow). */
+  repair?: boolean;
   dryRun?: boolean;
 };
-export type PanelClient = { email: string; uuid?: string; inboundIds?: number[] };
+/** `fullWrites`: this agent rewrites whole clients (older agents' renames disabled them). */
+export type ClientSyncResponse = { results: ClientOutcome[]; fullWrites?: boolean };
+export type PanelClient = { email: string; uuid?: string; inboundIds?: number[]; enable?: boolean };
 
 export type ClientStep =
   | { kind: "add"; email: string; uuid: string }
-  | { kind: "rename"; email: string; from: string; uuid: string; attach: boolean }
+  // `disabled`: the client stays disabled after the rename; `reenable`: the rename turns it back on.
+  | { kind: "rename"; email: string; from: string; uuid: string; attach: boolean; disabled?: boolean; reenable?: boolean }
   | { kind: "attach"; email: string; uuid: string }
   | { kind: "overwrite"; email: string; uuid: string; attach: boolean }
   | { kind: "keep-both"; email: string; as: string; uuid: string }
   | { kind: "conflict"; email: string; uuid: string; detail: string }
   | { kind: "unchanged"; email: string; uuid: string }
+  // On the panel with LSM's UUID but switched off; only a push with `repair` touches it.
+  | { kind: "disabled"; email: string; uuid: string }
+  | { kind: "repair"; email: string; uuid: string; attach: boolean }
   | { kind: "delete"; email: string; uuid: string; reason: "revoked" | "duplicate" }
   | { kind: "detach"; email: string; uuid: string; reason: "revoked" }
   | { kind: "not-found"; email: string; uuid: string };
@@ -537,7 +573,59 @@ function parsePanelClient(raw: any): PanelClient | null {
   if (!raw || typeof raw.email !== "string") return null;
   const uuid = typeof raw.uuid === "string" && raw.uuid ? raw.uuid : typeof raw.id === "string" && raw.id ? raw.id : undefined;
   const inboundIds = Array.isArray(raw.inboundIds) ? raw.inboundIds.filter((n: unknown) => typeof n === "number") : undefined;
-  return { email: raw.email, uuid, inboundIds };
+  const enable = typeof raw.enable === "boolean" ? raw.enable : undefined;
+  return { email: raw.email, uuid, inboundIds, enable };
+}
+
+export const VISION_FLOW = "xtls-rprx-vision";
+const stringField = (v: unknown) => (typeof v === "string" ? v : "");
+
+/** Stored client fields a rewrite sends back unchanged (names as the write model has them). */
+const KEPT_FIELDS = [
+  "security",
+  "password",
+  "auth",
+  "secret",
+  "adTag",
+  "subId",
+  "limitIp",
+  "limitHwid",
+  "totalGB",
+  "expiryTime",
+  "enable",
+  "tgId",
+  "group",
+  "comment",
+  "reset",
+  "resetDay",
+  "resetWeekday",
+  "resetMax",
+  "trafficReset",
+  "trafficResetDay",
+  "clientHostRuleIds",
+] as const;
+
+/**
+ * A stored client (as /clients/get returns it) turned back into an update body. Records
+ * carry the UUID as `uuid` and their row number as `id`; the write model wants the UUID
+ * in `id`. An empty flow is left out so newer panels keep each inbound's own.
+ */
+export function fullClientBody(stored: Record<string, unknown>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (const key of KEPT_FIELDS) if (stored[key] !== undefined && stored[key] !== null) body[key] = stored[key];
+  const uuid = stringField(stored.uuid) || stringField(stored.id);
+  if (uuid) body.id = uuid;
+  body.email = stored.email;
+  if (stringField(stored.flow)) body.flow = stored.flow;
+  // Records keep the VLESS reverse tag as a JSON string; the write model takes the object.
+  if (stored.reverse && typeof stored.reverse === "object") body.reverse = stored.reverse;
+  else if (stringField(stored.reverse))
+    try {
+      body.reverse = JSON.parse(stored.reverse as string);
+    } catch {
+      // unreadable: leave it out rather than fail the write
+    }
+  return body;
 }
 
 /** Same user under another LSM-style name: plain legacy name, renamed profile or renamed user. */
@@ -583,18 +671,34 @@ export function planClientSync(panel: PanelClient[], req: ClientSyncRequest): Cl
       if (current.uuid === undefined) {
         steps.push({ kind: "conflict", email: d.email, uuid: d.uuid, detail: "the panel did not report this client's UUID" });
       } else if (current.uuid === d.uuid) {
-        steps.push(onInbound(current) ? { kind: "unchanged", email: d.email, uuid: d.uuid } : { kind: "attach", email: d.email, uuid: d.uuid });
+        // LSM never disables anyone, but 3x-ui's quota loop, the operator, or an older
+        // agent's rename may have: reported, and only re-enabled when asked to.
+        if (current.enable === false)
+          steps.push(
+            req.repair
+              ? { kind: "repair", email: d.email, uuid: d.uuid, attach: !onInbound(current) }
+              : { kind: "disabled", email: d.email, uuid: d.uuid },
+          );
+        else
+          steps.push(onInbound(current) ? { kind: "unchanged", email: d.email, uuid: d.uuid } : { kind: "attach", email: d.email, uuid: d.uuid });
         // A copy left under an older name (an earlier rename, or a re-added legacy client)
         // goes away when the current client already covers all of its inbounds.
+        // A working old copy stays while the current one is off and not being repaired.
+        const currentWorks = current.enable !== false || req.repair === true;
         for (const old of panel) {
           if (claimed.has(old.email) || desired.has(old.email) || old.uuid !== d.uuid || !isEarlierName(old.email, d)) continue;
+          if (!currentWorks && old.enable !== false) continue;
           const covered = new Set([req.inboundId, ...(current.inboundIds ?? [])]);
           if (old.inboundIds && old.inboundIds.every((id) => covered.has(id))) {
             claimed.add(old.email);
             steps.push({ kind: "delete", email: old.email, uuid: d.uuid, reason: "duplicate" });
           }
         }
-      } else if (req.onConflict === "overwrite") {
+      } else if (
+        req.onConflict === "overwrite" ||
+        // The UUID LSM had under this name (the user's UUID was changed): ours to replace.
+        (req.remove ?? []).some((r) => r.uuid === current.uuid && sameName(current.email, r.email))
+      ) {
         steps.push({ kind: "overwrite", email: d.email, uuid: d.uuid, attach: !onInbound(current) });
       } else if (req.onConflict === "keep-both") {
         let n = 1;
@@ -611,7 +715,15 @@ export function planClientSync(panel: PanelClient[], req: ClientSyncRequest): Cl
     );
     if (previous) {
       claimed.add(previous.email);
-      steps.push({ kind: "rename", email: d.email, from: previous.email, uuid: d.uuid, attach: !onInbound(previous) });
+      const off = previous.enable === false;
+      steps.push({
+        kind: "rename",
+        email: d.email,
+        from: previous.email,
+        uuid: d.uuid,
+        attach: !onInbound(previous),
+        ...(off ? (req.repair ? { reenable: true } : { disabled: true }) : {}),
+      });
     } else {
       steps.push({ kind: "add", email: d.email, uuid: d.uuid });
     }

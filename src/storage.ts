@@ -853,10 +853,16 @@ export class SqliteStorage implements Storage {
     newName: string,
     ownerId: number,
   ): boolean {
-    const result = this.db
-      .query("UPDATE profiles SET name = ?1 WHERE name = ?2 AND owner_id = ?3")
-      .run(newName, name, ownerId);
-    return result.changes > 0;
+    try {
+      const result = this.db
+        .query("UPDATE profiles SET name = ?1 WHERE name = ?2 AND owner_id = ?3")
+        .run(newName, name, ownerId);
+      return result.changes > 0;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("UNIQUE constraint failed"))
+        throw new Error(`Profile "${newName}" already exists.`);
+      throw err;
+    }
   }
 
   public renameProfileById(
@@ -955,13 +961,19 @@ export class SqliteStorage implements Storage {
     newName: string,
     ownerId: number,
   ): boolean {
-    const result = this.db
-      .query(
-        `UPDATE users SET client_name = ?1
+    try {
+      const result = this.db
+        .query(
+          `UPDATE users SET client_name = ?1
          WHERE profile_id = (SELECT id FROM profiles WHERE name = ?2 AND owner_id = ?4) AND client_name = ?3`,
-      )
-      .run(newName, profileName, oldName, ownerId);
-    return result.changes > 0;
+        )
+        .run(newName, profileName, oldName, ownerId);
+      return result.changes > 0;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("UNIQUE constraint failed"))
+        throw new Error(`User "${newName}" already exists.`);
+      throw err;
+    }
   }
 
   public setUserUuid(

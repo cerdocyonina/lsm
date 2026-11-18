@@ -138,6 +138,7 @@ Authorization: Bearer <SHARED_SECRET>
   "clients": [{ "email": "main.client1", "uuid": "550e8400-…", "legacyEmail": "client1" }],
   "remove": [{ "email": "par.client7", "uuid": "1b4e28ba-…" }],
   "onConflict": "skip",
+  "repair": false,
   "dryRun": false
 }
 ```
@@ -145,10 +146,22 @@ Authorization: Bearer <SHARED_SECRET>
 `onConflict` — что делать, если клиент с таким email уже есть с другим UUID: `skip` (оставить),
 `overwrite` (поставить UUID из LSM), `keep-both` (добавить рядом как `email_1`). `dryRun: true`
 возвращает план без изменений. `remove` удаляет только клиента с совпадающим UUID; если клиент
-прикреплён к нескольким инбаундам, он только открепляется от этого.
+прикреплён к нескольким инбаундам, он только открепляется от этого. Если под нужным email на
+панели стоит UUID из `remove` (юзеру сменили UUID в LSM), клиент перезаписывается без конфликта.
 
-Ответ: `{ "results": [{ "kind": "rename", "email": "main.client1", "from": "client1", "uuid": "…", "ok": true }, …] }`.
-`kind`: `add`, `rename`, `attach`, `overwrite`, `keep-both`, `conflict`, `unchanged`, `delete`, `detach`, `not-found`.
+Клиенты из запроса, выключенные на панели, по умолчанию только попадают в отчёт (`disabled`);
+`repair: true` включает их обратно и возвращает flow `xtls-rprx-vision` (панель сама убирает его
+на инбаундах, где он не нужен).
+
+Переименование и перезапись отправляют клиента **целиком** (сохранённая запись + изменение):
+выпущенные версии 3x-ui (до 3.11 включительно) сбрасывают в update всё, чего нет в теле, —
+агенты 2.0–2.1 слали только `email`, и клиенты выключались и теряли flow.
+
+Ответ: `{ "results": [{ "kind": "rename", "email": "main.client1", "from": "client1", "uuid": "…", "ok": true }, …], "fullWrites": true }`.
+`kind`: `add`, `rename` (с `disabled: true`, если клиент остаётся выключенным, или `reenable: true`
+при `repair`), `attach`, `overwrite`, `keep-both`, `conflict`, `unchanged`, `disabled`, `repair`,
+`delete`, `detach`, `not-found`. `fullWrites` отмечает агента, который пишет клиентов целиком:
+агенту без этой отметки мастер не даёт переименовывать и перезаписывать (сначала dry run).
 
 `/sync-user`, `/delete-user` и `/check-conflicts` ниже оставлены для старых мастеров.
 

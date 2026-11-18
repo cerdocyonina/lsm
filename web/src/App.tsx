@@ -412,13 +412,18 @@ export default function App() {
 
   async function handleRenameProfile(name: string, newName: string) {
     try {
-      const payload = await api<{ profiles: ProfileRecord[] }>(
-        `/profiles/${encodeURIComponent(name)}`,
-        { method: "PATCH", body: JSON.stringify({ name: newName }) },
-      );
+      const payload = await api<{
+        profiles: ProfileRecord[];
+        pendingSync?: number[];
+      }>(`/profiles/${encodeURIComponent(name)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: newName }),
+      });
       setProfiles(payload.profiles);
       if (activeProfileId === name) setActiveProfileId(newName);
       toast.success("Profile renamed");
+      // Logins and 3x-ui emails are "<profile>.<client>": the nodes follow in the background.
+      if (payload.pendingSync?.length) void inventory.push(payload.pendingSync);
     } catch (error) {
       setDashboardError(
         error instanceof Error ? error.message : "Failed to rename profile.",
@@ -450,7 +455,7 @@ export default function App() {
 
     try {
       if (editingUser) {
-        await api(
+        const payload = await api<{ pendingSync?: number[] }>(
           profilePath(
             activeProfileId,
             `/users/${encodeURIComponent(editingUser.clientName)}`,
@@ -460,6 +465,8 @@ export default function App() {
             body: JSON.stringify(userForm),
           },
         );
+        // A new name or UUID changes the user's login/email on the nodes.
+        if (payload.pendingSync?.length) void inventory.push(payload.pendingSync);
         carrySelectionOverRename(
           knownUserNames,
           setSelectedUsers,

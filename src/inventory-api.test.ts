@@ -237,6 +237,7 @@ describe("inventory API", () => {
           ? Response.json({ error: "offline" }, { status: 503 })
           : Response.json({
               results: body.remove.map((r: any) => ({ kind: "delete", email: r.email, uuid: r.uuid, reason: "revoked", ok: true })),
+              fullWrites: true,
             });
       },
     });
@@ -272,6 +273,7 @@ describe("inventory API", () => {
         bodies.push(body);
         return Response.json({
           results: body.clients.map((c: any) => ({ kind: body.dryRun ? "rename" : "unchanged", email: c.email, uuid: c.uuid, ok: true })),
+          fullWrites: true,
         });
       },
     });
@@ -289,6 +291,98 @@ describe("inventory API", () => {
     old = true;
     const stale = await request("/inventory/sync", { ids: [node.id] });
     expect(stale.body.syncResults[0].error).toContain("too old");
+  });
+
+  test("an agent that predates whole-client writes is never allowed to rename", async () => {
+    const { storage, owner, request } = setup();
+    const bodies: any[] = [];
+    let kind = "rename";
+    const agent = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (req) => {
+        const body: any = await req.json();
+        bodies.push(body);
+        // lsmnode 2.0/2.1: no fullWrites marker.
+        return Response.json({ results: body.clients.map((c: any) => ({ kind, email: c.email, from: "alice", uuid: c.uuid, ok: true })) });
+      },
+    });
+    cleanup.push(() => agent.stop(true));
+    const node = storage.addNode("xui", agent.url.origin, "s", 1, owner, 1);
+    storage.assignConnection(storage.saveConnection(null, "c", "link", node.id, owner), "main", true, owner);
+
+    const r = await request("/inventory/sync", { ids: [node.id] });
+    expect(r.body.syncResults[0]).toMatchObject({ ok: false });
+    expect(r.body.syncResults[0].error).toContain("too old to rename");
+    expect(bodies.map((b) => b.dryRun)).toEqual([true]); // checked, never pushed
+
+    kind = "add"; // adds and deletes are safe on any agent
+    bodies.length = 0;
+    expect((await request("/inventory/sync", { ids: [node.id] })).body.syncResults[0].ok).toBe(true);
+    expect(bodies.map((b) => b.dryRun)).toEqual([true, false]);
+  });
+
+  test("re-enable is passed through, and disabled clients don't count as synced", async () => {
+    const { storage, owner, request } = setup();
+    const bodies: any[] = [];
+    const agent = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (req) => {
+        const body: any = await req.json();
+        bodies.push(body);
+        const kind = body.repair ? "repair" : "disabled";
+        return Response.json({ results: body.clients.map((c: any) => ({ kind, email: c.email, uuid: c.uuid, ok: true })), fullWrites: true });
+      },
+    });
+    cleanup.push(() => agent.stop(true));
+    const node = storage.addNode("xui", agent.url.origin, "s", 1, owner, 1);
+    storage.assignConnection(storage.saveConnection(null, "c", "link", node.id, owner), "main", true, owner);
+
+    expect((await request("/inventory/sync", { ids: [node.id] })).body.syncResults[0]).toMatchObject({ ok: true, synced: 0 });
+    const fixed = await request("/inventory/sync", { ids: [node.id], repair: true });
+    expect(bodies.at(-1)).toMatchObject({ repair: true });
+    expect(fixed.body.syncResults[0]).toMatchObject({ ok: true, synced: 1 });
+  });
+});
+
+describe("renaming a profile or user", () => {
+  test("profile names are validated and unique", async () => {
+    const { request } = setup();
+    expect((await request("/profiles/work", { name: "Work.2" }, "PATCH")).status).toBe(400);
+    const dup = await request("/profiles/work", { name: "family" }, "PATCH");
+    expect(dup.status).toBe(400);
+    expect(dup.body.error).toContain('"family" already exists');
+    const same = await request("/profiles/work", { name: "work" }, "PATCH");
+    expect(same).toMatchObject({ status: 200, body: { pendingSync: [] } });
+  });
+
+  test("a rename asks for a push of every service the profile syncs through", async () => {
+    const { storage, owner, request } = setup();
+    const naive = storage.addNode("naive", "http://127.0.0.1:1", "s", 0, owner, 1, "naive");
+    const xui = storage.addNode("xui", "http://127.0.0.1:1", "s", 1, owner, 1);
+    const unrelated = storage.addNode("xui2", "http://127.0.0.1:1", "s", 2, owner, 1);
+    storage.assignConnection(storage.saveConnection(null, "n", "naive+https://{user}:{pass}@h#n", naive.id, owner), "work", true, owner);
+    storage.assignConnection(storage.saveConnection(null, "x", "vless://{uuid}@h#x", xui.id, owner), "work", true, owner);
+    storage.assignConnection(storage.saveConnection(null, "u", "vless://{uuid}@h#u", unrelated.id, owner), "family", true, owner);
+
+    const r = await request("/profiles/work", { name: "office" }, "PATCH");
+    expect(r.status).toBe(200);
+    expect([...r.body.pendingSync].sort()).toEqual([naive.id, xui.id].sort());
+
+    const user = await request("/profiles/office/users/alice", { clientName: "alicia" }, "PATCH");
+    expect([...user.body.pendingSync].sort()).toEqual([naive.id, xui.id].sort());
+    expect(storage.pendingRemovals(xui.id, owner)).toEqual([]);
+  });
+
+  test("a new UUID queues the old one as revoked, so the agent replaces LSM's own client", async () => {
+    const { storage, owner, request } = setup();
+    const xui = storage.addNode("xui", "http://127.0.0.1:1", "s", 1, owner, 1);
+    storage.assignConnection(storage.saveConnection(null, "x", "vless://{uuid}@h#x", xui.id, owner), "work", true, owner);
+    const uuid = "6f0c8a7e-3f43-4c55-9d0e-6a4f1b2c3d4e";
+    const r = await request("/profiles/work/users/alice", { userUuid: uuid }, "PATCH");
+    expect(r.body.pendingSync).toEqual([xui.id]);
+    expect(storage.pendingRemovals(xui.id, owner).map((p) => [p.clientName, p.userUuid])).toEqual([["work.alice", "uuid-work"]]);
   });
 });
 

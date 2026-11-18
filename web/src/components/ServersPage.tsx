@@ -188,6 +188,11 @@ export function ServersPage({ inv }: { inv: InventoryApi }) {
                     Push, keep both
                     <div className="small text-body-secondary">Add LSM's client as name_1 next to it</div>
                   </Dropdown.Item>
+                  <Dropdown.Divider />
+                  <Dropdown.Item onClick={() => void inv.push([service.id], undefined, { repair: true })}>
+                    Push, re-enable disabled
+                    <div className="small text-body-secondary">Turn LSM's clients back on and restore their flow</div>
+                  </Dropdown.Item>
                 </Dropdown.Menu>
               </Dropdown>
             )}

@@ -31,6 +31,8 @@ export type SyncStep = {
     | "keep-both"
     | "conflict"
     | "unchanged"
+    | "disabled"
+    | "repair"
     | "delete"
     | "detach"
     | "not-found";
@@ -40,6 +42,9 @@ export type SyncStep = {
   as?: string;
   reason?: "revoked" | "duplicate";
   detail?: string;
+  /** rename: the client stays switched off / is switched back on. */
+  disabled?: boolean;
+  reenable?: boolean;
   ok: boolean;
   error?: string;
 };
@@ -53,7 +58,7 @@ export type SyncOutcome = {
   dryRun?: boolean;
 };
 export type ConflictStrategy = "skip" | "overwrite" | "keep-both";
-export type PushOptions = { onConflict?: ConflictStrategy; dryRun?: boolean };
+export type PushOptions = { onConflict?: ConflictStrategy; repair?: boolean; dryRun?: boolean };
 export type SyncReport = { results: SyncOutcome[]; options: PushOptions };
 
 const STEP_WORDS: Partial<Record<SyncStep["kind"], string>> = {
@@ -63,6 +68,8 @@ const STEP_WORDS: Partial<Record<SyncStep["kind"], string>> = {
   overwrite: "overwritten",
   "keep-both": "kept both",
   conflict: "conflicts",
+  disabled: "disabled",
+  repair: "re-enabled",
   delete: "removed",
   detach: "detached",
 };
@@ -78,6 +85,9 @@ export function summarize(r: SyncOutcome): string {
   return `${r.synced ?? 0} users${changes ? `: ${changes}` : ", no changes"}`;
 }
 const conflictsOf = (r: SyncOutcome) => r.steps?.filter((s) => s.kind === "conflict").length ?? 0;
+/** LSM's clients left switched off on the panel (see the re-enable push). */
+export const isDisabled = (s: SyncStep) => s.ok && (s.kind === "disabled" || (s.kind === "rename" && !!s.disabled));
+const disabledOf = (r: SyncOutcome) => r.steps?.filter(isDisabled).length ?? 0;
 export type Inventory = {
   hosts: Host[];
   services: NodeRecord[];
@@ -244,7 +254,8 @@ export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
     if (!results.length) return;
     const failed = results.filter((r) => !r.ok);
     const conflicted = results.filter((r) => conflictsOf(r) > 0);
-    if (!failed.length && !conflicted.length) {
+    const disabled = results.filter((r) => disabledOf(r) > 0);
+    if (!failed.length && !conflicted.length && !disabled.length) {
       toast.success(`Pushed users to ${results.map((r) => `${r.name} (${summarize(r)})`).join(", ")}`);
       return;
     }
@@ -253,7 +264,7 @@ export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
       (t) => (
         <div className="small">
           <div className="fw-semibold mb-1">
-            {failed.length ? "Saved, but some agents didn't take the update:" : "Pushed, with conflicts:"}
+            {failed.length ? "Saved, but some agents didn't take the update:" : "Pushed, but some clients won't connect:"}
           </div>
           {failed.map((r) => (
             <div key={r.nodeId}>
@@ -263,6 +274,11 @@ export function useInventory(enabled: boolean, onChanged: () => Promise<void>) {
           {conflicted.map((r) => (
             <div key={`c${r.nodeId}`}>
               {r.name}: {conflictsOf(r)} client(s) already on the panel with another UUID, left as is
+            </div>
+          ))}
+          {disabled.map((r) => (
+            <div key={`d${r.nodeId}`}>
+              {r.name}: {disabledOf(r)} client(s) disabled on the panel
             </div>
           ))}
           <div className="d-flex gap-2 mt-2">

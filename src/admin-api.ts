@@ -41,19 +41,18 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
-const createProfileSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .regex(
-      /^[a-z0-9_-]+$/,
-      "Profile name must be lowercase alphanumeric, hyphens, or underscores",
-    ),
-});
+// No dots: logins and 3x-ui emails are "<profile>.<client>", split at the first dot.
+const profileNameSchema = z
+  .string()
+  .min(1)
+  .regex(
+    /^[a-z0-9_-]+$/,
+    "Profile name must be lowercase alphanumeric, hyphens, or underscores",
+  );
 
-const updateProfileSchema = z.object({
-  name: z.string().min(1),
-});
+const createProfileSchema = z.object({ name: profileNameSchema });
+
+const updateProfileSchema = z.object({ name: profileNameSchema });
 
 const createUserSchema = z.object({
   clientName: z.string().min(1),
@@ -273,6 +272,22 @@ function requireProfile(
   return profile;
 }
 
+/** Services this profile's servers sync through: their logins/emails carry the profile and user names. */
+function profileServices(
+  storage: Storage,
+  profileName: string,
+  ownerId: number,
+): number[] {
+  return [
+    ...new Set(
+      storage
+        .listServerRecords(profileName, ownerId)
+        .map((s) => s.nodeId)
+        .filter((id): id is number => id !== null),
+    ),
+  ];
+}
+
 function mapUsers(
   storage: Storage,
   profileId: string,
@@ -461,8 +476,19 @@ async function syncUserToNodes(
         return {
           nodeId: node.id,
           nodeName: node.name,
-          result: !step || !step.ok ? "failed" : step.kind === "conflict" ? "skipped" : step.kind,
-          msg: step?.error ?? (step?.kind === "conflict" ? step.detail : undefined),
+          result:
+            !step || !step.ok
+              ? "failed"
+              : step.kind === "conflict" || step.kind === "disabled"
+                ? "skipped"
+                : step.kind,
+          msg:
+            step?.error ??
+            (step?.kind === "conflict"
+              ? step.detail
+              : step?.kind === "disabled"
+                ? "on the panel but disabled; push the server with re-enable"
+                : undefined),
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -930,6 +956,8 @@ export async function handleAdminApiRequest(
             ids: z.array(z.number().int().positive()),
             // 3x-ui only: what to do when a client exists with another UUID.
             onConflict: z.enum(["skip", "overwrite", "keep-both"]).default("skip"),
+            // 3x-ui only: re-enable LSM's clients that are disabled on the panel.
+            repair: z.boolean().default(false),
             dryRun: z.boolean().default(false),
           }),
         );
@@ -937,6 +965,7 @@ export async function handleAdminApiRequest(
         dryRun = p.dryRun;
         syncResults = await syncInventory(storage, adminUserId, p.ids, new Map(), {
           onConflict: p.onConflict,
+          repair: p.repair,
           dryRun: p.dryRun,
         });
       } else return adminErrorResponse(404, "Unknown inventory action");
@@ -1199,17 +1228,31 @@ export async function handleAdminApiRequest(
         return noStoreResponse(parsed);
       }
 
-      const renamed = storage.renameProfile(
-        profileId,
-        parsed.name,
-        adminUserId,
-      );
-      if (!renamed) {
-        return adminErrorResponse(404, `Unknown profile: ${profileId}`);
+      if (parsed.name !== profileId) {
+        let renamed: boolean;
+        try {
+          renamed = storage.renameProfile(profileId, parsed.name, adminUserId);
+        } catch (error) {
+          return adminErrorResponse(
+            400,
+            error instanceof Error ? error.message : "Failed to rename profile.",
+          );
+        }
+        if (!renamed) {
+          return adminErrorResponse(404, `Unknown profile: ${profileId}`);
+        }
       }
 
       return noStoreResponse(
-        jsonResponse({ profiles: storage.listProfiles(adminUserId) }),
+        jsonResponse({
+          profiles: storage.listProfiles(adminUserId),
+          // Every login/email on these services carries the profile name; the UI pushes
+          // them in the background (3x-ui clients are renamed in place, by UUID).
+          pendingSync:
+            parsed.name === profileId
+              ? []
+              : profileServices(storage, parsed.name, adminUserId),
+        }),
       );
     }
 
@@ -1374,6 +1417,9 @@ export async function handleAdminApiRequest(
       return noStoreResponse(parsed);
     }
 
+    const before = storage
+      .listUsers(profileId, adminUserId)
+      .find((u) => u.clientName === userPathName);
     try {
       if (parsed.clientName !== undefined) {
         const renamed = storage.renameUser(
@@ -1405,9 +1451,28 @@ export async function handleAdminApiRequest(
       return adminErrorResponse(400, message);
     }
 
+    const renamed =
+      parsed.clientName !== undefined && parsed.clientName !== userPathName;
+    const newUuid =
+      before && parsed.userUuid !== undefined && parsed.userUuid !== before.userUuid;
+    const pendingSync =
+      renamed || newUuid ? profileServices(storage, profileId, adminUserId) : [];
+    // The old UUID is LSM's own client under this name: queued as revoked, the agent
+    // overwrites it instead of reporting a conflict with a stranger.
+    if (newUuid)
+      for (const id of pendingSync)
+        if (storage.getNode(id, adminUserId)?.type === "xui")
+          storage.queueRemoval(
+            id,
+            xuiEmail(profileId, userPathName),
+            before!.userUuid,
+            adminUserId,
+          );
+
     return noStoreResponse(
       jsonResponse({
         users: mapUsers(storage, profileId, adminUserId, baseUrl),
+        pendingSync,
       }),
     );
   }

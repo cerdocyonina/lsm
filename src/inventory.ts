@@ -3,6 +3,7 @@ import { buildDeclarativeUsers, syncNaiveNode } from "./naive-sync";
 import type {
   ClientOutcome,
   ClientSyncRequest,
+  ClientSyncResponse,
   ConflictStrategy,
   DesiredClient,
 } from "./3x-ui";
@@ -207,7 +208,12 @@ export type InventorySyncResult = {
   steps?: ClientOutcome[];
   dryRun?: boolean;
 };
-export type SyncOptions = { onConflict?: ConflictStrategy; dryRun?: boolean };
+export type SyncOptions = {
+  onConflict?: ConflictStrategy;
+  /** 3x-ui: re-enable LSM's clients that are disabled on the panel. */
+  repair?: boolean;
+  dryRun?: boolean;
+};
 
 /**
  * 3x-ui emails are global per panel, so like the other protocols' logins they carry the
@@ -236,11 +242,10 @@ export function desiredXuiClients(
     );
 }
 
-/** One batch request to the agent; it reads the panel once and applies a UUID-based plan. */
-export async function pushXuiClients(
+async function callSyncClients(
   node: NodeRecord,
   body: Omit<ClientSyncRequest, "inboundId">,
-): Promise<ClientOutcome[]> {
+): Promise<ClientSyncResponse> {
   const response = await fetch(`${node.url}/sync-clients`, {
     method: "POST",
     headers: {
@@ -255,22 +260,55 @@ export async function pushXuiClients(
     throw new Error(
       "This host's lsmnode is too old for 3x-ui sync. Update lsmnode on it (2.0+), then push again.",
     );
-  const data = (await response.json()) as {
-    results?: ClientOutcome[];
+  const data = (await response.json()) as Partial<ClientSyncResponse> & {
     error?: string;
   };
   if (!response.ok || !Array.isArray(data.results))
     throw new Error(data.error ?? `Agent returned ${response.status}`);
-  return data.results;
+  return { results: data.results, fullWrites: data.fullWrites === true };
 }
 
-const PRESENT = new Set(["unchanged", "add", "rename", "attach", "overwrite", "keep-both"]);
+/** Agent URLs known to rewrite whole clients, so their pushes skip the safety check. */
+const fullWriteAgents = new Set<string>();
+const REWRITES = new Set(["rename", "overwrite", "repair"]);
+
+/**
+ * One batch request to the agent; it reads the panel once and applies a UUID-based plan.
+ * Agents from 2.0 and 2.1 renamed clients by sending just the new email, which released
+ * 3x-ui (up to 3.11) takes as "reset everything else": the client ends up disabled and
+ * without its flow. Such an agent is checked with a dry run first and never gets to
+ * rename or overwrite anyone.
+ */
+export async function pushXuiClients(
+  node: NodeRecord,
+  body: Omit<ClientSyncRequest, "inboundId">,
+): Promise<ClientOutcome[]> {
+  if (!body.dryRun && !fullWriteAgents.has(node.url)) {
+    const plan = await callSyncClients(node, { ...body, dryRun: true });
+    if (plan.fullWrites) fullWriteAgents.add(node.url);
+    else {
+      const risky = plan.results.filter((s) => REWRITES.has(s.kind)).length;
+      if (risky)
+        throw new Error(
+          `This host's lsmnode is too old to rename or overwrite 3x-ui clients safely (it would switch ${risky} of them off). Update lsmnode on it, then push again.`,
+        );
+    }
+  }
+  const result = await callSyncClients(node, body);
+  if (result.fullWrites) fullWriteAgents.add(node.url);
+  return result.results;
+}
+
+const PRESENT = new Set(["unchanged", "add", "rename", "attach", "overwrite", "keep-both", "repair"]);
+/** On the panel and usable: a rename that leaves the client switched off doesn't count. */
+const isPresent = (s: ClientOutcome) =>
+  s.ok && PRESENT.has(s.kind) && !(s.kind === "rename" && s.disabled);
 
 async function syncXui(
   storage: Storage,
   owner: number,
   node: NodeRecord,
-  { onConflict = "skip", dryRun = false }: SyncOptions,
+  { onConflict = "skip", repair = false, dryRun = false }: SyncOptions,
 ): Promise<InventorySyncResult> {
   const clients = desiredXuiClients(storage, node.id, owner);
   const wanted = new Set(clients.map((c) => c.uuid));
@@ -282,6 +320,7 @@ async function syncXui(
       .filter((r) => !wanted.has(r.userUuid))
       .map((r) => ({ email: r.clientName, uuid: r.userUuid })),
     onConflict,
+    repair,
     dryRun,
   });
   const failed = steps.filter((s) => !s.ok);
@@ -300,7 +339,7 @@ async function syncXui(
     error: failed.length
       ? `${failed.length} change(s) failed, e.g. ${failed[0]!.email}: ${failed[0]!.error}`
       : undefined,
-    synced: steps.filter((s) => s.ok && PRESENT.has(s.kind)).length,
+    synced: steps.filter(isPresent).length,
     steps,
     ...(dryRun ? { dryRun: true } : {}),
   };

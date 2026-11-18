@@ -90,7 +90,7 @@ export function createAgentHandler(
 
   /** Validates a /sync-clients body; returns an error message on bad input. */
   function parseClientSync(body: Record<string, unknown>): ClientSyncRequest | string {
-    const { inboundId, clients, remove, onConflict, dryRun } = body;
+    const { inboundId, clients, remove, onConflict, repair, dryRun } = body;
     if (typeof inboundId !== "number" || !Number.isInteger(inboundId) || inboundId < 1)
       return "inboundId must be a positive integer";
     const pairs = (value: unknown, label: string) => {
@@ -115,6 +115,7 @@ export function createAgentHandler(
       clients: c,
       remove: r.map(({ email, uuid }) => ({ email, uuid })),
       onConflict: strategy,
+      repair: repair === true,
       dryRun: dryRun === true,
     };
   }

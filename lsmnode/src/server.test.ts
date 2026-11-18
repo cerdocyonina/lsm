@@ -130,6 +130,7 @@ describe("/sync-clients", () => {
       clients: [{ email: "main.a", uuid: "A", legacyEmail: "a" }],
       remove: [{ email: "main.b", uuid: "B" }],
       onConflict: "overwrite",
+      repair: true,
       dryRun: true,
     };
     for (const path of ["/sync-clients", "/xui/sync-clients"])

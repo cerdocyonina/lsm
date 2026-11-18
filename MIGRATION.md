@@ -1,5 +1,15 @@
 # Shared connections migration
 
+## 2.2: 3x-ui renames keep clients enabled
+
+lsmnode 2.0–2.1 renamed 3x-ui clients (`client1` → `main.client1`) and overwrote UUIDs by sending only the changed field. Released 3x-ui (up to 3.11.0) treats a client update as the whole client and resets everything left out. So every renamed client came out **disabled and without its `xtls-rprx-vision` flow**, and its limits, expiry and comment were cleared too. Upstream fixed this after 3.11.0 (MHSanaei/3x-ui#7042), but no release has it yet.
+
+- **Update lsmnode on every host with a 3x-ui backend.** It now writes the whole stored client with only the change applied, then reads it back to check.
+- **Repairing a panel:** from the server's push menu, run **Check only**. The dialog lists **Disabled on the panel**; **Push, re-enable disabled** turns LSM's clients back on and restores the flow. Old-name copies next to their renamed twin (`client1` beside `main.client1`) are removed in the same push. Limits, expiry and comments that the old rename cleared can't be recovered: set them again in the panel if you had any.
+- A normal push reports LSM clients that are disabled on the panel, but never turns them on by itself. A panel traffic/expiry limit or a manual switch-off stays.
+- The master checks an older agent with a dry run first and won't let it rename or overwrite anyone: the push fails with "too old to rename". Adds and revocations still go through.
+- Profile and user renames now push the affected servers in the background, since logins and 3x-ui emails carry both names. Before, they waited for the next push, and NaïveProxy/mieru links broke in the meantime. A profile rename is validated like a new profile (lowercase letters, digits, `-`, `_`; no dots), and a taken name gives a clear error instead of a 500. A changed user UUID replaces LSM's own 3x-ui client instead of reporting a conflict.
+
 ## 2.0: profile-qualified 3x-ui emails
 
 ### 3x-ui client emails: `profile.client`
@@ -8,7 +18,7 @@
 
 - **Update lsmnode on every host with a 3x-ui backend first.** The master uses the new `POST /sync-clients`; an older agent answers 404 and the push fails with "lsmnode is too old" without changing the panel.
 - The first push renames existing clients in place by UUID (`client1` → `main.client1`), keeping traffic stats and limits, and adds the ones that never made it in (e.g. `par.client1`). Run **Check only** from the server's push menu first to see the plan.
-- Later user or profile renames follow the same way on the next push. Revocations only remove a client whose UUID matches, and only detach it if it's on other inbounds too.
+- Later user or profile renames are renamed in place the same way. Revocations only remove a client whose UUID matches, and only detach it if it's on other inbounds too.
 - The push menu offers the old conflict strategies for clients already on the panel with another UUID: skip (default for automatic pushes), overwrite, keep both. **Check only** replaces the old "safe" strategy.
 - Removed: the per-profile `POST /profiles/:p/servers/:name/sync-users` endpoint (old UI only).
 

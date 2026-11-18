@@ -131,4 +131,22 @@ describe("planClientSync", () => {
       { kind: "unchanged", email: "main.b", uuid: "B" },
     ]);
   });
+
+  test("renaming a client that is already off keeps it off unless repairing", () => {
+    const panel: PanelClient[] = [{ email: "client1", uuid: "A", inboundIds: [1], enable: false }];
+    const clients = [{ email: "main.client1", uuid: "A", legacyEmail: "client1" }];
+    expect(planClientSync(panel, req({ clients }))).toEqual([
+      { kind: "rename", email: "main.client1", from: "client1", uuid: "A", attach: false, disabled: true },
+    ]);
+    expect(planClientSync(panel, req({ clients, repair: true }))).toEqual([
+      { kind: "rename", email: "main.client1", from: "client1", uuid: "A", attach: false, reenable: true },
+    ]);
+  });
+
+  test("a renamed profile's clients are renamed in place", () => {
+    const panel: PanelClient[] = [{ email: "old.client1", uuid: "A", inboundIds: [1], enable: true }];
+    expect(planClientSync(panel, req({ clients: [{ email: "new.client1", uuid: "A", legacyEmail: "client1" }] }))).toEqual([
+      { kind: "rename", email: "new.client1", from: "old.client1", uuid: "A", attach: false },
+    ]);
+  });
 });
